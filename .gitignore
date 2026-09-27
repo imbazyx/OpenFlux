@@ -1,0 +1,10 @@
+.gradle/
+build/
+*/build/
+.kotlin/
+.idea/
+*.iml
+local.properties
+androidApp/libs/*.aar
+androidApp/libs/*.jar
+androidApp/libs/openflux-core.version

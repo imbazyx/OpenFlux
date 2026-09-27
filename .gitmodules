@@ -1,0 +1,6 @@
+[submodule "OpenFlux"]
+	path = OpenFlux
+	url = https://github.com/p1neappleXpress/OpenFlux.git
+[submodule "shared"]
+	path = shared
+	url = https://github.com/p1neappleXpress/OpenFluxClientShared.git
