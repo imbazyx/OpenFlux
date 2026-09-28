@@ -1,0 +1,21 @@
+Pin line endings in .gitattributes: the build died on CRLF in a shell script
+
+scripts/wsl-build.sh failed at line 8 with
+
+    set: pipefail: invalid option name
+
+and stopped, with no indication that line endings were the cause.
+
+How it happened: core.autocrlf was set to true in all three repositories to
+stop WSL git reporting every text file as modified, which it did because the
+trees had been checked out on Windows with CRLF. Re-attributing the commit
+history then rewrote the scripts through that setting, and the build scripts
+came out with CRLF. Fixing the phantom modifications created the real failure -
+the two problems have opposite fixes and core.autocrlf cannot satisfy both.
+
+.gitattributes is the mechanism that can: it states LF for the shell scripts
+and CRLF only for the Windows launchers, and it travels with the repository,
+so it holds on every machine regardless of local autocrlf settings. The core
+already does this for deploy/node-install.sh; this makes it uniform.
+
+Verified the working tree afterwards, not just the file.
