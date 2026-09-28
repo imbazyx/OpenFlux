@@ -109,7 +109,11 @@ reset_src() {
 }
 
 reset_dist
-UNIV=$H/universal.apk
+# Outside $H, not inside it. This is a payload for case 1, and the audit now
+# fails a tree that has untracked files - correctly. It used to live at
+# $H/universal.apk and turn the baseline red for a reason that had nothing to do
+# with any case under test.
+UNIV=/root/of-ctrl-universal.apk
 cp -a "$H/dist/OpenFluxAndroid-1.2.0-androidApp-universal-release.apk" "$UNIV"
 run() {
   if [ -n "${OF_DEBUG:-}" ]; then
@@ -126,6 +130,13 @@ resum() { (cd "$H/dist" && sha256sum *.apk > SHA256SUMS.txt); }
 
 echo "--- baseline (must be AUDIT_OK)"
 echo "  $(run)"
+# Leave the tree in place for inspection. A red baseline is a harness bug, not
+# a finding, and the way to find out which one is to look at $H while it still
+# exists - by the time the suite finishes it has been torn down.
+if [ -n "${OF_STOP_AFTER_BASELINE:-}" ]; then
+  echo "(OF_STOP_AFTER_BASELINE: останавливаюсь, дерево осталось в $H)"
+  exit 0
+fi
 
 echo "--- 1. five copies of universal, sums regenerated"
 reset_dist

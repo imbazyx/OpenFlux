@@ -761,8 +761,12 @@ elif [ "$SRC_FOUND" -ne 5 ]; then
 else
   ok "все 5 путей сборки на месте, файлов: $NSRC"
   while IFS= read -r apk; do
+    # -not -path '*/.git/*' is not tidiness. `$ROOT/OpenFlux/.git/index` is a file
+    # inside the tree, and any git operation rewrites it with a current mtime,
+    # so the freshness check reported the build as stale after nothing had
+    # changed. .git holds no sources.
     n=$(find "$ROOT/androidApp/src" "$ROOT/shared/src" "$ROOT/OpenFlux" \
-            -type f -newer "$apk" 2>/dev/null | grep -c .)
+            -type f -not -path '*/.git/*' -newer "$apk" 2>/dev/null | grep -c .)
     [ "$n" -eq 0 ] && ok "$(basename "$apk"): новее исходников" \
                    || bad "$(basename "$apk"): $n файлов исходников новее — сборка устарела"
   done <<< "$(apks)"
