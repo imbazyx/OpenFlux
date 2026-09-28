@@ -470,11 +470,33 @@ while IFS= read -r apk; do
   # #E01B3C -> 3c 1b e0 ff; the old blues must be gone.
   nxml=$(find "$T/rs" -name '*.xml' | grep -c .)
   if [ "$nxml" -gt 0 ]; then
+    # The gradient is NOT in the launcher icon's own file: aapt2 compiles the
+    # icon to a reference and the two colour ints live in the drawable it points
+    # at (res/ea.xml in this build). Following that chain from shell would mean
+    # writing a linker. What C1 actually allowed was an APK with no launcher
+    # icon at all - every res xml deleted, one 8-byte junk file holding the four
+    # colour bytes - so the icon has to exist for real, and the colours are then
+    # required somewhere in the resources.
+    icon_path=$("$BT/aapt2" dump badging "$apk" 2>/dev/null \
+      | sed -n "s/.*application-icon-160: *'\([^']*\)'.*/\1/p" | head -1)
+    icon_file=""
+    [ -n "$icon_path" ] && icon_file="$T/rs/res/$(basename "$icon_path")"
+    if [ -z "$icon_file" ]; then
+      bad "$name: не удалось определить иконку запуска"
+    elif [ ! -s "$icon_file" ]; then
+      # Two res/ in the path on purpose: the zip entries are "res/BW.xml" and
+      # they are unpacked under $T/rs, so the file lands at $T/rs/res/BW.xml.
+      bad "$name: иконка запуска $icon_path не извлеклась"
+    else
+      isz=$(stat -c%s "$icon_file")
+      [ "$isz" -gt 100 ] && ok "$name: иконка запуска на месте ($isz байт)" \
+                        || bad "$name: иконка запуска подозрительно мала ($isz байт)"
+    fi
     # Per file, never concatenated. `find ... -exec xxd -p {} \; | tr -d '\n'`
     # glued the last bytes of one resource to the first bytes of the next, so a
     # colour absent from the APK entirely was "found" across the seam - and
     # whether it was found depended on readdir order, so the check was flaky
-    # even when it passed.
+    # depended on readdir order, so the check was flaky even when it passed.
     : > "$T/rs/hits.txt"
     while IFS= read -r d; do
       [ -f "$d" ] || continue

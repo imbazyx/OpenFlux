@@ -255,6 +255,18 @@ install_core
 cp -a "$SRC/androidApp/src" "$H/androidApp/src" 2>/dev/null
 cp -a "$SRC/shared/src" "$H/shared/src" 2>/dev/null
 
+echo "--- 19. launcher icon removed, junk res xml carries the colour bytes"
+reset_dist
+for a in "$H"/dist/*.apk; do
+  T2=$(mktemp -d); unzip -o -q "$a" -d "$T2"
+  icon=$(find "$T2/res" -maxdepth 1 -name '*.xml' -size +100c | head -1)
+  rm -f "$icon"
+  printf '\xd9\x2f\x8b\xff\x3c\x1b\xe0\xff' > "$T2/res/zz-junk.xml"
+  (cd "$T2" && zip -qr "$a" .); rm -rf "$T2"
+done
+resum
+echo "  $(run)"
+
 # --- source-destroying cases last: irreversible, and everything above needs the
 # --- trees intact.
 echo "--- 5. source tree removed"
