@@ -42,9 +42,22 @@ the core.
 ### Changed
 
 - Launcher icon recoloured purple to red.
+- **One repository.** `OpenFlux/` and `shared/` are ordinary directories here
+  instead of submodules. The pointer to a single exact commit broke twice: once
+  naming commits that existed in no repository, once going stale after a rebase.
+  Both failures surfaced only when a push was rejected. A clone is now buildable
+  immediately, with no `--recurse-submodules`.
+- Line endings are pinned to LF by `.gitattributes`, and `core.autocrlf` is left
+  unset. A CRLF in a shell script made bash reject it outright
+  (`set: pipefail: invalid option name`) and killed the build on its first line.
+- Fixed the core's `.gitignore`: the rule `openflux`, meant for the built
+  binary, also matched any path component named `openflux` — including the iOS
+  app's source directory, dropping twelve files. Because `core.ignorecase` is
+  true on Windows and false on Linux, the same repository carried those sources
+  on one platform and not the other.
 - The audit now fails (rather than warns) on a certificate-pin override, and
-  verifies the package name, the core submodule's cleanliness, and that no
-  artifact is future-dated.
+  verifies the package name, that the working tree — core sources included —
+  matches HEAD, and that no artifact is future-dated.
 
 ### Known limitations
 
@@ -76,7 +89,7 @@ with his agreement.
 - `shared/` and `OpenFlux/` as git submodules ([OpenFluxClientShared](https://github.com/p1neappleXpress/OpenFluxClientShared)
   and the [OpenFlux](https://github.com/p1neappleXpress/OpenFlux) core), so
   this app always builds against one pinned, single copy of each instead of
-  a vendored one.
+  a vendored one. *(Both became ordinary directories in 1.2.0 — see above.)*
 - `.github/workflows/release.yml`: a `v*` tag builds and signs a release
   APK and publishes it here.
 

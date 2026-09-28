@@ -23,8 +23,10 @@ and Android version, and the steps to reproduce. A log excerpt from
 own **Logs** screen is the same data.
 
 You can expect an acknowledgement, and an assessment with any fix or
-mitigation. Fixes for the core live in the `OpenFlux` submodule, so a
-vulnerability there should say which repository and commit it was seen in.
+mitigation. The core's sources live in this repository, under `OpenFlux/`, and
+are also released separately as
+[imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux) — so a vulnerability
+there should say which repository and commit it was seen in.
 
 ## Signing
 

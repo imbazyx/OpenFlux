@@ -1,9 +1,9 @@
 name: Release
 
-# A tag like v1.2.3 builds and signs the release APKs from the OpenFlux/ and
-# shared/ submodules pinned in that commit, and publishes them as a GitHub
-# release. "Run workflow" builds the same APKs as artifacts without
-# publishing, for a dry run (unsigned unless the keystore secrets are set).
+# A tag like v1.2.3 builds and signs the release APKs from this commit and
+# publishes them as a GitHub release. "Run workflow" builds the same APKs as
+# artifacts without publishing, for a dry run (unsigned unless the keystore
+# secrets are set).
 on:
   push:
     tags: ['v*']
@@ -32,8 +32,10 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      # OpenFlux/ and shared/ are ordinary directories in this repository.
+      # `submodules: recursive` would make checkout fail outright, and it is
+      # the kind of setting that survives a structural change silently looking
+      # harmless in review.
 
       - name: Version
         id: version
