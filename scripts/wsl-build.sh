@@ -24,13 +24,25 @@ SRC=$(cd "$SELF/.." && pwd)
 # mount is slow) and line endings, neither of which the staging handles anyway.
 case "$SRC" in /mnt/*) ;; *) echo "note: $SRC is not a /mnt path; building anyway" >&2 ;; esac
 WORK=$HOME/build/OpenFluxAndroid
-KEY=$HOME/build/openflux-local.jks
-KS_PASS=${KS_PASS:-openflux-local}
-KS_ALIAS=${KS_ALIAS:-openflux}
 
 [ -f "$HOME/ofbuild.env" ] || { echo "run wsl-toolchain.sh first" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "$HOME/ofbuild.env"
+
+# The signing identity lives in $HOME/ofsign.env, never in this repository: a
+# file holding a signing password inside the tree would be picked up by the very
+# audit that exists to prove no secrets shipped. The key is the one public
+# releases are signed with, so what a maintainer builds and what CI publishes
+# are the same bytes. Override OF_KEYSTORE/OF_KS_PASS/OF_KS_ALIAS in the
+# environment to sign with something else.
+if [ -f "$HOME/ofsign.env" ]; then
+  # shellcheck disable=SC1090
+  source "$HOME/ofsign.env"
+fi
+KEY=${OF_KEYSTORE:-$HOME/build/openflux-release.jks}
+KS_PASS=${OF_KS_PASS:-}
+KS_ALIAS=${OF_KS_ALIAS:-openflux}
+[ -n "$KS_PASS" ] || { echo "no signing password: create $HOME/ofsign.env (see README, Signing)" >&2; exit 1; }
 
 # The real identity of the hand-patched core, read from the checkout BEFORE
 # staging. build-android-core.sh derives its stamp from `git describe` in a
@@ -117,13 +129,14 @@ if [ ! -f "$KEY" ]; then
     KS_PASS=$KS_PASS keytool -genkeypair -v -keystore "$KEY" \
       -storepass:env KS_PASS -keypass:env KS_PASS \
       -alias "$KS_ALIAS" -keyalg RSA -keysize 4096 -validity 10950 \
-      -dname "CN=OpenFlux Local, OU=Personal, O=OpenFlux, L=-, ST=-, C=RU" >/dev/null 2>&1
+      -dname "CN=OpenFlux, OU=Release, O=OpenFlux, L=Internet, ST=Internet, C=RU" >/dev/null 2>&1
     chmod 600 "$KEY"
   else
     echo "no signing key at $KEY" >&2
-    echo "it is what every personal build is signed with, and losing it means the" >&2
-    echo "next build cannot be installed over the current one. Re-run with" >&2
-    echo "OF_ALLOW_NEW_KEY=1 only if a brand new identity is intended." >&2
+    echo "It is the key every release is signed with. Losing it means the next" >&2
+    echo "release cannot be installed over the current one, ever - the only" >&2
+    echo "recovery is asking users to uninstall. Back it up somewhere safe." >&2
+    echo "Re-run with OF_ALLOW_NEW_KEY=1 only if a brand new identity is intended." >&2
     exit 1
   fi
 fi
