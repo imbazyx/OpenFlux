@@ -33,11 +33,10 @@ EXPECTED_CODE=$(echo "$EXPECTED_VER" | awk -F. '{printf "%d", $1*10000 + $2*100 
 # installed copy - silently, because the old APKs are still self-consistent.
 # Override only when deliberately switching to the project's CI key.
 EXPECTED_CERT=${OF_EXPECTED_CERT:-a33486233b8c50e4ddffd09c13622aafe5ca9d97a5c4a2e655505abb6e9b9144}
-# An env override is convenient but must not be a silent way to void the whole
-# point of pinning: re-signing all five APKs with a rogue key and exporting
-# OF_EXPECTED_CERT=<that key> used to yield AUDIT_OK on an identical dist.
-# Shape-check it here and print the value in force, so it cannot be overridden
-# by accident or by a stale value in someone's profile.
+# A regular assignment is not a pin. ofbuild.env is sourced further down and can
+# reassign it - that is exactly how a dist re-signed with a rogue key got
+# AUDIT_OK with no warning at all. readonly is the whole fix: the source now
+# fails loudly instead of quietly voiding the check.
 if ! [[ "$EXPECTED_CERT" =~ ^[0-9a-f]{64}$ ]]; then
   echo "OF_EXPECTED_CERT is not a 64-char lowercase hex digest: $EXPECTED_CERT" >&2
   exit 2
@@ -45,10 +44,18 @@ fi
 if [ -n "${OF_EXPECTED_CERT:-}" ]; then
   echo "!! ВНИМАНИЕ: OF_EXPECTED_CERT переопределён: $EXPECTED_CERT"
 fi
+readonly EXPECTED_CERT
 
 [ -f "$HOME/ofbuild.env" ] || { echo "run wsl-toolchain.sh first" >&2; exit 1; }
 # shellcheck disable=SC1090
 source "$HOME/ofbuild.env"
+# Re-check after the source rather than trusting the one above: the source is
+# untrusted input, and readonly only makes a violation loud in shells that are
+# still running. If the pin survived, this is a no-op.
+if ! [[ "$EXPECTED_CERT" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "pin повреждён после source ofbuild.env: $EXPECTED_CERT" >&2
+  exit 2
+fi
 BT=$ANDROID_HOME/build-tools/35.0.0
 
 # Private scratch: a fixed /tmp/audit path collides between concurrent runs
@@ -117,11 +124,18 @@ while IFS= read -r apk; do
   want=0
   for abi in $abis; do
     want=$((want + 1))
-    n=$(printf '%s' "$contents" | grep -cF "lib/$abi/")
-    [ "$n" -gt 0 ] || { miss=$((miss + 1)); echo "       нет lib/$abi/"; }
+    # grep -cF "lib/$abi/" is a substring search over the whole listing, so
+    # "res/zdecoy/lib/x86/keep.txt" satisfied it. An x86 APK with every lib/
+    # entry moved to lib/mips/ was certified "архитектура на месте (x86)" while
+    # shipping no x86 code at all. The exact zip entry is what has to exist.
+    if printf '%s\n' "$contents" | grep -qxF "lib/$abi/libgojni.so"; then
+      :
+    else
+      miss=$((miss + 1)); echo "       нет lib/$abi/libgojni.so"
+    fi
   done
   [ "$miss" -eq 0 ] && ok "$name: архитектура на месте ($abis)" \
-                    || bad "$name: не хватает $miss из $want каталогов lib/<abi>/"
+                    || bad "$name: не хватает $miss из $want библиотек lib/<abi>/libgojni.so"
   # Presence alone is not enough: a universal APK re-signed and dropped into an
   # arm64 slot satisfies every line above, because the named ABI is there - it
   # is just there alongside the other three. A single-ABI build must carry the
@@ -130,7 +144,7 @@ while IFS= read -r apk; do
     extra=""
     for abi in arm64-v8a armeabi-v7a x86 x86_64; do
       case " $abis " in *" $abi "*) continue ;; esac
-      printf '%s' "$contents" | grep -qF "lib/$abi/" && extra="$extra $abi"
+      printf '%s\n' "$contents" | grep -qxF "lib/$abi/libgojni.so" && extra="$extra $abi"
     done
     [ -z "$extra" ] && ok "$name: посторонних ABI нет" \
                     || bad "$name: кроме $abis внутри есть$extra — это universal под чужим именем"
@@ -225,6 +239,25 @@ while IFS= read -r apk; do
     [ "$magic" = "7f454c46" ] || { bad_so=$((bad_so+1)); echo "       $abi: не ELF (magic $magic) — вместо .so текст?"; continue; }
     sz=$(stat -c%s "$so")
     [ "$sz" -gt 1000000 ] || { bad_so=$((bad_so+1)); echo "       $abi: .so всего $sz байт"; }
+    # A real ELF, not a bag of strings prefixed with the magic. readelf -h has
+    # to parse the header and readelf -d the program headers; 1.5 MB of "B"
+    # behind \x7fELF satisfied every marker check below while exporting
+    # nothing. If readelf is missing this degrades to the old behaviour rather
+    # than failing the build on a missing optional tool.
+    if command -v readelf >/dev/null 2>&1; then
+      if ! readelf -h "$so" >/dev/null 2>&1; then
+        bad_so=$((bad_so+1)); echo "       $abi: readelf -h не разобрал файл — это не ELF"
+        continue
+      fi
+      readelf -d "$so" 2>/dev/null | grep -q 'SONAME' \
+        || { bad_so=$((bad_so+1)); echo "       $abi: нет DT_SONAME — похоже на не библиотеку"; }
+      # The JNI entry points must be real dynamic symbols, not string data.
+      if readelf --dyn-syms "$so" 2>/dev/null | grep -q 'Java_io_openflux'; then
+        :
+      else
+        bad_so=$((bad_so+1)); echo "       $abi: Java_io_openflux нет в таблице динамических символов"
+      fi
+    fi
     strings "$so" > "$T/so.strings"
     for sym in 'Java_io_openflux' '_cgoexp'; do
       grep -qF "$sym" "$T/so.strings" || { bad_so=$((bad_so+1)); echo "       $abi: нет символа $sym"; }
@@ -273,6 +306,33 @@ while IFS= read -r apk; do
   fi
 done <<< "$(apks)"
 
+echo "== 5a. рабочее дерево ядра неприкосновенно =="
+# A matching HEAD proves the APK was built from SOME committed state. It says
+# nothing about the files in front of the build: appending one line to
+# logging.go, backdating its mtime and shipping it gave AUDIT_OK, because the
+# whole chain was "40-hex in the dex" + "rev-parse HEAD" + mtime, and touch
+# -d breaks the last link. The build already stamps +patched for a dirty tree;
+# this is the same fact asserted on the tree itself.
+core_dirty=$(git -C "$ROOT/OpenFlux" status --porcelain --untracked-files=normal 2>/dev/null)
+if [ -z "$core_dirty" ]; then
+  ok "ядро OpenFlux: рабочее дерево чистое"
+else
+  bad "ядро OpenFlux: есть незакоммиченные изменения — APK не соответствует исходникам"
+  printf '%s\n' "$core_dirty" | head -5 | sed 's/^/        /'
+  echo "        (сначала закоммитьте, потом пересоберите: отпечаток берётся с HEAD)"
+fi
+for mod in shared; do
+  if [ -d "$ROOT/$mod/.git" ] || [ -f "$ROOT/$mod/.git" ]; then
+    d=$(git -C "$ROOT/$mod" status --porcelain --untracked-files=normal 2>/dev/null)
+    if [ -z "$d" ]; then
+      ok "модуль $mod: рабочее дерево чистое"
+    else
+      bad "модуль $mod: есть незакоммиченные изменения"
+      printf '%s\n' "$d" | head -5 | sed 's/^/        /'
+    fi
+  fi
+done
+
 echo "== 5b. go vet по ядру =="
 # mobile/ is a SEPARATE module with its own go.mod, so a plain ./... in the
 # core skips it - and it is the module holding the JNI bridge actually shipped
@@ -315,10 +375,40 @@ while IFS= read -r apk; do
   while IFS= read -r d; do
     ndex=$((ndex + 1))
     m=$(head -c4 "$d" | xxd -p)
-    [ "$m" = "6465780a" ] || { badmagic=$((badmagic + 1)); echo "       $(basename "$d"): magic $m, не dex"; }
+    [ "$m" = "6465780a" ] || { badmagic=$((badmagic + 1)); echo "       $(basename "$d"): magic $m, не dex"; continue; }
+    # The magic and the size are still a string bag's best friends: 2.5 MB of
+    # "A" behind a valid "dex\n035\0" header, carrying the SHA and the marker
+    # strings, certified the whole APK while containing zero runnable code.
+    # The dex header stores its own file_size at 0x20 and the number of class
+    # definitions at 0x60; a real dex has both, a padded one does not.
+    fsz=$(od -An -tu4 -j32 -N4 "$d" | tr -d ' \n')
+    asz=$(stat -c%s "$d")
+    if [ -n "$fsz" ] && [ "$fsz" -gt 0 ] 2>/dev/null && [ "$fsz" -eq "$asz" ]; then
+      :
+    else
+      badmagic=$((badmagic + 1))
+      echo "       $(basename "$d"): размер в заголовке $fsz != фактический $asz"
+    fi
+    # A dex with no classes is a dex that cannot run anything.
+    if command -v dexdump >/dev/null 2>&1; then
+      if dexdump -f "$d" 2>/dev/null | grep -q 'class_defs_size'; then
+        :
+      else
+        badmagic=$((badmagic + 1))
+        echo "       $(basename "$d"): dexdump не разобрал dex"
+      fi
+    fi
   done <<< "$(find "$T/dx" -name 'classes*.dex' | sort)"
+  # Real Kotlin, not a shell of empty packages: every .go reduced to a bare
+  # "package X" still vetted clean, because go vet on an empty package is
+  # vacuously clean.
+  nclasses=$(cat "$T/dx"/*.dex 2>/dev/null | grep -ao 'Lio/openflux/\|Landroidx/\|Lkotlin/' | wc -l)
+  if [ "$nclasses" -lt 100 ]; then
+    badmagic=$((badmagic + 1))
+    echo "       всего $nclasses дескрипторов типов — dex без кода приложения"
+  fi
   if [ "$ndex" -ge 1 ] && [ "$badmagic" -eq 0 ] && [ "$dexsz" -gt 2000000 ]; then
-    ok "$name: настоящий dex ($ndex шт., $dexsz байт)"
+    ok "$name: настоящий dex ($ndex шт., $dexsz байт, $nclasses дескрипторов)"
   else
     bad "$name: dex подозрителен ($ndex шт., $dexsz байт, битых $badmagic)"
   fi
@@ -345,17 +435,26 @@ while IFS= read -r apk; do
   # #E01B3C -> 3c 1b e0 ff; the old blues must be gone.
   nxml=$(find "$T/rs" -name '*.xml' | grep -c .)
   if [ "$nxml" -gt 0 ]; then
-    find "$T/rs" -name '*.xml' -exec xxd -p {} \; | tr -d '\n' > "$T/rs/all.hex"
-    if [ ! -s "$T/rs/all.hex" ]; then
+    # Per file, never concatenated. `find ... -exec xxd -p {} \; | tr -d '\n'`
+    # glued the last bytes of one resource to the first bytes of the next, so a
+    # colour absent from the APK entirely was "found" across the seam - and
+    # whether it was found depended on readdir order, so the check was flaky
+    # even when it passed.
+    : > "$T/rs/hits.txt"
+    while IFS= read -r d; do
+      [ -f "$d" ] || continue
+      xxd -p "$d" >> "$T/rs/hits.txt" 2>/dev/null && printf '\n' >> "$T/rs/hits.txt"
+    done < <(find "$T/rs" -name '*.xml')
+    if [ ! -s "$T/rs/hits.txt" ]; then
       bad "$name: xxd не отработал (не установлен?)"
     else
       miss=0
       for pat in d92f8bff 3c1be0ff; do
-        n=$(grep -cF "$pat" "$T/rs/all.hex")
+        n=$(grep -cF "$pat" "$T/rs/hits.txt")
         [ "$n" -gt 0 ] || { miss=$((miss+1)); echo "       нет цвета $pat"; }
       done
       for pat in ff7c4fff 9e4d31ff; do
-        n=$(grep -cF "$pat" "$T/rs/all.hex")
+        n=$(grep -cF "$pat" "$T/rs/hits.txt")
         [ "$n" -eq 0 ] || { miss=$((miss+1)); echo "       остался старый синий $pat"; }
       done
       [ "$miss" -eq 0 ] && ok "$name: градиент иконки фиолетовый→красный" \
