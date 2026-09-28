@@ -216,6 +216,12 @@ class CoreService : VpnService() {
         return Notification.Builder(this, CORE_CHANNEL)
             .setContentTitle("OpenFlux")
             .setContentText(text)
+            // Without this the notice is a single ellipsised line. The per-app
+            // degrade message is ~100 characters and the part that carries the
+            // meaning ("весь трафик телефона") is the part at the end, so it was
+            // exactly the half that got cut. The collapsed line still shows the
+            // start; the expanded one now shows all of it.
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setSmallIcon(R.drawable.ic_openflux_notification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
