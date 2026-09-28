@@ -56,12 +56,17 @@ class AppSelectionActivity : Activity() {
     private lateinit var only: CheckBox
     private lateinit var search: EditText
     private lateinit var summary: TextView
+    private lateinit var resetBtn: Button
+    private lateinit var saveBtn: Button
     private var loaded = false
     private var loading = false
     private var loadError = false
 
     /** Set by the checkbox listener, so loader corrections are not mistaken for user edits. */
     private var userToggledOnly = false
+
+    /** True while the code itself changes the checkbox, so the listener stays quiet. */
+    private var suppressOnlyListener = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -100,11 +105,22 @@ class AppSelectionActivity : Activity() {
         })
         only.setOnCheckedChangeListener { _, _ ->
             // Distinguish a real tap from our own setChecked() corrections, which
-            // must not count as the user having made a choice.
-            userToggledOnly = true
+            // must not count as the user having made a choice. The flag alone was
+            // not enough: our own correction fires this very listener, so it used
+            // to set userToggledOnly itself and quietly disarm the guard for any
+            // second load. suppressOnlyListener is what actually separates them.
+            if (!suppressOnlyListener) userToggledOnly = true
             sync()
         }
         sync()
+    }
+
+    /** Sets the checkbox without it counting as the user having toggled it. */
+    private fun setOnlyChecked(value: Boolean) {
+        if (only.isChecked == value) return
+        suppressOnlyListener = true
+        only.isChecked = value
+        suppressOnlyListener = false
     }
 
     /**
@@ -202,7 +218,14 @@ class AppSelectionActivity : Activity() {
 
         only = CheckBox(this).apply {
             text = "Только выбранные приложения"
-            isChecked = AppSelection.onlySelected(this@AppSelectionActivity) && picked.isNotEmpty()
+            // Seeded from the NORMALISED rule, exactly what sync() and dirty()
+            // compare against. Seeding from the raw stored rule (only=true with
+            // a non-empty set) left the form dirty before the user touched
+            // anything, so Back asked "discard your changes?" over a rule that
+            // would have degraded to a full tunnel anyway.
+            isChecked = AppSelection.onlySelected(this@AppSelectionActivity) &&
+                AppSelection.selected(this@AppSelectionActivity)
+                    .count { it != packageName && isInstalled(it) } > 0
             setTextColor(primary)
         }
         headerColumn.addView(only)
@@ -225,7 +248,7 @@ class AppSelectionActivity : Activity() {
         root.addView(summary)
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
-        row.addView(Button(this).apply {
+        val resetBtn = Button(this).apply {
             text = "Сбросить"
             setOnClickListener {
                 // Clears the form only, it does not save. A button that commits
@@ -239,8 +262,9 @@ class AppSelectionActivity : Activity() {
                 (list.adapter as? Adapter)?.showAll()
                 sync()
             }
-        })
-        row.addView(Button(this).apply {
+        }
+        row.addView(resetBtn)
+        val saveBtn = Button(this).apply {
             text = "Сохранить"
             setOnClickListener {
                 // An enabled switch with nothing ticked would leave the phone
@@ -254,9 +278,30 @@ class AppSelectionActivity : Activity() {
                 ).show()
                 finish()
             }
-        })
+        }
+        row.addView(saveBtn)
         root.addView(row)
+        resetBtn.isEnabled = false
+        saveBtn.isEnabled = false
         return root
+    }
+
+    /** True when the package is installed and is not us. */
+    private fun isInstalled(pkg: String): Boolean =
+        pkg != packageName &&
+            runCatching { packageManager.getApplicationInfo(pkg, 0) }.isSuccess
+
+    /**
+     * Both buttons stay disabled until the app list is in. During the load the
+     * list is empty and the summary says "Загрузка…", so an enabled "Сохранить"
+     * would write an empty allow list over a selection the user never even saw -
+     * silently, and then claim "Сохранено". Nothing on screen says what Save
+     * would persist in that window, so the honest answer is to not offer it.
+     */
+    private fun enableActions() {
+        if (!::saveBtn.isInitialized) return
+        saveBtn.isEnabled = true
+        resetBtn.isEnabled = true
     }
 
     private fun themeColor(attr: Int, fallback: Int): Int {
@@ -273,16 +318,11 @@ class AppSelectionActivity : Activity() {
         // saved count included apps that had been uninstalled, so this screen and
         // Settings answered the same question differently.
         val willPerApp = only.isChecked && picked.isNotEmpty()
-        val kept = picked.count { it != packageName }
-        val saved = AppSelection.selected(this@AppSelectionActivity)
-        val savedOnly = AppSelection.onlySelected(this@AppSelectionActivity)
+        val kept = picked.count { isInstalled(it) }
         // What is stored, filtered to what still exists - the same filter
         // CoreService and perAppSummary() apply, so all three agree.
-        val savedLive = saved.filter { pkg ->
-            pkg != packageName &&
-                runCatching { packageManager.getApplicationInfo(pkg, 0) }.isSuccess
-        }
-        val savedPerApp = savedOnly && savedLive.isNotEmpty()
+        val savedLive = AppSelection.selected(this@AppSelectionActivity).filter { isInstalled(it) }
+        val savedPerApp = AppSelection.onlySelected(this@AppSelectionActivity) && savedLive.isNotEmpty()
         val pending = if (!willPerApp) {
             "весь трафик телефона"
         } else {
@@ -304,17 +344,13 @@ class AppSelectionActivity : Activity() {
 
     /** True when the form differs from what is stored, i.e. Back would lose work. */
     private fun dirty(): Boolean {
-        val saved = AppSelection.selected(this@AppSelectionActivity)
-        val savedOnly = AppSelection.onlySelected(this@AppSelectionActivity)
-        val savedLive = saved.filter { pkg ->
-            pkg != packageName &&
-                runCatching { packageManager.getApplicationInfo(pkg, 0) }.isSuccess
-        }
+        val savedLive = AppSelection.selected(this@AppSelectionActivity).filter { isInstalled(it) }
         // Compare against the same normalised rule the summary shows. Comparing
         // against the raw stored set made dirty() permanently true for the most
         // common real case - a saved rule whose apps were all uninstalled - so
         // Back asked "discard your changes?" when the user had touched nothing.
-        val sameMode = only.isChecked == (savedOnly && savedLive.isNotEmpty())
+        val sameMode = only.isChecked ==
+            (AppSelection.onlySelected(this@AppSelectionActivity) && savedLive.isNotEmpty())
         return !sameMode || picked.toSet() != savedLive.toSet()
     }
 
@@ -366,6 +402,15 @@ class AppSelectionActivity : Activity() {
                     // saying "Загрузка…" over an error the user cannot act on.
                     loadError = true
                     loaded = true
+                    // Prune here too. The error path used to return before
+                    // retainAll, so `picked` kept packages we never managed to
+                    // list: the summary then advertised "N приложений" for a
+                    // rule that the tunnel would silently degrade to a full one,
+                    // and dirty() stayed true forever so Back kept nagging.
+                    val live = picked.filterTo(HashSet()) { isInstalled(it) }
+                    if (picked.size != live.size) picked.retainAll(live)
+                    if (picked.isEmpty() && !userToggledOnly) setOnlyChecked(false)
+                    enableActions()
                     sync()
                     return@runOnUiThread
                 }
@@ -383,8 +428,9 @@ class AppSelectionActivity : Activity() {
                 // the search field are live during the load, and forcing the box
                 // off after the user ticked it made the screen look dead - every
                 // later tap on the list is gated on this box.
-                if (picked.isEmpty() && !userToggledOnly) only.isChecked = false
+                if (picked.isEmpty() && !userToggledOnly) setOnlyChecked(false)
                 loaded = true
+                enableActions()
                 // Re-apply the search rather than dumping the whole list: a
                 // query typed during the load already returned nothing because
                 // items was still empty, and showAll() would then reveal every
