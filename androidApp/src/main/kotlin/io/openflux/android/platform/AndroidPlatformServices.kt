@@ -200,7 +200,12 @@ class AndroidPlatformServices(
 
     // Not private: AppSelection.save() ticks the revision through [instance].
     companion object {
-        private const val RELEASE_REPO = "p1neappleXpress/OpenFluxAndroid"
+        // ПОДГОТОВКА К ПУБЛИКАЦИИ: подставьте свой аккаунт GitHub перед
+        // публикацией. Пока стоит заглушка — latestRelease() вернёт null
+        // (там getOrNull), и приложение просто не предложит обновление.
+        // Оставлять здесь p1neappleXpress нельзя: форк показывал бы чужие
+        // релизы как свои обновления.
+        private const val RELEASE_REPO = "REPLACE_WITH_GITHUB_ACCOUNT/OpenFluxAndroid"
         private const val TAG_PREFIX = "v"
         private const val MAX_QR_IMAGE = 2048
         private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif", "webp")
