@@ -1,6 +1,6 @@
 # OpenFluxAndroid
 
-Android client for [OpenFlux](https://github.com/REPLACE_WITH_GITHUB_ACCOUNT/OpenFlux):
+Android client for [OpenFlux](https://github.com/imbazyx/OpenFlux):
 system VPN or local SOCKS5, multi-transport sessions with automatic
 failover, AES-256-GCM encryption, and the in-app flow for passing a
 transport's check (SmartCaptcha, a login wall) through the built-in browser.
@@ -8,10 +8,10 @@ transport's check (SmartCaptcha, a login wall) through the built-in browser.
 You can also choose **which apps go through the tunnel** — everything, or only
 a list you pick — from the app-selection screen.
 
-> **Note before you publish:** this fork has not been given its final GitHub
-> account yet. Every `REPLACE_WITH_GITHUB_ACCOUNT` placeholder below must be
-> replaced with your own account, and the two submodules pushed to it, before
-> this repository is made public. See
+> **Note before you publish:** the two submodules (`OpenFlux/`, `shared/`) are
+> deliberately not the originals' repositories — this fork carries its own
+> commits in both, and they must exist under `imbazyx` before this repository
+> can be cloned with `--recurse-submodules`. See
 > [`docs/PUBLISH-CHECKLIST.md`](docs/PUBLISH-CHECKLIST.md).
 
 This repository's app code and UI (the `androidApp/` and `shared/` modules)
@@ -25,7 +25,7 @@ tag.
 ## Getting the code
 
 ```bash
-git clone --recurse-submodules https://github.com/REPLACE_WITH_GITHUB_ACCOUNT/OpenFluxAndroid.git
+git clone --recurse-submodules https://github.com/imbazyx/OpenFluxAndroid.git
 ```
 
 Already cloned without `--recurse-submodules`?
@@ -36,10 +36,10 @@ git submodule update --init --recursive
 
 This checks out two submodules:
 
-- `shared/` → [OpenFluxClientShared](https://github.com/REPLACE_WITH_GITHUB_ACCOUNT/OpenFluxClientShared),
+- `shared/` → [OpenFluxClientShared](https://github.com/imbazyx/OpenFluxClientShared),
   the Compose Multiplatform UI and models shared with
-  [OpenFluxDesktop](https://github.com/REPLACE_WITH_GITHUB_ACCOUNT/OpenFluxDesktop).
-- `OpenFlux/` → [OpenFlux](https://github.com/REPLACE_WITH_GITHUB_ACCOUNT/OpenFlux), the
+  [OpenFluxDesktop](https://github.com/imbazyx/OpenFluxDesktop).
+- `OpenFlux/` → [OpenFlux](https://github.com/imbazyx/OpenFlux), the
   core this app embeds as a library (gomobile).
 
 ## Building
