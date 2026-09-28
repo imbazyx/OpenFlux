@@ -425,13 +425,24 @@ while IFS= read -r apk; do
       echo "       $(basename "$d"): размер в заголовке $fsz != фактический $asz"
     fi
     # A dex with no classes is a dex that cannot run anything.
-    if command -v dexdump >/dev/null 2>&1; then
-      if dexdump -f "$d" 2>/dev/null | grep -q 'class_defs_size'; then
+    # Use $BT/dexdump, not bare dexdump: dexdump ships in build-tools and is
+    # NOT on PATH here, so `command -v dexdump` was false and this whole block
+    # never ran - a check that looks real and checks nothing. If the tool is
+    # genuinely absent, say so rather than skipping quietly.
+    if [ -x "$BT/dexdump" ]; then
+      # grep -c, not grep -q: under `set -o pipefail` a `grep -q` that exits at
+      # the first match kills dexdump with SIGPIPE and the pipeline reports
+      # failure - so this reported "dexdump не разобрал" on a perfectly good
+      # dex. It is the same trap readelf fell into above.
+      ncd=$("$BT/dexdump" -f "$d" 2>/dev/null | grep -c 'class_defs_size' || true)
+      if [ "${ncd:-0}" -gt 0 ] 2>/dev/null; then
         :
       else
         badmagic=$((badmagic + 1))
         echo "       $(basename "$d"): dexdump не разобрал dex"
       fi
+    else
+      echo "       ВНИМАНИЕ: dexdump не найден в $BT — проверка структуры dex пропущена"
     fi
   done <<< "$(find "$T/dx" -name 'classes*.dex' | sort)"
   # Real Kotlin, not a shell of empty packages: every .go reduced to a bare

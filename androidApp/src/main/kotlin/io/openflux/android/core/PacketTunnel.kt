@@ -105,13 +105,17 @@ internal class PacketTunnel(
                 if (active) onProblem("DNS: сервер $dnsServer не ответил")
                 return
             }
-            // Clear it. onProblem was write-only: the first failed lookup stuck
-            // its text on the notification for the rest of the connection, so a
-            // single five-second timeout kept claiming DNS was broken long after
-            // it had recovered. An empty message is how the caller is told to
-            // forget; the field is initialised to "" for the same reason.
-            if (active) onProblem("")
             inject(dnsResponse(request, answer))
+            // Clear it, and only after the answer is on its way to the TUN.
+            // onProblem was write-only: the first failed lookup stuck its text
+            // on the notification for the rest of the connection, so a single
+            // five-second timeout kept claiming DNS was broken long after it
+            // had recovered. An empty message is how the caller is told to
+            // forget; the field is initialised to "" for the same reason.
+            // Still not race-free - a slower failure started earlier can land
+            // after this and re-arm the message - but strictly better than
+            // never clearing it.
+            if (active) onProblem("")
         } catch (e: IOException) {
             if (active) onProblem("DNS: ${e.message}")
         }

@@ -326,8 +326,19 @@ class AppSelectionActivity : Activity() {
         // Settings answered the same question differently.
         val willPerApp = only.isChecked && picked.isNotEmpty()
         val kept = picked.count { isInstalled(it) }
-        // What is stored, filtered to what still exists - the same filter
-        // CoreService and perAppSummary() apply, so all three agree.
+        // What is stored, filtered to what still exists.
+        //
+        // This is the same expression as in AndroidPlatformServices and
+        // CoreService, but NOT the same rule, and the difference is real:
+        // CoreService also models VpnService.Builder.verifyApp rejecting a
+        // package, and degrades to a full tunnel when it does. This screen and
+        // perAppSummary() only ever ask getApplicationInfo, so a package the
+        // builder refuses - a work-profile app, an app from a secondary user,
+        // or one uninstalled between the check and establish() - is reported
+        // here as selected while the tunnel is actually carrying the whole
+        // phone. The window is one connection, and CoreService rewrites the
+        // stored rule when it happens, so it self-corrects. Asserting that all
+        // three agree was wrong; they agree on installation, not on acceptance.
         val savedLive = AppSelection.selected(this@AppSelectionActivity).filter { isInstalled(it) }
         val savedPerApp = AppSelection.onlySelected(this@AppSelectionActivity) && savedLive.isNotEmpty()
         val pending = if (!willPerApp) {
@@ -340,12 +351,25 @@ class AppSelectionActivity : Activity() {
         } else {
             "${pluralApps(savedLive.size)} — остальные напрямую"
         }
+        // "Сейчас сохранено" must describe what is IN the prefs, not the filtered
+        // view of it. A stored only=true with both apps uninstalled printed
+        // "весь трафик телефона" here, which is a statement about the future,
+        // not about the rule that is actually stored and would be applied
+        // tomorrow if the apps came back.
+        val storedRaw = AppSelection.selected(this@AppSelectionActivity)
+        val storedText = if (AppSelection.onlySelected(this@AppSelectionActivity) &&
+            storedRaw.isNotEmpty()
+        ) {
+            "${pluralApps(storedRaw.size)} — остальные напрямую"
+        } else {
+            "весь трафик телефона"
+        }
         summary.text = when {
-            loadError -> "Не удалось прочитать список приложений. Сейчас сохранено: $applied."
+            loadError -> "Не удалось прочитать список приложений. Сейчас сохранено: $storedText."
             !loaded -> "Загрузка списка приложений…"
             willPerApp != savedPerApp || picked.toSet() != savedLive.toSet() ->
-                "Будет применено: $pending.\nСейчас сохранено: $applied."
-            else -> "Сохранено: $applied."
+                "Будет применено: $pending.\nСейчас сохранено: $storedText."
+            else -> "Сохранено: $storedText."
         }
     }
 
@@ -388,14 +412,18 @@ class AppSelectionActivity : Activity() {
         // Always re-read the stored rule: CoreService rewrites it when the chosen
         // apps stop existing, so a summary computed once at onCreate goes stale
         // and starts contradicting the Back dialog, which reads prefs live.
-        if (loaded) {
+        if (loaded && !loadError) {
             sync()
             return
         }
-        // The load takes long enough that a pause/resume inside its window
-        // would otherwise start a second thread, and both would addAll the same
-        // apps into the list: every row twice.
-        if (loaded || loading) return
+        // A failed enumeration used to be permanent: `loaded` stayed true, so
+        // this early-return fired forever and the screen kept its dead buttons
+        // with no way back. A PackageManager hiccup is usually transient, so let
+        // a resume retry it. The buttons stay disabled until a load succeeds.
+        if (loading) return
+        // Retry means retry: clear the previous verdict before loading again.
+        loadError = false
+        loaded = false
         loading = true
         Thread({
             // Without this the throw escapes Thread.run, hits the default
@@ -421,7 +449,15 @@ class AppSelectionActivity : Activity() {
                     // while the only oracle is down is not a repair, it is data
                     // loss. The stale entries stay until a load actually succeeds.
                     if (picked.isEmpty() && !userToggledOnly) setOnlyChecked(false)
-                    enableActions()
+                    // Both buttons stay disabled. With the list missing, every
+                    // isInstalled() on this screen answers false, so the
+                    // checkbox seeds UNCHECKED even though the stored rule says
+                    // only=true with two apps - and Save then writes
+                    // only=false, destroying the rule, while toasting
+                    // "Сохранено". dirty() returns false there too, because it
+                    // filters both sides through the same broken oracle, so Back
+                    // offers no warning either. The list is the whole point of
+                    // this screen; without it there is nothing honest to save.
                     sync()
                     return@runOnUiThread
                 }
