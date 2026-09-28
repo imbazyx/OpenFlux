@@ -3,7 +3,7 @@
 # package of an OpenFlux core checkout, into androidApp/libs/openflux.aar,
 # plus openflux-core.version (branch@commit, shown under Settings → About).
 #
-#   scripts/build-android-core.sh            # uses the OpenFlux/ submodule
+#   scripts/build-android-core.sh            # uses the OpenFlux/ directory
 #   scripts/build-android-core.sh ../OpenFlux # or any other checkout
 #
 # Needs Go, gomobile (go install golang.org/x/mobile/cmd/gomobile@latest) and
@@ -14,7 +14,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 core=$(cd "${1:-$root/OpenFlux}" && pwd)
 [ -d "$core/mobile" ] || {
-  echo "$core has no mobile/ package. Run 'git submodule update --init' or pass the path to an OpenFlux checkout." >&2
+  echo "$core has no mobile/ package. Pass the path to an OpenFlux core checkout that has one." >&2
   exit 1
 }
 out="$root/androidApp/libs"
