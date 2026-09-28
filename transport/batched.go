@@ -132,7 +132,7 @@ func (b *BatchedTransport) Send(data []byte) error {
 	copy(p, data)
 	select {
 	case b.queue <- p:
-		utils.Debugf("[BATCH] Send: enqueued %d bytes (queue %d/%d)",
+		utils.Packetf("[BATCH] Send: enqueued %d bytes (queue %d/%d)",
 			len(p), len(b.queue), cap(b.queue))
 		return nil
 	default:
@@ -150,7 +150,7 @@ func (b *BatchedTransport) Receive(callback func([]byte)) {
 	// Frames here are plaintext and can carry control messages with cookie
 	// jars, so their hexdumps need --sensitive as well as -ddd.
 	b.Transport.Receive(func(data []byte) {
-		utils.Debugf("[BATCH] Recv: %d wire bytes", len(data))
+		utils.Packetf("[BATCH] Recv: %d wire bytes", len(data))
 		if utils.IsVerbose() && utils.Sensitive() {
 			utils.Debugf("[BATCH] Recv wire hexdump:\n%s", hex.Dump(data))
 		}
@@ -162,7 +162,7 @@ func (b *BatchedTransport) Receive(callback func([]byte)) {
 			}
 			return
 		}
-		utils.Debugf("[BATCH] Recv: decoded %d packets", len(pkts))
+		utils.Packetf("[BATCH] Recv: decoded %d packets", len(pkts))
 		b.mu.RLock()
 		cb := b.userCb
 		b.mu.RUnlock()
@@ -171,7 +171,7 @@ func (b *BatchedTransport) Receive(callback func([]byte)) {
 			return
 		}
 		for i, p := range pkts {
-			utils.Debugf("[BATCH] Recv: delivering packet %d/%d size=%d", i+1, len(pkts), len(p))
+			utils.Packetf("[BATCH] Recv: delivering packet %d/%d size=%d", i+1, len(pkts), len(p))
 			if utils.IsVerbose() && utils.Sensitive() {
 				utils.Debugf("[BATCH] packet %d hexdump:\n%s", i+1, hex.Dump(p))
 			}
@@ -197,7 +197,7 @@ func (b *BatchedTransport) flushLoop() {
 			utils.Debugf("[BATCH] flushLoop: stop signal, exiting")
 			return
 		case first = <-b.queue:
-			utils.Debugf("[BATCH] flushLoop: dequeued first packet size=%d (queue %d/%d)",
+			utils.Packetf("[BATCH] flushLoop: dequeued first packet size=%d (queue %d/%d)",
 				len(first), len(b.queue), cap(b.queue))
 		}
 		batch := [][]byte{first}

@@ -62,6 +62,49 @@ func TestSetLevelClamps(t *testing.T) {
 	}
 }
 
+// TestPacketsSwitch covers the switch the mobile bridges flip. The default has
+// to be ON, because that is what makes -d/-ddd behave as they always did for
+// the CLI; and it has to survive this test, because capture() restores the
+// level but nothing restored the switch, so a future SetPackets test would have
+// silently poisoned TestLevels above.
+func TestPacketsSwitch(t *testing.T) {
+	buf := capture(t, LevelDebug)
+	t.Cleanup(func() { SetPackets(true) })
+
+	SetPackets(true)
+	if !PacketsEnabled() {
+		t.Fatal("PacketsEnabled() false with the switch on at LevelDebug")
+	}
+	Packetf("on-line")
+	if !strings.Contains(buf.String(), "on-line") {
+		t.Error("switch on: packet line not printed")
+	}
+
+	// The case that matters: a mobile bridge wants operational debug logs but
+	// not one formatted line per packet. LevelDebug alone cannot express that,
+	// because LevelPackets(1) sits below LevelDebug(2).
+	buf.Reset()
+	SetPackets(false)
+	if PacketsEnabled() {
+		t.Fatal("PacketsEnabled() true with the switch off")
+	}
+	Packetf("off-line")
+	if strings.Contains(buf.String(), "off-line") {
+		t.Error("switch off: packet line still printed")
+	}
+	Debugf("debug-still-on")
+	if !strings.Contains(buf.String(), "debug-still-on") {
+		t.Error("switch off: debug line suppressed too, it should not be")
+	}
+
+	// A lower level must also report the switch as off, or the two gates could
+	// disagree about whether anything would be printed.
+	SetLevel(LevelOff)
+	if PacketsEnabled() {
+		t.Error("PacketsEnabled() true at LevelOff")
+	}
+}
+
 func TestDebugShimsMeanOperationalLogs(t *testing.T) {
 	capture(t, LevelOff)
 	EnableDebug()

@@ -556,6 +556,13 @@ func (t *MailruDocsTransport) closeSession(session *DocSession) bool {
 // tick waits for the next tick or for Stop(). Without the Done() case a
 // watchdog lives on until its next tick - up to 5 minutes for docKeyLoop.
 func (t *MailruDocsTransport) tick(interval time.Duration) bool {
+	// A non-positive interval used to panic under time.NewTicker, which at least
+	// failed loudly. time.NewTimer(0) instead fires immediately, so a
+	// misconfigured KeepAliveInterval would turn this watchdog into a 100% CPU
+	// spin - strictly worse than the crash it replaced. Clamp instead.
+	if interval <= 0 {
+		interval = time.Second
+	}
 	timer := time.NewTimer(interval)
 	defer timer.Stop()
 	select {

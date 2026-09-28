@@ -209,7 +209,7 @@ func (t *DirectTransport) Send(data []byte) error {
 	copy(cp, data)
 	select {
 	case t.queue <- cp:
-		utils.Debugf("[DIRECT] Send: enqueued %d bytes (queue %d/%d)",
+		utils.Packetf("[DIRECT] Send: enqueued %d bytes (queue %d/%d)",
 			len(cp), len(t.queue), cap(t.queue))
 		if utils.IsVerbose() {
 			utils.Debugf("[DIRECT] Send hexdump (%d bytes):\n%s", len(cp), hex.Dump(cp))

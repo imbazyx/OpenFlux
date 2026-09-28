@@ -172,7 +172,7 @@ func (e *EncryptedTransport) Send(data []byte) error {
 	packet = append(packet, nonce...)
 	packet = e.sendAEAD.Seal(packet, nonce, data, header)
 
-	utils.Debugf("[CRYPTO] Send #%d dir=%d plaintext=%d ciphertext=%d nonce=%s",
+	utils.Packetf("[CRYPTO] Send #%d dir=%d plaintext=%d ciphertext=%d nonce=%s",
 		e.sendOK.Load()+1, e.sendDirection, len(data), len(packet), hex.EncodeToString(nonce))
 	// Plaintext frames can carry control messages with cookie jars, so
 	// they are dumped only with --sensitive; ciphertext is what the
@@ -196,7 +196,7 @@ func (e *EncryptedTransport) Send(data []byte) error {
 
 func (e *EncryptedTransport) Receive(callback func([]byte)) {
 	e.Transport.Receive(func(packet []byte) {
-		utils.Debugf("[CRYPTO] Recv raw %d ciphertext bytes", len(packet))
+		utils.Packetf("[CRYPTO] Recv raw %d ciphertext bytes", len(packet))
 		if utils.IsVerbose() {
 			utils.Debugf("[CRYPTO] Recv raw hexdump:\n%s", hex.Dump(packet))
 		}
@@ -229,7 +229,7 @@ func (e *EncryptedTransport) Receive(callback func([]byte)) {
 		}
 		nonceEnd := encryptedHeader + e.receiveAEAD.NonceSize()
 		nonce := packet[encryptedHeader:nonceEnd]
-		utils.Debugf("[CRYPTO] Recv #%d dir=%d nonce=%s cipherLen=%d -> decrypting",
+		utils.Packetf("[CRYPTO] Recv #%d dir=%d nonce=%s cipherLen=%d -> decrypting",
 			e.recvOK.Load()+e.recvFail.Load()+1, header[4], hex.EncodeToString(nonce), len(packet)-nonceEnd)
 		plaintext, err := e.receiveAEAD.Open(nil, nonce, packet[nonceEnd:], header)
 		if err != nil {
@@ -248,7 +248,7 @@ func (e *EncryptedTransport) Receive(callback func([]byte)) {
 			return
 		}
 		e.recvOK.Add(1)
-		utils.Debugf("[CRYPTO] Recv DECRYPT OK #%d dir=%d plaintext=%d bytes nonce=%s",
+		utils.Packetf("[CRYPTO] Recv DECRYPT OK #%d dir=%d plaintext=%d bytes nonce=%s",
 			e.recvOK.Load(), header[4], len(plaintext), hex.EncodeToString(nonce))
 		if utils.IsVerbose() && utils.Sensitive() {
 			utils.Debugf("[CRYPTO] Recv plaintext hexdump:\n%s", hex.Dump(plaintext))
