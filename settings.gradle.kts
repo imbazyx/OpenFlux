@@ -35,7 +35,8 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
-// shared/ is the OpenFluxClientShared git submodule (init with
-// `git submodule update --init --recursive`).
+// shared/ is an ordinary directory in this repository, vendored from
+// OpenFluxClientShared. It carries fixes of its own, so it is deliberately not a
+// submodule pinned to a commit in someone else's repository.
 include(":shared")
 include(":androidApp")

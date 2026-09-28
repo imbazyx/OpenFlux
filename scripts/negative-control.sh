@@ -20,10 +20,9 @@ find "$H/androidApp" -maxdepth 1 -name build -type d -exec rm -rf {} + 2>/dev/nu
 find "$H/scripts" -name '*.sh' -exec sed -i 's/\r$//' {} +
 
 # The fork itself needs a repository too, and not only for tidiness. The audit
-# now compares androidApp against the FORK (androidApp is a plain directory, not
-# a submodule) and treats "no repository" as a FAILURE rather than a skip - so a
-# harness with no .git turned the baseline red, and every case after it
-# meaningless. Copy the way a worktree is copied never works: clone the gitdir.
+# treats "cannot read HEAD" as a FAILURE rather than a skip - so a harness with
+# no .git turned the baseline red, and every case after it meaningless. Copy the
+# way a worktree is copied never works: clone the gitdir.
 if [ -d "$SRC/.git" ]; then
   rm -rf "$H/.fork"
   if git clone -q --shared --no-checkout "$SRC/.git" "$H/.fork" 2>/dev/null; then
@@ -40,60 +39,18 @@ if [ -d "$SRC/.git" ]; then
   fi
 fi
 
-# A submodule's .git is a FILE pointing at ../.git/modules/<name>, so `cp -a` of
-# the submodule copies the pointer and not its target: `git rev-parse` in the copy
-# fails and the audit skips its one provenance check. Every control would then run
-# with that check already disabled, which is exactly the blind spot this file
-# exists to close. Clone --shared --no-checkout instead: a real HEAD (so the
-# baseline passes for the right reason), no checkout, objects borrowed not copied.
-# Clone from the GITDIR, not the worktree - the submodule's own .git is a FILE
-# pointing elsewhere and `git clone <worktree>` refuses it.
-install_core() {
-  rm -rf "$H/OpenFlux" "$H/.core"
-  cp -a "$SRC/OpenFlux" "$H/OpenFlux" 2>/dev/null
-  rm -f "$H/OpenFlux/.git"
-  # `git clone <dst>` puts the repository at <dst>/.git, so move THAT, not <dst>
-  # - moving the outer directory yields OpenFlux/.git/.git, which git does not
-  # recognise, so every control runs with the provenance check already disabled.
-  if git clone -q --shared --no-checkout "$SRC/.git/modules/OpenFlux" "$H/.core" 2>/dev/null; then
-    mv "$H/.core/.git" "$H/OpenFlux/.git"
-    # The clone inherited core.worktree from the submodule's gitdir, pointing at
-    # ../../../OpenFlux - a path that means nothing in the copy.
-    git -C "$H/OpenFlux" config --unset core.worktree 2>/dev/null
-    git -C "$H/OpenFlux" config core.bare false 2>/dev/null
-    # --no-checkout fills the index but leaves the worktree empty, so git calls
-    # every tracked file deleted. The audit now requires the tree to match HEAD
-    # (that check is the one that catches an uncommitted tamper in the shipped
-    # core), so the harness has to present a real checkout or the baseline goes
-    # red for a reason that has nothing to do with what it is testing.
-    git -C "$H/OpenFlux" reset --hard -q 2>/dev/null
-  else
-    echo "!! clone не удался, контроли пойдут с отключённой проверкой HEAD" >&2
-    git clone --shared --no-checkout "$SRC/.git/modules/OpenFlux" "$H/.core" 2>&1 | head -5 >&2
-  fi
-  rm -rf "$H/.core"
-  # shared/ is a submodule too, and it was being copied the same broken way: its
-  # .git is a POINTER to ../.git/modules/shared, which in the copy points outside
-  # the harness. Git could not resolve a repository at all, so the audit's
-  # "tree matches HEAD" check - correctly - reported the module as tampered and
-  # turned the baseline red for a reason unrelated to the attack under test.
-  # Give it a real repository the same way the core gets one.
-  if [ -e "$SRC/.git/modules/shared" ]; then
-    rm -rf "$H/.shared"
-    if git clone -q --shared --no-checkout "$SRC/.git/modules/shared" "$H/.shared" 2>/dev/null; then
-      rm -f "$H/shared/.git"
-      mv "$H/.shared/.git" "$H/shared/.git"
-      git -C "$H/shared" config --unset core.worktree 2>/dev/null
-      git -C "$H/shared" config core.bare false 2>/dev/null
-      git -C "$H/shared" reset --hard -q 2>/dev/null
-    fi
-    rm -rf "$H/.shared"
-  fi
-  if [ -n "${OF_DEBUG:-}" ]; then
-    echo "!! install_core: HEAD копии = $(git -C "$H/OpenFlux" rev-parse HEAD 2>&1)" >&2
-  fi
+# Restore the whole tree to HEAD. OpenFlux/ and shared/ used to be submodules
+# whose .git is a FILE pointing at ../.git/modules/<name>, so `cp -a` copied the
+# pointer and not its target: `git rev-parse` in the copy failed, the audit
+# skipped its one provenance check, and every control below ran with that check
+# already disabled - precisely the blind spot this file exists to close. It
+# needed a shared-object clone grafted into place to work around that. All three
+# directories are ordinary files in one repository now, so HEAD is the one
+# repository and a reset is both the restore and the strongest possible check
+# that the baseline is honest.
+restore_tree() {
+  git -C "$H" reset --hard -q 2>/dev/null
 }
-install_core
 
 reset_dist() {
   rm -rf "$H/dist"
@@ -103,9 +60,10 @@ reset_dist() {
 # Cases that destroy the source tree cannot be undone, so they run last.
 reset_src() {
   rm -rf "$H/androidApp/src" "$H/shared/src" "$H/OpenFlux"
-  cp -a "$SRC/androidApp/src" "$H/androidApp/src" 2>/dev/null
-  cp -a "$SRC/shared/src" "$H/shared/src" 2>/dev/null
-  install_core
+  restore_tree
+  [ -d "$H/androidApp/src" ] || cp -a "$SRC/androidApp/src" "$H/androidApp/src" 2>/dev/null
+  [ -d "$H/shared/src" ]     || cp -a "$SRC/shared/src"     "$H/shared/src"     2>/dev/null
+  [ -d "$H/OpenFlux" ]       || cp -a "$SRC/OpenFlux"       "$H/OpenFlux"       2>/dev/null
 }
 
 reset_dist
@@ -188,7 +146,7 @@ echo "--- 8. every classes*.dex replaced by a text file of the marker strings"
 # The strings land there verbatim, so the "our strings are in the dex" check still
 # passes; only a real dex header and a real size can catch this.
 reset_dist
-sha=$(git -C "$H/OpenFlux" rev-parse HEAD 2>/dev/null)
+sha=$(git -C "$H" rev-parse HEAD 2>/dev/null)
 for a in "$H"/dist/*.apk; do
   T2=$(mktemp -d); unzip -o -q "$a" -d "$T2"
   rm -f "$T2"/classes*.dex
@@ -220,22 +178,26 @@ done
 resum
 echo "  $(run)"
 
-echo "--- 11. provenance check disabled by removing the submodule's git"
+echo "--- 11. provenance check disabled: the only .git in the tree removed"
 reset_dist
-rm -rf "$H/OpenFlux/.git"
+# Used to remove the CORE's .git, which existed only because OpenFlux/ was a
+# submodule. There is one repository now, so the honest version of this attack
+# is to take that repository away - the audit must refuse to certify anything
+# when it cannot read the commit the APK was built from.
+mv "$H/.git" "$H/.git.hidden"
 echo "  $(run)"
-install_core
+mv "$H/.git.hidden" "$H/.git"
 
-# The cases below cover the checks added after the red-team report. Each one is
-# a bypass that returned AUDIT_OK on a corrupted tree; a check with no case
-# against it is a check that quietly stops working.
 echo "--- 13. uncommitted edit inside the shipped core (mtime backdated)"
 reset_dist
 echo "// tamper" >> "$H/OpenFlux/utils/logging.go"
 touch -d "2020-01-01" "$H/OpenFlux/utils/logging.go" 2>/dev/null
 echo "  $(run)"
-git -C "$H/OpenFlux" checkout -- utils/logging.go 2>/dev/null
+git -C "$H" checkout -- OpenFlux/utils/logging.go 2>/dev/null
 
+# The cases below cover the checks added after the red-team report. Each one is
+# a bypass that returned AUDIT_OK on a corrupted tree; a check with no case
+# against it is a check that quietly stops working.
 echo "--- 14. x86 ABI renamed to mips (decoy substring used to satisfy the check)"
 reset_dist
 T2=$(mktemp -d)
@@ -283,7 +245,7 @@ reset_dist
 find "$H/androidApp/src" "$H/shared/src" -name '*.kt' -delete 2>/dev/null
 find "$H/OpenFlux" -name '*.go' -not -path '*/.git/*' -exec sh -c 'echo "package stub" > "$1"' _ {} \;
 echo "  $(run)"
-install_core
+restore_tree
 # rm -rf first, always. `cp -a src src` where the destination already exists
 # copies INTO it, creating src/src and leaving the .kt files deleted - so every
 # case after this one "failed" with missing sources rather than with its own
@@ -348,7 +310,7 @@ echo "--- 22. cert pin overridden via OF_EXPECTED_CERT (must NOT be a warning)"
 reset_dist
 echo "  $(OF_EXPECTED_CERT=$(printf '%064d' 3) run)"
 
-echo "--- 23. Kotlin tampered, mtime backdated (androidApp is not a submodule)"
+echo "--- 23. Kotlin tampered, mtime backdated"
 reset_dist
 F="$H/androidApp/src/main/kotlin/io/openflux/android/core/PacketTunnel.kt"
 cp "$F" "$F.bak"; echo "// tampered" >> "$F"
