@@ -132,8 +132,29 @@ reset_dist
 echo "  $(bash "$H/scripts/wsl-audit.sh" 9.9.9 2>&1 | tail -1)"
 
 echo "--- 7. non-numeric version argument"
+# This one has to compare the exit code itself. It used to print it and move
+# on, so an audit that had stopped rejecting bad versions would have produced a
+# tidy "rc=0 (expect 2)" line and the run would still have finished green - it
+# was the only control of the 27 that could not fail, and it is why 27 headers
+# used to produce only 26 reds. A control that reports without asserting is
+# decoration.
 bash "$H/scripts/wsl-audit.sh" abc >/dev/null 2>&1
-echo "  rc=$? (expect 2)"
+rc7=$?
+if [ "$rc7" -eq 2 ]; then
+  echo "  КРАСНЫЙ rc=$rc7 (ожидался 2) - аудит отверг мусорную версию"
+else
+  echo "  ЗЕЛЁНЫЙ rc=$rc7 (ожидался 2) - аудит ПРИНЯЛ нечисловую версию, проверка мертва"
+fi
+# Same for a version that is X.Y.Z-shaped but wrong, and for the valid one: a
+# script that rejects everything proves the rejection by rejecting something
+# legitimate too.
+bash "$H/scripts/wsl-audit.sh" 1.2.0-rc1 >/dev/null 2>&1
+rc7b=$?
+bash "$H/scripts/wsl-audit.sh" 1.2.0 >/dev/null 2>&1
+rc7c=$?
+echo "  1.2.0-rc1 -> $rc7b (ожидался 2), 1.2.0 -> $rc7c (ожидался 0)"
+[ "$rc7" -eq 2 ] && [ "$rc7b" -eq 2 ] && [ "$rc7c" -eq 0 ] \
+  || echo "  ^ КОНТРОЛЬ 7 НЕ СРАБОТАЛ: отказ и на мусоре, и на живом прогоне обязателен"
 
 echo "--- 12. wrong APK name set (5 files, one renamed)"
 reset_dist
