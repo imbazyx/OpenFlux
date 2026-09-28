@@ -1,0 +1,33 @@
+# Line endings are load-bearing here, not cosmetic.
+#
+# This tree is built and audited on WSL, but it is also checked out on Windows,
+# and the two disagree. A CRLF inside a shell script makes bash reject the very
+# first line it cares about:
+#
+#     scripts/wsl-build.sh: line 8: set: pipefail: invalid option name
+#
+# The build then dies before doing any work, and nothing in the code says why.
+# That is not hypothetical: re-attributing the commit history on WSL rewrote
+# the scripts with CRLF and took the build down, because core.autocrlf had been
+# set to true to stop WSL git reporting every text file as modified.
+#
+# core.autocrlf cannot express what this repository needs - LF for the scripts
+# that run under bash, CRLF only for the Windows launchers - so it is stated
+# here, where it travels with the repository and applies on every platform
+# regardless of each machine's own settings.
+
+# Scripts interpreted by a POSIX shell: must be LF on every platform.
+*.sh     text eol=lf
+gradlew  text eol=lf
+
+# Windows launchers: CRLF is what cmd.exe expects.
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+*.ps1    text eol=crlf
+
+# Build outputs and vendored binaries are never touched.
+*.apk    binary
+*.aar    binary
+*.jar    binary
+*.jks    binary
+*.keystore binary
