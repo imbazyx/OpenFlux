@@ -401,8 +401,8 @@ while IFS= read -r apk; do
 done <<< "$(apks)"
 
 echo "== 5. версия ядра в приложении =="
-# Guards the About screen naming the real submodule rather than the synthetic
-# commit a freshly initialised staging repo produces.
+# Guards the About screen naming the real commit rather than the synthetic one
+# a freshly initialised staging repo produces.
 while IFS= read -r apk; do
   name=$(basename "$apk")
   rm -rf "$T/dex" && mkdir -p "$T/dex"
@@ -414,22 +414,25 @@ while IFS= read -r apk; do
   [ "$n" -gt 0 ] && ok "$name: CORE_VERSION содержит реальный SHA ($n)" \
                 || bad "$name: CORE_VERSION без 40-символьного SHA — ядро собрано как попало"
   # A 40-hex string is not proof it is the CURRENT one: an APK built against an
-  # older submodule commit matches just as well. Compare against the checkout.
+  # older commit matches just as well. Compare against the checkout.
   # If git cannot answer, that is a FAILURE, not a reason to skip: the check
   # used to be wrapped in `if [ -n "$head_sha" ]` with no else, so deleting
-  # OpenFlux/.git - or running on a box without git - silently disabled the
+  # the core's .git - or running on a box without git - silently disabled the
   # only provenance check there was.
-  head_sha=$(git -C "$ROOT/OpenFlux" rev-parse HEAD 2>/dev/null)
+  #
+  # The core is an ordinary directory in this repository, so its provenance is
+  # this repository's HEAD. There is no second commit to consult.
+  head_sha=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)
   if [ -z "$head_sha" ]; then
-    bad "$name: не удалось определить HEAD подмодуля — проверка происхождения ядра пропущена"
+    bad "$name: не удалось определить HEAD — проверка происхождения ядра пропущена"
   elif grep -qF "$head_sha" "$T/dex.strings"; then
     ok "$name: ядро соответствует HEAD (${head_sha:0:9})"
   else
-    bad "$name: в CORE_VERSION нет текущего HEAD ${head_sha:0:9} — APK старше подмодуля"
+    bad "$name: в CORE_VERSION нет текущего HEAD ${head_sha:0:9} — APK старше дерева"
   fi
 done <<< "$(apks)"
 
-echo "== 5a. рабочее дерево ядра неприкосновенно =="
+echo "== 5a. рабочее дерево неприкосновенно =="
 # A matching HEAD proves the APK was built from SOME committed state. It says
 # nothing about the files in front of the build: appending one line to
 # logging.go, backdating its mtime and shipping it gave AUDIT_OK, because the
@@ -437,30 +440,19 @@ echo "== 5a. рабочее дерево ядра неприкосновенно
 # -d breaks the last link. The build already stamps +patched for a dirty tree;
 # this is the same fact asserted on the tree itself.
 #
+# OpenFlux/ and shared/ used to be submodules and were excluded here, their
+# contents covered only by a gitlink SHA comparison. They are ordinary
+# directories now, so the diff covers them too - every core source file is
+# compared byte for byte, which is strictly more than the old check could see.
+#
 # --ignore-cr-at-eol is not leniency, it is correctness. The audit runs under
 # WSL git against a checkout written by Windows git: every file differs by CRLF
 # and `git status --porcelain` calls the entire tree dirty, which made this
 # check fail every honest build in the suite.
 tree_clean() {
   local d="$1"
-  git -C "$d" diff --quiet --ignore-cr-at-eol -- . ':(exclude)OpenFlux' ':(exclude)shared' 2>/dev/null || return 1
-  git -C "$d" diff --cached --quiet --ignore-cr-at-eol -- . ':(exclude)OpenFlux' ':(exclude)shared' 2>/dev/null || return 1
-  # The two gitlinks are excluded above and checked here instead. At this level
-  # git reports a submodule as `-dirty` for CRLF-only differences between WSL
-  # git and a Windows-written checkout, and --ignore-cr-at-eol does not reach
-  # that judgement - so the fork read as permanently dirty and the new
-  # androidApp check failed every honest build. Comparing the recorded gitlink
-  # SHA with the submodule's real HEAD is both immune to that and stricter: it
-  # pins the exact commit, which the old diff did not.
-  local p want_sha have_sha
-  for p in OpenFlux shared; do
-    [ -e "$d/$p/.git" ] || continue
-    want_sha=$(git -C "$d" ls-tree HEAD "$p" 2>/dev/null | awk '{print $3}')
-    have_sha=$(git -C "$d/$p" rev-parse HEAD 2>/dev/null)
-    if [ -z "$want_sha" ] || [ "$want_sha" != "$have_sha" ]; then
-      return 1
-    fi
-  done
+  git -C "$d" diff --quiet --ignore-cr-at-eol 2>/dev/null || return 1
+  git -C "$d" diff --cached --quiet --ignore-cr-at-eol 2>/dev/null || return 1
   [ -z "$(git -C "$d" ls-files --others --exclude-standard 2>/dev/null)" ] || return 1
   # core.filemode=false is set in the real submodule config, so a `chmod 755` on
   # a tracked .go is invisible to a plain diff. Forcing core.fileMode=true does
@@ -493,27 +485,24 @@ tree_clean() {
   [ "${flags:-0}" -eq 0 ] || return 1
   return 0
 }
-for mod in OpenFlux shared androidApp; do
-  # androidApp is NOT a submodule. It is a plain directory inside this repo, so
-  # $ROOT/androidApp/.git does not exist and `[ -e "$d/.git" ]` is false - which
-  # made the androidApp entry a check that reads correctly and checks nothing,
-  # committed as the fix for exactly that gap. The whole Kotlin application was
-  # still outside the tree check while the audit reported it as covered.
-  # For a plain directory the repository to compare against is the fork itself.
-  if [ "$mod" = androidApp ]; then d="$ROOT"; else d="$ROOT/$mod"; fi
-  if [ -e "$d/.git" ]; then
-    if tree_clean "$d"; then
-      ok "модуль $mod: рабочее дерево совпадает с HEAD"
-    else
-      bad "модуль $mod: есть незакоммиченные изменения — APK им не соответствует"
-      git -C "$d" ls-files --others --exclude-standard 2>/dev/null | head -3 | sed 's/^/        новый: /'
-      git -C "$d" diff --name-only --ignore-cr-at-eol 2>/dev/null | head -3 | sed 's/^/        изменён: /'
-      echo "        (сначала закоммитьте, потом пересоберите: отпечаток берётся с HEAD)"
-    fi
-  else
-    bad "модуль $mod: нет репозитория по пути $d — дерево не проверено"
-  fi
-done
+# One tree, one check. OpenFlux/, shared/ and androidApp/ were three separate
+# git roots - two submodules plus this repository - and each needed its own
+# cleanliness proof. All three are ordinary directories here, so a single
+# tree_clean over the root covers every source file, the core included.
+#
+# The loop this replaces mapped every module to a path with a .git on it, and
+# androidApp had none: that entry read correctly and checked nothing, which is
+# how the whole Kotlin application sat outside the tree check while the audit
+# reported it as covered. There is no path to map now, so there is no way for
+# a module to be silently skipped.
+if tree_clean "$ROOT"; then
+  ok "рабочее дерево совпадает с HEAD (включая OpenFlux/ и shared/)"
+else
+  bad "есть незакоммиченные изменения — APK им не соответствует"
+  git -C "$ROOT" ls-files --others --exclude-standard 2>/dev/null | head -3 | sed 's/^/        новый: /'
+  git -C "$ROOT" diff --name-only --ignore-cr-at-eol 2>/dev/null | head -3 | sed 's/^/        изменён: /'
+  echo "        (сначала закоммитьте, потом пересоберите: отпечаток берётся с HEAD)"
+fi
 
 echo "== 5b. исходники не выпотрошены =="
 # A clean tree proves nothing about how much of it there is. Emptying

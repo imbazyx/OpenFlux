@@ -36,23 +36,24 @@ source "$HOME/ofbuild.env"
 # staging. build-android-core.sh derives its stamp from `git describe` in a
 # freshly initialised repo, which yields a synthetic commit whose hash changes
 # with the commit timestamp - i.e. the app would show a different "core version"
-# on every build and never the submodule's actual SHA.
-CORE_SHA=$(git -C "$SRC/OpenFlux" rev-parse HEAD 2>/dev/null || echo "?")
-# A submodule is DETACHED by default, so `rev-parse --abbrev-ref HEAD` returns
-# the literal string "HEAD" and the About screen would read HEAD@cde597c9a28...
-# with no branch at all. Ask git which branch actually contains the commit.
-CORE_BRANCH=$(git -C "$SRC/OpenFlux" for-each-ref --count=1 --format='%(refname:short)' \
-  --contains HEAD refs/heads/ 2>/dev/null || true)
-[ -n "$CORE_BRANCH" ] || CORE_BRANCH=$(git -C "$SRC/OpenFlux" describe --tags --always 2>/dev/null || echo "?")
+# on every build.
+#
+# OpenFlux/ is an ordinary directory here, not a submodule, so there is no
+# separate SHA to read. The version that matters is the commit the core source
+# was actually built from, and that is this repository's own HEAD. Asking the
+# core directory would return "?" and leave the About screen saying @?@?.
+CORE_SHA=$(git -C "$SRC" rev-parse HEAD 2>/dev/null || echo "?")
+CORE_BRANCH=$(git -C "$SRC" describe --tags --always 2>/dev/null || echo "?")
 [ -n "$CORE_BRANCH" ] || CORE_BRANCH="?"
 CORE_REF="$CORE_BRANCH@$CORE_SHA"
 # --porcelain covers staged and untracked changes too, not just worktree edits
-# the way `git diff --quiet` does.
+# the way `git diff --quiet` does. Now that the core is part of this tree, a
+# dirty core is a dirty tree, and one check covers both.
 DIRTY=""
-if [ -n "$(git -C "$SRC/OpenFlux" status --porcelain 2>/dev/null)" ]; then DIRTY="+patched"; fi
+if [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then DIRTY="+patched"; fi
 echo "== core: $CORE_REF$DIRTY =="
 if [ "$CORE_SHA" = "?" ]; then
-  echo "   WARNING: cannot read the core's git SHA; the About screen will be vague" >&2
+  echo "   WARNING: cannot read the commit SHA; the About screen will be vague" >&2
 fi
 
 echo "== staging repo (excluding build output) =="
@@ -65,8 +66,8 @@ tar -C "$SRC" --exclude='./.git' --exclude='./dist' --exclude='*/build' --exclud
     -cf - . | tar -C "$WORK" -xf -
 # The core build stamps branch@commit into the app's About screen; keep a real
 # git repo so `git describe` in scripts/build-android-core.sh succeeds. The
-# submodules' .git entries are files pointing at ../.git/modules/<name>, which
-# the tar excluded, so drop them before re-initializing.
+# tar excluded ./.git, so the staged copy has none until the loop below makes
+# one for each module.
 rm -f "$WORK/OpenFlux/.git" "$WORK/shared/.git"
 # The Windows checkout has CRLF line endings; a stray \r breaks `set -euo pipefail`
 # in the shell scripts, and leaks into the HTML that WebPage.kt embeds. CI
@@ -78,7 +79,8 @@ find "$WORK" -type f \( -name '*.sh' -o -name '*.kts' -o -name '*.properties' \
 sed -i 's/\r$//' "$WORK/gradlew"
 chmod +x "$WORK/gradlew"
 # A real git repo is still needed: build-android-core.sh calls `git describe`
-# in the core. Any submodule discovered at depth 2, not just today's two.
+# in the core. Any .git FILE found at depth 2 is a leftover pointer from the
+# days these were submodules; the tar copied the pointer, not its target.
 find "$WORK" -mindepth 2 -maxdepth 2 -name .git -type f -delete
 for r in "$WORK/OpenFlux" "$WORK/shared"; do
   [ -d "$r" ] || continue
