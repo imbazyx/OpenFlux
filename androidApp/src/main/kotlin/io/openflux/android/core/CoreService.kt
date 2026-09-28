@@ -12,6 +12,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.util.Log
 import io.openflux.android.MainActivity
 import io.openflux.android.R
 import io.openflux.android.openFlux
@@ -24,6 +25,18 @@ import io.openflux.android.openFlux
  */
 class CoreService : VpnService() {
     private var wakeLock: PowerManager.WakeLock? = null
+
+    /**
+     * Set by [applyAppSelection] when it had to widen the rule to a full tunnel.
+     * Rewriting the stored preference makes the STATE honest, but the user is
+     * not looking at a settings screen while the VPN comes up - they are looking
+     * at "Подключено". Without this the one outcome that matters most (the whole
+     * phone now goes through the node) is silent. Read once by
+     * AndroidConnectionService right after establish() and shown in the status
+     * line.
+     */
+    @Volatile
+    var appRuleNotice: String? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val connection = openFlux.connection
@@ -58,6 +71,10 @@ class CoreService : VpnService() {
      * The TUN interface: all IPv4 through it, DNS to [dns] (answered by the
      * packet tunnel), this app itself outside, since the core's own traffic
      * must not loop back into the tunnel.
+     *
+     * [AppSelection] narrows that to chosen applications when the user asked
+     * for it: the TUN then carries only those, and the rest of the phone keeps
+     * its normal route.
      */
     fun establish(mtu: Int, dns: String): ParcelFileDescriptor? {
         val builder = Builder()
@@ -66,10 +83,104 @@ class CoreService : VpnService() {
             .addAddress("10.10.10.2", 24)
             .addRoute("0.0.0.0", 0)
             .addDnsServer(dns)
-            .addDisallowedApplication(packageName)
             .setConfigureIntent(openAppIntent(this))
+        // Cleared first so a previous run's notice cannot leak into this one.
+        appRuleNotice = null
+        applyAppSelection(builder)
         if (Build.VERSION.SDK_INT >= 29) builder.setBlocking(true)
         return builder.establish()
+    }
+
+    /**
+     * Builds the per-app rule. Reading it here, once per interface, keeps a
+     * change in the settings from pulling the tunnel out under a running
+     * connection: it applies on the next connect.
+     *
+     * The rule is an ALLOW list of the chosen packages, which is what
+     * Builder.addAllowedApplication documents: "only applications added through
+     * this method (and no others) are allowed access". Everything not named -
+     * including this app - keeps using the network as if the VPN were not
+     * running, so the core's Mail.ru control channel stays outside the tunnel
+     * on its own and never needs VpnService.protect(). An allow list also
+     * matches what the settings screen promises: an app installed after the
+     * last save, or one in a work profile, simply stays direct, instead of
+     * being swept into the tunnel by a deny list built from a snapshot.
+     *
+     * Builder accepts one kind of list or the other, never both: mixing
+     * addAllowedApplication and addDisallowedApplication throws
+     * UnsupportedOperationException. The full-tunnel branch therefore returns
+     * before any allow call happens.
+     */
+    private fun applyAppSelection(builder: Builder) {
+        val context = applicationContext
+        val fullTunnel = {
+            // The full tunnel excludes only ourselves, exactly as before.
+            builder.addDisallowedApplication(packageName)
+        }
+        if (!AppSelection.onlySelected(context)) {
+            fullTunnel()
+            return
+        }
+        // Resolve the saved names before building the list. An allow list is
+        // only active if addAllowedApplication ran at least once: never called
+        // it means "no list", which Android reads as everything allowed. So a
+        // rule whose apps have all been uninstalled must fall back to a full
+        // tunnel rather than quietly degenerating into one of the two broken
+        // states - a silent no-op tunnel, or a per-app mode with no apps.
+        val saved = AppSelection.selected(context)
+        val live = saved.filter { pkg ->
+            // Never allow our own package: routing it into our own TUN would
+            // make PacketTunnel.readOutgoing() feed the core's Mail.ru
+            // connection to Mobile.send(), which writes the tunnel envelope
+            // into the very socket whose packets come back to the TUN.
+            pkg != packageName &&
+                runCatching { packageManager.getApplicationInfo(pkg, 0) }.isSuccess
+        }
+        if (live.isEmpty()) {
+            Log.w(
+                "OpenFluxVPN",
+                "per-app rule: none of ${saved.size} saved apps are installed, " +
+                    "falling back to a full tunnel",
+            )
+            // Degrade, but never silently. A full tunnel sends the WHOLE phone
+            // through the node - the exact opposite of what the user asked for
+            // by enabling per-app mode - so the stored rule is rewritten to
+            // match what the tunnel is really doing. Leaving the preference
+            // saying "only 2 apps" while every app is routed would be a privacy
+            // failure with no on-screen trace anywhere.
+            AppSelection.save(context, false, emptySet())
+            fullTunnel()
+            return
+        }
+        var failed = 0
+        for (pkg in live) {
+            runCatching { builder.addAllowedApplication(pkg) }
+                .onFailure {
+                    failed++
+                    Log.w("OpenFluxVPN", "cannot allow $pkg through the tunnel", it)
+                }
+        }
+        if (failed == live.size) {
+            // addAllowedApplication throws from verifyApp BEFORE it touches the
+            // builder, so the allow list is still null and addDisallowedApplication
+            // is still legal: this takes the same honest path as the empty case
+            // rather than leaving Android to read "no list" as "everything".
+            Log.w(
+                "OpenFluxVPN",
+                "per-app rule: the system rejected all ${live.size} apps, " +
+                    "falling back to a full tunnel",
+            )
+            AppSelection.save(context, false, emptySet())
+            appRuleNotice =
+                "Система не приняла ни одного выбранного приложения — через ноду идёт весь трафик"
+            fullTunnel()
+            return
+        }
+        Log.i(
+            "OpenFluxVPN",
+            "per-app mode: ${live.size - failed} apps through the tunnel, " +
+                "$failed rejected by the system",
+        )
     }
 
     /** An exit node keeps serving clients with the screen off. */

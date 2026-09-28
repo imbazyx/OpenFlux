@@ -8,6 +8,11 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Log
+import android.widget.Toast
+import io.openflux.android.core.AppSelection
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -38,6 +43,10 @@ class AndroidPlatformServices(
 ) : PlatformServices {
     private val random = SecureRandom()
     private val clipboard get() = context.getSystemService(ClipboardManager::class.java)
+
+    init {
+        instance = this
+    }
 
     override val kind = PlatformKind.Android
     override val appVersion: String = BuildConfig.VERSION_NAME
@@ -94,6 +103,55 @@ class AndroidPlatformServices(
         }
     }
 
+    override val perAppSelectionSupported = true
+
+    private val appSelection = MutableStateFlow(0)
+
+    override val appSelectionRev: StateFlow<Int> get() = appSelection
+
+    /** Called after every write to the stored rule; see [appSelectionRev]. */
+    fun appSelectionChanged() {
+        appSelection.value++
+    }
+
+    override fun perAppSummary(): String {
+        val context = context.applicationContext
+        if (!AppSelection.onlySelected(context)) {
+            return "Правило: через ноду идёт весь трафик, кроме самого OpenFlux."
+        }
+        // Report the rule as it will be applied, not as it was typed: packages
+        // that are no longer installed are dropped at connect time.
+        val live = AppSelection.selected(context).count { pkg ->
+            pkg != context.packageName &&
+                runCatching { context.packageManager.getApplicationInfo(pkg, 0) }.isSuccess
+        }
+        return if (live == 0) {
+            "Правило: выбранных приложений больше нет, при подключении пойдёт весь трафик."
+        } else {
+            "Правило: через ноду идут приложения, выбранные в списке" +
+                " (${pluralApps(live)}); остальные — напрямую."
+        }
+    }
+
+    override fun openAppSelector(): Boolean = runCatching {
+        context.startActivity(
+            Intent(context, AppSelectionActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+        )
+        true
+    }.getOrElse { error ->
+        // The shared settings screen has no channel to show an error, and the
+        // picker is reachable only from that one button: without a toast here
+        // the whole per-app feature would be unreachable and completely silent.
+        Log.w("OpenFluxPlatform", "cannot open the app picker", error)
+        Toast.makeText(
+            context,
+            "Не удалось открыть список приложений",
+            Toast.LENGTH_LONG,
+        ).show()
+        false
+    }
+
     override fun newSecret(): String {
         val bytes = ByteArray(32)
         random.nextBytes(bytes)
@@ -140,11 +198,35 @@ class AndroidPlatformServices(
         }
     }
 
-    private companion object {
-        const val RELEASE_REPO = "p1neappleXpress/OpenFluxAndroid"
-        const val TAG_PREFIX = "v"
-        const val MAX_QR_IMAGE = 2048
-        val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif", "webp")
+    // Not private: AppSelection.save() ticks the revision through [instance].
+    companion object {
+        private const val RELEASE_REPO = "p1neappleXpress/OpenFluxAndroid"
+        private const val TAG_PREFIX = "v"
+        private const val MAX_QR_IMAGE = 2048
+        private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif", "webp")
+
+        /**
+         * The live instance, so [io.openflux.android.core.AppSelection.save] can
+         * tick the revision without the shared layer having to know about it.
+         * Null until the app builds its container.
+         */
+        @Volatile
+        var instance: AndroidPlatformServices? = null
+            internal set
+    }
+}
+
+/**
+ * Russian count form: 1 приложение, 2-4 приложения, 5+ приложений. A bare
+ * "$n приложений" reads as broken in the one language this app speaks.
+ */
+internal fun pluralApps(n: Int): String {
+    val mod100 = n % 100
+    return if (mod100 in 11..14) "$n приложений"
+    else when (n % 10) {
+        1 -> "$n приложение"
+        2, 3, 4 -> "$n приложения"
+        else -> "$n приложений"
     }
 }
 
