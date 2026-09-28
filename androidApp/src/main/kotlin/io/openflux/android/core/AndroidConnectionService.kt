@@ -94,6 +94,15 @@ class AndroidConnectionService(
         @Volatile var started = false
         @Volatile var connectedSince = 0L
         @Volatile var notice = ""
+
+        /**
+         * Set once, when the VPN interface is built, and never cleared for the
+         * life of the run. It states a fact about the RULES ("the whole phone is
+         * going through the node now"), which stays true through every
+         * reconnect - unlike [notice], which holds whatever transient trouble
+         * the tunnel last reported.
+         */
+        @Volatile var appRuleNotice = ""
     }
 
     @Volatile private var run: Run? = null
@@ -327,7 +336,11 @@ class AndroidConnectionService(
         // establish() may have had to widen the per-app rule to a full tunnel.
         // Say so in the status line: the alternative is a user who asked for two
         // apps through the node getting the whole phone through it, in silence.
-        host.appRuleNotice?.let { current.notice = it }
+        // Kept in its own field, not in `notice`, because onProblem writes
+        // `notice` for transient tunnel trouble, and a DNS blip normally leaves
+        // the state Connected - so one shared field meant the first hiccup
+        // erased the one message that stays true for as long as the tunnel is up.
+        current.appRuleNotice = host.appRuleNotice.orEmpty()
         val tunnel = PacketTunnel(
             tun, dns, current.sent, current.received,
             onProblem = { current.notice = it },
@@ -435,9 +448,22 @@ class AndroidConnectionService(
         val look = _state.value.look().title
         val traffic = _traffic.value
         val via = traffic.activeTransport.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
+        // The notice is appended on EVERY line, not only on the non-Connected
+        // ones. A per-app rule that degrades to a full tunnel does so while the
+        // state is Connected - that is the only state it can degrade from - so
+        // keeping the notice out of the Connected branch meant it survived at
+        // most one 1s poll tick and then vanished. The user was told nothing at
+        // exactly the moment the whole phone started going through the node.
+        val notice = buildString {
+            if (current.notice.isNotEmpty()) append(current.notice)
+            if (current.appRuleNotice.isNotEmpty()) {
+                if (isNotEmpty()) append(" · ")
+                append(current.appRuleNotice)
+            }
+        }.takeIf { it.isNotEmpty() }?.let { " · $it" }.orEmpty()
         return when (_state.value) {
-            is ConnectionState.Connected -> "$look · ↓ ${Format.speed(traffic.downBytesPerSec)}  ↑ ${Format.speed(traffic.upBytesPerSec)}$via"
-            else -> if (current.notice.isNotEmpty()) "$look · ${current.notice}" else look
+            is ConnectionState.Connected -> "$look · ↓ ${Format.speed(traffic.downBytesPerSec)}  ↑ ${Format.speed(traffic.upBytesPerSec)}$via$notice"
+            else -> if (notice.isNotEmpty()) "$look$notice" else look
         }
     }
 
