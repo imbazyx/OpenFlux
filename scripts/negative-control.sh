@@ -252,8 +252,21 @@ find "$H/androidApp/src" "$H/shared/src" -name '*.kt' -delete 2>/dev/null
 find "$H/OpenFlux" -name '*.go' -not -path '*/.git/*' -exec sh -c 'echo "package stub" > "$1"' _ {} \;
 echo "  $(run)"
 install_core
-cp -a "$SRC/androidApp/src" "$H/androidApp/src" 2>/dev/null
-cp -a "$SRC/shared/src" "$H/shared/src" 2>/dev/null
+# rm -rf first, always. `cp -a src src` where the destination already exists
+# copies INTO it, creating src/src and leaving the .kt files deleted - so every
+# case after this one "failed" with missing sources rather than with its own
+# defect. Two controls were green for the wrong reason and nobody noticed,
+# which is this file's whole failure mode applied to the file itself.
+rm -rf "$H/androidApp/src" "$H/shared/src"
+cp -a "$SRC/androidApp/src" "$H/androidApp/src"
+cp -a "$SRC/shared/src" "$H/shared/src"
+# Prove the restore worked. If the tree is not back, every later case inherits a
+# broken baseline and its AUDIT_FAILED means nothing.
+nkt=$(find "$H/androidApp/src" "$H/shared/src" -name '*.kt' 2>/dev/null | wc -l)
+if [ "$nkt" -lt 60 ]; then
+  echo "   СТОП: после восстановления только $nkt .kt — дальнейшие контроли бессмысленны"
+  exit 1
+fi
 
 echo "--- 19. launcher icon removed, junk res xml carries the colour bytes"
 reset_dist
@@ -271,10 +284,17 @@ echo "--- 20. a lateinit field shadowed by a local val (shipped once already)"
 reset_dist
 F="$H/androidApp/src/main/kotlin/io/openflux/android/platform/AppSelectionActivity.kt"
 cp "$F" "$F.bak"
-sed -i 's/^\( *\)resetBtn = Button(this)/\1val resetBtn = Button(this)/' "$F"
-grep -q 'val resetBtn' "$F" || echo "   (подмена не применилась — проверка не проверена)"
+# Say so loudly if the tamper did not land. A control that silently did nothing
+# reports whatever verdict the tree already had, and looks like a pass.
+if [ ! -f "$F" ]; then
+  echo "   СТОП: $F не существует — контроль ничего не проверяет"
+elif ! sed -i 's/^\( *\)resetBtn = Button(this)/\1val resetBtn = Button(this)/' "$F"; then
+  echo "   СТОП: sed не отработал"
+elif ! grep -q 'val resetBtn' "$F"; then
+  echo "   СТОП: подмена не применилась — контроль ничего не проверяет"
+fi
 echo "  $(run)"
-mv "$F.bak" "$F"
+mv "$F.bak" "$F" 2>/dev/null
 
 echo "--- 21. libgojni.so cut down to a stub-sized blob (real ones are 15-16 MB)"
 reset_dist
