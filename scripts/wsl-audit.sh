@@ -443,8 +443,24 @@ echo "== 5a. рабочее дерево ядра неприкосновенно
 # check fail every honest build in the suite.
 tree_clean() {
   local d="$1"
-  git -C "$d" diff --quiet --ignore-cr-at-eol -- . 2>/dev/null || return 1
-  git -C "$d" diff --cached --quiet --ignore-cr-at-eol -- . 2>/dev/null || return 1
+  git -C "$d" diff --quiet --ignore-cr-at-eol -- . ':(exclude)OpenFlux' ':(exclude)shared' 2>/dev/null || return 1
+  git -C "$d" diff --cached --quiet --ignore-cr-at-eol -- . ':(exclude)OpenFlux' ':(exclude)shared' 2>/dev/null || return 1
+  # The two gitlinks are excluded above and checked here instead. At this level
+  # git reports a submodule as `-dirty` for CRLF-only differences between WSL
+  # git and a Windows-written checkout, and --ignore-cr-at-eol does not reach
+  # that judgement - so the fork read as permanently dirty and the new
+  # androidApp check failed every honest build. Comparing the recorded gitlink
+  # SHA with the submodule's real HEAD is both immune to that and stricter: it
+  # pins the exact commit, which the old diff did not.
+  local p want_sha have_sha
+  for p in OpenFlux shared; do
+    [ -e "$d/$p/.git" ] || continue
+    want_sha=$(git -C "$d" ls-tree HEAD "$p" 2>/dev/null | awk '{print $3}')
+    have_sha=$(git -C "$d/$p" rev-parse HEAD 2>/dev/null)
+    if [ -z "$want_sha" ] || [ "$want_sha" != "$have_sha" ]; then
+      return 1
+    fi
+  done
   [ -z "$(git -C "$d" ls-files --others --exclude-standard 2>/dev/null)" ] || return 1
   # core.filemode=false is set in the real submodule config, so a `chmod 755` on
   # a tracked .go is invisible to a plain diff. Forcing core.fileMode=true does
