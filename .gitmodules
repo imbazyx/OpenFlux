@@ -1,6 +1,22 @@
+# ПОДГОТОВКА К ПУБЛИКАЦИИ: замените REPLACE_WITH_GITHUB_ACCOUNT на свой
+# аккаунт GitHub перед первым push.
+#
+# Почему это нельзя оставить как есть: форк записывает в индекс конкретные
+# коммиты подмодулей (OpenFlux 5e714cd, shared ba86d07). Эти коммиты есть
+# только в локальных репозиториях и НЕ существуют в p1neappleXpress/*, поэтому
+# `git clone --recurse-submodules` с этими URL упадёт с ошибкой ссылки, а
+# внимательный читатель увидит, что в README обещаны одни версии, а в
+# подмодулях другие. Проще честно остановить публикацию здесь, чем тихо
+# опубликовать форк, который нельзя склонировать.
+#
+# Сделайте так:
+#   1) создайте у себя репозитории OpenFlux и OpenFluxClientShared и запушьте
+#      в них коммиты 5e714cd и ba86d07 соответственно;
+#   2) подставьте свой аккаунт в строки url ниже;
+#   3) удалите этот комментарий.
 [submodule "OpenFlux"]
 	path = OpenFlux
-	url = https://github.com/p1neappleXpress/OpenFlux.git
+	url = https://github.com/REPLACE_WITH_GITHUB_ACCOUNT/OpenFlux.git
 [submodule "shared"]
 	path = shared
-	url = https://github.com/p1neappleXpress/OpenFluxClientShared.git
+	url = https://github.com/REPLACE_WITH_GITHUB_ACCOUNT/OpenFluxClientShared.git
