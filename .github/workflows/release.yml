@@ -2,8 +2,10 @@ name: Release
 
 # A tag like v1.2.3 builds and signs the release APKs from this commit and
 # publishes them as a GitHub release. "Run workflow" builds the same APKs as
-# artifacts without publishing, for a dry run (unsigned unless the keystore
-# secrets are set).
+# artifacts without publishing, for a dry run. The dry run signs too: skipping
+# the keystore there would skip the part most likely to be wrong, and the build
+# would fail anyway with an error that points at gradle instead of at the
+# secret. It needs the same four Actions secrets as a real release.
 on:
   push:
     tags: ['v*']
@@ -88,14 +90,30 @@ jobs:
       - name: Tests
         run: ./gradlew --no-daemon :shared:jvmTest
 
+      # Signing is verified in a dry run too, and deliberately so. This step used
+      # to be skipped unless publishing, on the reasoning that a dry run is
+      # "unsigned". But then the dry run never exercised the part most likely to
+      # be wrong - a missing or mis-encoded keystore, a wrong password, a wrong
+      # alias - and it could not pass anyway: the build step below needs a
+      # keystore, so "Build APKs" died with an unrelated error and the failure
+      # pointed at gradle instead of at the secret that was actually absent.
+      # A dry run that skips signing is not a rehearsal of a release.
       - name: Restore release keystore
-        if: inputs.publish || startsWith(github.ref, 'refs/tags/v')
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "::error::ANDROID_KEYSTORE_BASE64 is required to publish a release"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "::error::ANDROID_KEYSTORE_BASE64 is not set - add it under Settings -> Secrets and variables -> Actions"; exit 1; }
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/openflux-release.jks"
           chmod 600 "$RUNNER_TEMP/openflux-release.jks"
+          # A truncated blob decodes without complaint and fails much later,
+          # inside keytool, as if the password were wrong. Open the store HERE,
+          # where the error can still name the secret that is actually at fault.
+          keytool -list -keystore "$RUNNER_TEMP/openflux-release.jks" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null 2>&1 \
+            || { echo "::error::the decoded keystore does not open with ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS"; exit 1; }
+          echo "keystore restored and opens with the configured password and alias"
 
       - name: Build APKs
         env:
@@ -106,7 +124,6 @@ jobs:
         run: ./gradlew --no-daemon -PappVersion=${{ steps.version.outputs.value }} :androidApp:assembleRelease
 
       - name: Verify APK signatures
-        if: inputs.publish || startsWith(github.ref, 'refs/tags/v')
         run: |
           find androidApp/build/outputs/apk/release -name '*.apk' -print0 | \
             xargs -0 -r -n1 "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose
