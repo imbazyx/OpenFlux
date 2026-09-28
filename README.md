@@ -8,11 +8,17 @@ transport's check (SmartCaptcha, a login wall) through the built-in browser.
 You can also choose **which apps go through the tunnel** — everything, or only
 a list you pick — from the app-selection screen.
 
-> **Note before you publish:** the two submodules (`OpenFlux/`, `shared/`) are
-> deliberately not the originals' repositories — this fork carries its own
-> commits in both, and they must exist under `imbazyx` before this repository
-> can be cloned with `--recurse-submodules`. See
-> [`docs/PUBLISH-CHECKLIST.md`](docs/PUBLISH-CHECKLIST.md).
+> **Everything is in this one repository.** `OpenFlux/` (the core) and `shared/`
+> (the Compose Multiplatform UI and models) are ordinary directories here, not
+> submodules. They were submodules, and the pointer to one exact commit broke
+> twice during development — once naming commits that existed nowhere, once
+> going stale after a rebase. A directory has no such state: a clone is
+> buildable the moment it lands, with no extra steps.
+>
+> The core is still released on its own as
+> [imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux) — that is the
+> repository to use for exit nodes, the CLI and the Windows/iOS clients. This
+> one is the Android app, and it carries the core sources it embeds.
 
 This repository's app code and UI (the `androidApp/` and `shared/` modules)
 come from [meepo161/OpenFluxClient](https://github.com/meepo161/OpenFluxClient),
@@ -25,22 +31,20 @@ tag.
 ## Getting the code
 
 ```bash
-git clone --recurse-submodules https://github.com/imbazyx/OpenFluxAndroid.git
+git clone https://github.com/imbazyx/OpenFluxAndroid.git
+cd OpenFluxAndroid
 ```
 
-Already cloned without `--recurse-submodules`?
+That is the whole procedure. What the clone contains:
 
-```bash
-git submodule update --init --recursive
-```
-
-This checks out two submodules:
-
-- `shared/` → [OpenFluxClientShared](https://github.com/imbazyx/OpenFluxClientShared),
-  the Compose Multiplatform UI and models shared with
-  [OpenFluxDesktop](https://github.com/imbazyx/OpenFluxDesktop).
-- `OpenFlux/` → [OpenFlux](https://github.com/imbazyx/OpenFlux), the
-  core this app embeds as a library (gomobile).
+- `OpenFlux/` — the core this app embeds as a library (gomobile). The same
+  sources are released separately as
+  [imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux), with its own tags
+  for exit nodes and the CLI.
+- `shared/` — the Compose Multiplatform UI and models, vendored from
+  [OpenFluxClientShared](https://github.com/p1neappleXpress/OpenFluxClientShared),
+  which [OpenFluxDesktop](https://github.com/p1neappleXpress/OpenFluxDesktop)
+  also uses. Kept here so this fork can carry its own fixes to it.
 
 ## Building
 
@@ -49,13 +53,13 @@ Needs JDK 17, Go, the Android SDK and NDK 27, and `gomobile`
 
 ```bash
 scripts/build-android-core.sh          # builds androidApp/libs/openflux.aar
-                                        # from the OpenFlux/ submodule
+                                        # from the OpenFlux/ directory
 ./gradlew :androidApp:assembleDebug    # APK, split per ABI
 ```
 
 `scripts/build-android-core.sh` also accepts an explicit path
-(`scripts/build-android-core.sh ../OpenFlux`) if you'd rather build against a
-separate checkout than the submodule.
+(`scripts/build-android-core.sh ../OpenFlux`) if you'd rather build the library
+against a separate core checkout.
 
 ### Building on WSL (the reference path)
 
@@ -74,7 +78,20 @@ scripts/wsl-audit.sh 1.2.0     # -> AUDIT_OK / AUDIT_FAILED
 embedded core provenance (the commit the core was built from), the native
 library's Go build ID, the launcher icon, ABI layout, timestamps and checksums,
 and fails on any mismatch. `scripts/negative-control.sh` attacks the audit
-with 25 tampered trees to prove the checks actually fire.
+with 27 tampered trees to prove the checks actually fire.
+
+### Line endings
+
+The whole tree is committed with LF, and `.gitattributes` says so — `*.sh` and
+`gradlew` explicitly. A CRLF in a shell script is not a formatting nit: bash
+rejects it outright with
+
+```
+scripts/wsl-build.sh: line 8: set: pipefail: invalid option name
+```
+
+and the build dies before doing any work. `core.autocrlf` is left unset on
+purpose; it applies one blanket rule to files that need opposite ones.
 
 ## Per-app VPN
 
@@ -94,8 +111,8 @@ Two Android rules shape this, and the code depends on both:
 
 ```
 androidApp/   VPN service, WebView-based check flow, camera (QR), settings
-shared/       Submodule: models, service interfaces, design system, screens
-OpenFlux/     Submodule: the core (CLI + the mobile/ gomobile bridge)
+shared/       models, service interfaces, design system, screens
+OpenFlux/     the core (CLI + the mobile/ gomobile bridge)
 scripts/      wsl-toolchain.sh, wsl-build.sh, wsl-audit.sh,
               negative-control.sh, build-android-core.sh
 ```
