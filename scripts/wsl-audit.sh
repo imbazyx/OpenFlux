@@ -462,7 +462,12 @@ tree_clean() {
   # whole file from the check above. info/exclude is not tracked, so refuse to
   # trust the tree while it says anything.
   local gd ex
-  gd=$(git -C "$d" rev-parse --git-dir 2>/dev/null) || return 1
+  # --absolute-git-dir, not --git-dir: the plain form returns a path relative to
+  # the repository (".git"), so "$gd/info/exclude" resolved against this
+  # script's working directory rather than the module's. The count came out 0
+  # here by luck, and 0 is the answer that always passes.
+  gd=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  [ -n "$gd" ] || gd=$(cd "$d" && git rev-parse --absolute-git-dir 2>/dev/null) || return 1
   ex=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$gd/info/exclude" 2>/dev/null | grep -c . )
   [ "${ex:-0}" -eq 0 ] || return 1
   # assume-unchanged / skip-worktree hide a tracked file from both diff and
