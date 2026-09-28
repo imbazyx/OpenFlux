@@ -316,6 +316,29 @@ echo "--- 22. cert pin overridden via OF_EXPECTED_CERT (must NOT be a warning)"
 reset_dist
 echo "  $(OF_EXPECTED_CERT=$(printf '%064d' 3) run)"
 
+echo "--- 23. Kotlin tampered, mtime backdated (androidApp is not a submodule)"
+reset_dist
+F="$H/androidApp/src/main/kotlin/io/openflux/android/core/PacketTunnel.kt"
+cp "$F" "$F.bak"; echo "// tampered" >> "$F"
+touch -d 2020-01-01 "$F"; touch -d 2030-01-01 "$H"/dist/*.apk
+echo "  $(run)"
+mv "$F.bak" "$F"; touch "$F"
+
+echo "--- 24. all artifacts dated in the future (mtime as deleted evidence)"
+reset_dist
+touch -d 2030-01-01 "$H"/dist/*.apk
+echo "  $(run)"
+
+echo "--- 25. a foreign-arch library dropped into a single-ABI APK"
+reset_dist
+for a in "$H"/dist/*arm64-v8a-release.apk; do
+  T2=$(mktemp -d); unzip -o -q "$a" -d "$T2"
+  mkdir -p "$T2/lib/x86"; cp "$T2/lib/arm64-v8a/libgojni.so" "$T2/lib/x86/libsupport.so"
+  (cd "$T2" && zip -qr "$a" .); rm -rf "$T2"
+done
+resum
+echo "  $(run)"
+
 # --- source-destroying cases last: irreversible, and everything above needs the
 # --- trees intact.
 echo "--- 5. source tree removed"
