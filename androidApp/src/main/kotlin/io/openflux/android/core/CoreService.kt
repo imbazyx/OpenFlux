@@ -149,6 +149,8 @@ class CoreService : VpnService() {
             // saying "only 2 apps" while every app is routed would be a privacy
             // failure with no on-screen trace anywhere.
             AppSelection.save(context, false, emptySet())
+            appRuleNotice =
+                "Выбранных приложений больше нет — через ноду идёт весь трафик телефона"
             fullTunnel()
             return
         }
