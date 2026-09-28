@@ -1,5 +1,0 @@
-remove a commit-message scratch file that got committed by mistake
-
-CMT4.txt was git add -A before being deleted, so it was captured in the
-.gitattributes commit and then vanished from the working tree. Only ever tracked
-in that one commit, so removing it here is enough; no history rewrite needed.
