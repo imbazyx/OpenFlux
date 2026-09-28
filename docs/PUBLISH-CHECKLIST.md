@@ -54,8 +54,10 @@
 
 - Пароли keystore читаются из переменных окружения (`ANDROID_KEYSTORE_PASSWORD`,
   `ANDROID_KEY_PASSWORD`), в коде их нет.
-- Keystore вне репозитория: `$HOME/build/openflux-local.jks`, сборка передаёт
-  пароль через `-storepass:env` (вне списка процессов).
+- Keystore вне репозитория: `$HOME/build/openflux-release.jks`, пароль в
+  `$HOME/ofsign.env` (оба `chmod 600`). Сборка передаёт пароль через
+  `-storepass:env` — вне списка процессов. Ни то, ни другое не попадает в
+  индекс: аудит, который ищет утечки, не может пропустить собственный ключ.
 - IP/хосты exit-нод и отпечатки сертификатов в индекс не попали.
 - `dist/` (пять APK, >100 МБ) в `.gitignore`.
 

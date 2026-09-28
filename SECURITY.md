@@ -44,3 +44,14 @@ The CI release workflow expects the keystore itself as
 `ANDROID_KEYSTORE_BASE64`. Losing this key means the published APKs can no
 longer be updated in place — Android refuses to install over them. Back it up
 somewhere you control.
+
+The release key's SHA-256 fingerprint is
+`60487280f6a493f6afd525d2727fa8b1772c217a24dd6ee148f90f3114a1f156`
+(`CN=OpenFlux, OU=Release, O=OpenFlux`, valid to 2056-09-20). It is printed in
+`scripts/wsl-audit.sh` and the audit **fails** any `dist/` whose APKs carry a
+different certificate. That is deliberate: an APK signed by some other key
+cannot update an installed copy, and nothing else in the build would notice.
+
+If you fork this, mint your own key and set your own fingerprint — do not reuse
+ours, and do not set `OF_EXPECTED_CERT` to match whatever you happen to build.
+The audit treats that override as voiding the check, and says so on exit.
