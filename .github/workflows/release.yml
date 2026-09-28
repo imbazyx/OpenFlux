@@ -40,8 +40,14 @@ jobs:
         run: |
           v="${{ inputs.version }}"
           if [ -z "$v" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF#refs/tags/v}"; fi
-          if [ -z "$v" ]; then v="0.0.0-dev"; fi
-          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::version '$v' is not X.Y.Z"; exit 1; fi
+          # The fallback must itself satisfy the check below, otherwise the
+          # documented dry-run path (manual run, no version, no tag) dies here.
+          # rev-list --count is unbounded, so it is folded into two digits: this
+          # repo is already past 99 commits and "0.0.341" fails the patch group.
+          if [ -z "$v" ]; then v="0.0.$(printf '%02d' $(( $(git rev-list --count HEAD) % 100 )))"; fi
+          # Parts are bounded because versionCode is major*10000+minor*100+patch,
+          # which collides for e.g. 1.100.0 and 2.0.0.
+          if ! [[ "$v" =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then echo "::error::version '$v' is not X.Y.Z"; exit 1; fi
           echo "value=$v" >> "$GITHUB_OUTPUT"
           echo "Version $v, core $(git -C OpenFlux rev-parse --short HEAD)"
 
@@ -63,7 +69,11 @@ jobs:
       - name: Install Android SDK components
         run: |
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973"
+          # compileSdk/targetSdk come from gradle/libs.versions.toml and are 36.
+          # Installing 35 here made the reference build fail with "Failed to find
+          # target with hash string 'android-36'"; AGP only hides that locally by
+          # downloading the missing platform on its own.
+          sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;27.0.12077973"
 
       - name: Install gomobile
         run: |

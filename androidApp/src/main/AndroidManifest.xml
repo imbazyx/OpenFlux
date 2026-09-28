@@ -13,6 +13,10 @@
     <!-- The QR scanner (zxing-android-embedded) asks for it when opened. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Listing the installed applications for the per-app VPN rule. Android 11+
+         hides the app list from apps by default, so the picker would show an
+         empty screen without it. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <application
         android:name=".OpenFluxApplication"
@@ -47,6 +51,12 @@
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="fullSensor"
             tools:replace="screenOrientation" />
+
+        <!-- Which applications the tunnel carries (Settings → VPN). -->
+        <activity
+            android:name=".platform.AppSelectionActivity"
+            android:exported="false"
+            android:label="Приложения через прокси" />
 
         <!-- Runs the core: the VPN (client), the local proxy or the exit node. -->
         <service
