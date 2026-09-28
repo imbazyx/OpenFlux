@@ -121,11 +121,16 @@ func (b *BatchedTransport) Send(data []byte) error {
 	b.lifecycle.Lock()
 	defer b.lifecycle.Unlock()
 	if !b.running.Load() {
-		utils.Debugf("[BATCH] Send: not running, dropping %d bytes", len(data))
+		// Packetf, not Debugf, for the same reason as the flushLoop lines: these
+		// three fire once per PACKET, and they fire most when the transport is
+		// already broken. As Debugf they produced one logcat line per dropped
+		// packet precisely during the outage the user is trying to read logs
+		// about. The error still returns to the caller either way.
+		utils.Packetf("[BATCH] Send: not running, dropping %d bytes", len(data))
 		return fmt.Errorf("batched transport is not running")
 	}
 	if len(data) > 65535 {
-		utils.Debugf("[BATCH] Send: packet too large %d", len(data))
+		utils.Packetf("[BATCH] Send: packet too large %d", len(data))
 		return fmt.Errorf("packet too large for batch record: %d bytes", len(data))
 	}
 	p := make([]byte, len(data))
@@ -136,7 +141,7 @@ func (b *BatchedTransport) Send(data []byte) error {
 			len(p), len(b.queue), cap(b.queue))
 		return nil
 	default:
-		utils.Debugf("[BATCH] Send: QUEUE FULL, dropped %d bytes", len(p))
+		utils.Packetf("[BATCH] Send: QUEUE FULL, dropped %d bytes", len(p))
 		return fmt.Errorf("batch queue full")
 	}
 }
@@ -189,6 +194,17 @@ func (b *BatchedTransport) recordSendError(err error) {
 }
 
 func (b *BatchedTransport) flushLoop() {
+	// The per-batch lines below are Packetf, not Debugf, and that is the whole
+	// reason the phone is usable. mobile.Start() calls EnableDebug()
+	// unconditionally, so every Debugf is live on Android - and emit() writes to
+	// os.Stderr as well as to the in-app sink, which Android tags E/GoLog. A
+	// device log captured during a working session showed five of these per
+	// batch, several batches a second, forever: continuous ERROR-priority
+	// logcat for the whole life of the tunnel. It also buries real errors.
+	//
+	// They are packet-tracking lines, not one-off operational events, which is
+	// exactly what Packetf gates, and the mobile bridge already calls
+	// SetPackets(false). The CLI keeps them under -ddd.
 	utils.Debugf("[BATCH] flushLoop: started")
 	for b.running.Load() {
 		var first []byte
@@ -215,7 +231,7 @@ func (b *BatchedTransport) flushLoop() {
 				break drainNow
 			}
 		}
-		utils.Debugf("[BATCH] flushLoop: phase1 drained to %d packets, %d bytes", len(batch), size)
+		utils.Packetf("[BATCH] flushLoop: phase1 drained to %d packets, %d bytes", len(batch), size)
 
 		// Phase 2: brief linger to catch stragglers arriving just after the
 		// burst. Negligible next to the channel RTT, but it fills batches
@@ -237,12 +253,12 @@ func (b *BatchedTransport) flushLoop() {
 				}
 			}
 			timer.Stop()
-			utils.Debugf("[BATCH] flushLoop: phase2 linger done, %d packets, %d bytes",
+			utils.Packetf("[BATCH] flushLoop: phase2 linger done, %d packets, %d bytes",
 				len(batch), size)
 		}
 
 		encoded := encodeBatch(batch)
-		utils.Debugf("[BATCH] flushLoop: sending batch of %d packets (%d raw -> %d wire bytes)",
+		utils.Packetf("[BATCH] flushLoop: sending batch of %d packets (%d raw -> %d wire bytes)",
 			len(batch), size, len(encoded))
 		if utils.IsVerbose() && utils.Sensitive() {
 			utils.Debugf("[BATCH] flushLoop: batch hexdump:\n%s", hex.Dump(encoded))
@@ -250,7 +266,7 @@ func (b *BatchedTransport) flushLoop() {
 		if err := b.Transport.Send(encoded); err != nil {
 			b.recordSendError(err)
 		} else {
-			utils.Debugf("[BATCH] flushLoop: batch sent OK")
+			utils.Packetf("[BATCH] flushLoop: batch sent OK")
 		}
 	}
 	utils.Debugf("[BATCH] flushLoop: exit (running=false)")
