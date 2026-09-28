@@ -8,3 +8,6 @@ local.properties
 androidApp/libs/*.aar
 androidApp/libs/*.jar
 androidApp/libs/openflux-core.version
+# Build output of scripts/wsl-build.sh: five APKs and their checksums, well over
+# 100 MB. They are produced, not authored, and dist/ is wiped on every build.
+/dist/

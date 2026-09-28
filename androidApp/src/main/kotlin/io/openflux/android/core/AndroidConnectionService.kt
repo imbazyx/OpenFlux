@@ -324,6 +324,10 @@ class AndroidConnectionService(
             failRun(current, "Android не создал VPN-интерфейс: разрешение на VPN отозвано")
             return
         }
+        // establish() may have had to widen the per-app rule to a full tunnel.
+        // Say so in the status line: the alternative is a user who asked for two
+        // apps through the node getting the whole phone through it, in silence.
+        host.appRuleNotice?.let { current.notice = it }
         val tunnel = PacketTunnel(
             tun, dns, current.sent, current.received,
             onProblem = { current.notice = it },
