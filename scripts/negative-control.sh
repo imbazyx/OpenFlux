@@ -276,6 +276,26 @@ grep -q 'val resetBtn' "$F" || echo "   (подмена не применила�
 echo "  $(run)"
 mv "$F.bak" "$F"
 
+echo "--- 21. libgojni.so cut down to a stub-sized blob (real ones are 15-16 MB)"
+reset_dist
+for a in "$H"/dist/*.apk; do
+  T2=$(mktemp -d); unzip -o -q "$a" -d "$T2"
+  find "$T2/lib" -name libgojni.so | while read -r f; do
+    head -c 1400000 "$f" > "$f.cut"
+    { cat "$f.cut"
+      printf 'M-DOCS;Auth OK;connectToDoc;one-way channel;session rotation;doc key rotated;rx ping;Java_io_openflux;_cgoexp;'
+      head -c 600000 /dev/zero | tr '\0' 'C'; } > "$f"
+    rm -f "$f.cut"
+  done
+  (cd "$T2" && zip -qr "$a" .); rm -rf "$T2"
+done
+resum
+echo "  $(run)"
+
+echo "--- 22. cert pin overridden via OF_EXPECTED_CERT (must NOT be a warning)"
+reset_dist
+echo "  $(OF_EXPECTED_CERT=$(printf '%064d' 3) run)"
+
 # --- source-destroying cases last: irreversible, and everything above needs the
 # --- trees intact.
 echo "--- 5. source tree removed"
