@@ -200,12 +200,12 @@ class AndroidPlatformServices(
 
     // Not private: AppSelection.save() ticks the revision through [instance].
     companion object {
-        // ПОДГОТОВКА К ПУБЛИКАЦИИ: подставьте свой аккаунт GitHub перед
-        // публикацией. Пока стоит заглушка — latestRelease() вернёт null
-        // (там getOrNull), и приложение просто не предложит обновление.
-        // Оставлять здесь p1neappleXpress нельзя: форк показывал бы чужие
-        // релизы как свои обновления.
-        private const val RELEASE_REPO = "REPLACE_WITH_GITHUB_ACCOUNT/OpenFluxAndroid"
+        // This fork's own releases, not p1neappleXpress/OpenFluxAndroid: pointing
+        // at the original would offer that repository's releases to our users as
+        // if they were updates to this app. If this repository is renamed or
+        // moved, this is the one string to change. A failed lookup is harmless -
+        // latestRelease() ends in getOrNull, so it just offers no update.
+        private const val RELEASE_REPO = "imbazyx/OpenFluxAndroid"
         private const val TAG_PREFIX = "v"
         private const val MAX_QR_IMAGE = 2048
         private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif", "webp")
