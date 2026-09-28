@@ -19,6 +19,27 @@ cp -a "$SRC/androidApp/build.gradle.kts" "$H/androidApp/" 2>/dev/null
 find "$H/androidApp" -maxdepth 1 -name build -type d -exec rm -rf {} + 2>/dev/null
 find "$H/scripts" -name '*.sh' -exec sed -i 's/\r$//' {} +
 
+# The fork itself needs a repository too, and not only for tidiness. The audit
+# now compares androidApp against the FORK (androidApp is a plain directory, not
+# a submodule) and treats "no repository" as a FAILURE rather than a skip - so a
+# harness with no .git turned the baseline red, and every case after it
+# meaningless. Copy the way a worktree is copied never works: clone the gitdir.
+if [ -d "$SRC/.git" ]; then
+  rm -rf "$H/.fork"
+  if git clone -q --shared --no-checkout "$SRC/.git" "$H/.fork" 2>/dev/null; then
+    # `git clone <dst>` puts the repository at <dst>/.git; move that into place.
+    mv "$H/.fork/.git" "$H/.git"
+    rm -rf "$H/.fork"
+    git -C "$H" config --unset core.worktree 2>/dev/null
+    git -C "$H" config core.bare false 2>/dev/null
+    # --no-checkout leaves the index full and the worktree empty, so git calls
+    # every tracked file deleted. dist/ is untracked and survives this.
+    git -C "$H" reset --hard -q 2>/dev/null
+  else
+    echo "!! клон форка не удался, базовая линия будет красной" >&2
+  fi
+fi
+
 # A submodule's .git is a FILE pointing at ../.git/modules/<name>, so `cp -a` of
 # the submodule copies the pointer and not its target: `git rev-parse` in the copy
 # fails and the audit skips its one provenance check. Every control would then run
