@@ -70,8 +70,15 @@ func NewBaseTransport(config TransportConfig) *BaseTransport {
 }
 
 func (b *BaseTransport) Start() error {
+	// Under b.Mu because Done() reads b.done under the same lock, and Stop()
+	// closes it. Writing it unlocked left no mutual exclusion at all: a racing
+	// Done() could hand a caller the OLD channel while Stop() closed the new
+	// one, so a watchdog parked on it never woke. -race never caught this only
+	// because no test restarts a transport while a reader is parked.
+	b.Mu.Lock()
 	b.doneOnce = sync.Once{}
 	b.done = make(chan struct{})
+	b.Mu.Unlock()
 	b.running.Store(1)
 	b.startTime = time.Now()
 	return nil
@@ -80,9 +87,11 @@ func (b *BaseTransport) Start() error {
 func (b *BaseTransport) Stop() error {
 	b.running.Store(0)
 	b.connected.Store(0)
+	b.Mu.Lock()
 	if b.done != nil {
 		b.doneOnce.Do(func() { close(b.done) })
 	}
+	b.Mu.Unlock()
 	return nil
 }
 

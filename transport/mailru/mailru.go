@@ -124,6 +124,16 @@ func (t *MailruDocsTransport) Start() error {
 	}
 
 	t.baseUserID = randUserID()
+	// Drop the session the previous run left behind. connectToDoc() reads
+	// t.session to decide whether to spawn the writer, so a stale non-nil
+	// pointer after Stop() → Start() made it skip the spawn: nothing was draining
+	// the queue and every Send() returned "write queue full" until the next
+	// reconnect happened to replace the session. Unreachable today because
+	// nothing restarts a live transport, and a silent permanent write failure
+	// if anything ever does.
+	t.Mu.Lock()
+	t.session = nil
+	t.Mu.Unlock()
 	utils.SafeGo("mailru.keepAlive", t.keepAliveLoop)
 	utils.SafeGo("mailru.rxIdle", t.rxIdleLoop)
 	utils.SafeGo("mailru.docKey", t.docKeyLoop)
