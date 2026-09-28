@@ -142,7 +142,14 @@ echo "== collect =="
 # A partial split build used to print BUILD_OK with whatever it got.
 NBUILT=$(find androidApp/build/outputs/apk/release -name '*.apk' | grep -c .)
 [ "$NBUILT" -eq 5 ] || { echo "expected 5 APKs, gradle produced $NBUILT" >&2; exit 1; }
-rm -rf "$SRC/dist"
+# Clear the CONTENTS, not the directory. On /mnt/d a Windows process (Explorer,
+# Total Commander) can hold a handle on dist/, and then `rm -rf dist` fails on
+# the directory itself even when it is already empty - which under set -e killed
+# the whole build at the last step, after a successful gradle assemble. The
+# directory is recreated immediately below, so only its contents matter, and
+# emptying them is what keeps the audit's rule true: dist/ holds the five APKs
+# of this build and their checksums, nothing older.
+find "$SRC/dist" -mindepth 1 -delete 2>/dev/null || true
 mkdir -p "$SRC/dist"
 # Name after the version like CI does, so a 1.1 and a 1.2 artifact are not
 # indistinguishable on disk. find's {} expands the WHOLE matched path even
