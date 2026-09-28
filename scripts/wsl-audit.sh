@@ -27,6 +27,10 @@ if ! [[ $EXPECTED_VER =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then
   exit 2
 fi
 EXPECTED_CODE=$(echo "$EXPECTED_VER" | awk -F. '{printf "%d", $1*10000 + $2*100 + $3}')
+# The applicationId, checked against every APK. Overridable for a genuinely
+# different fork, but the same rule as the cert pin applies: an override is
+# reported at the verdict line, not only here in a comment.
+EXPECTED_PKG=${OF_EXPECTED_PKG:-io.openflux.client}
 
 # The certificate that has signed every personal build. A regenerated local
 # keystore produces a different one, and Android then refuses to update any
@@ -45,6 +49,18 @@ if [ -n "${OF_EXPECTED_CERT:-}" ]; then
   echo "!! ВНИМАНИЕ: OF_EXPECTED_CERT переопределён: $EXPECTED_CERT"
 fi
 readonly EXPECTED_CERT
+
+# An override is not a warning, it is the whole gate. Exporting
+# OF_EXPECTED_CERT=<digest of a rogue key> used to print a yellow line and then
+# return exit 0 over a dist signed by that rogue key, so any CI runner that set
+# it once had a permanently green release gate for an arbitrary certificate.
+# The variable still exists - switching to the project's CI key is a real need -
+# but it now has to be said out loud at the end, and it fails the run.
+CERT_OVERRIDDEN=0
+if [ -n "${OF_EXPECTED_CERT:-}" ]; then
+  CERT_OVERRIDDEN=1
+fi
+readonly CERT_OVERRIDDEN
 
 [ -f "$HOME/ofbuild.env" ] || { echo "run wsl-toolchain.sh first" >&2; exit 1; }
 # shellcheck disable=SC1090
@@ -68,7 +84,7 @@ ok()  { echo "  OK    $1"; }
 bad() { echo "  FAIL  $1"; FAIL=1; }
 
 echo "== 0. набор артефактов =="
-echo "  ожидается версия $EXPECTED_VER (versionCode $EXPECTED_CODE)"
+echo "  ожидается $EXPECTED_PKG версии $EXPECTED_VER (versionCode $EXPECTED_CODE)"
 [ -d "$D" ] || { echo "no dist/ at $D" >&2; exit 1; }
 # Newline-delimited, but every consumer reads it back with `IFS= read -r`, so a
 # space in a filename is still handled. A NUL-delimited list would be stricter,
@@ -160,6 +176,13 @@ echo "== 2. версия и подпись (каждый APK) =="
 while IFS= read -r apk; do
   name=$(basename "$apk")
   B=$($BT/aapt2 dump badging "$apk" 2>/dev/null)
+  # The package name was never checked, and everything else in this section is
+  # about "is this really our release": a same-length edit of the AXML string
+  # pool (io.openflux.client -> io.openflux.c1ient) was reported by aapt2 as a
+  # different package and the audit still said AUDIT_OK. The version, the signer
+  # and the provenance SHA all survive that, so it is a silent identity change.
+  n=$(printf '%s' "$B" | grep -cF "package: name='$EXPECTED_PKG'")
+  [ "$n" -gt 0 ] && ok "$name package=$EXPECTED_PKG" || bad "$name: пакет не $EXPECTED_PKG"
   n=$(printf '%s' "$B" | grep -cF "versionName='$EXPECTED_VER'")
   [ "$n" -gt 0 ] && ok "$name versionName=$EXPECTED_VER" || bad "$name versionName != $EXPECTED_VER"
   n=$(printf '%s' "$B" | grep -cF "versionCode='$EXPECTED_CODE'")
@@ -247,7 +270,12 @@ while IFS= read -r apk; do
     magic=$(head -c4 "$so" | xxd -p)
     [ "$magic" = "7f454c46" ] || { bad_so=$((bad_so+1)); echo "       $abi: не ELF (magic $magic) — вместо .so текст?"; continue; }
     sz=$(stat -c%s "$so")
-    [ "$sz" -gt 1000000 ] || { bad_so=$((bad_so+1)); echo "       $abi: .so всего $sz байт"; }
+    # 1 MB floor was a suggestion, not a threshold. A 1.4 MB C stub - gcc, one
+    # function called Java_io_openflux_Auth_start, the seven marker strings, a
+    # padding array - passed every check here, re-signed with the real key. The
+    # real gomobile libraries are 15-16 MB, so the floor goes where it costs a
+    # padding array nothing to fake and a stub has to do real work to reach.
+    [ "$sz" -gt 10000000 ] || { bad_so=$((bad_so+1)); echo "       $abi: .so всего $sz байт — настоящая gomobile-библиотека весит 15-16 МБ"; }
     # A real ELF, not a bag of strings prefixed with the magic. readelf -h has
     # to parse the header and readelf -d the program headers; 1.5 MB of "B"
     # behind \x7fELF satisfied every marker check below while exporting
@@ -270,6 +298,18 @@ while IFS= read -r apk; do
         :
       else
         bad_so=$((bad_so+1)); echo "       $abi: Java_io_openflux нет в таблице динамических символов"
+      fi
+      # And it has to be a GO library, not C that happens to export a JNI name.
+      # A stub can be padded to any size and can name a function anything; the
+      # Go runtime's own symbols are not something a C file produces.
+      ngo=0
+      for gs in 'runtime.gopanic' 'go.buildid' 'runtime.goexit'; do
+        c=$(strings "$so" 2>/dev/null | grep -cF "$gs" || true)
+        [ "${c:-0}" -gt 0 ] && ngo=$((ngo + 1))
+      done
+      if [ "$ngo" -lt 2 ]; then
+        bad_so=$((bad_so+1))
+        echo "       $abi: найдено $ngo из 3 символов Go-времени — это не Go-библиотека"
       fi
     fi
     strings "$so" > "$T/so.strings"
@@ -339,7 +379,7 @@ tree_clean() {
   [ -z "$(git -C "$d" ls-files --others --exclude-standard 2>/dev/null)" ] || return 1
   return 0
 }
-for mod in OpenFlux shared; do
+for mod in OpenFlux shared androidApp; do
   if [ -e "$ROOT/$mod/.git" ]; then
     if tree_clean "$ROOT/$mod"; then
       ok "модуль $mod: рабочее дерево совпадает с HEAD"
@@ -600,5 +640,10 @@ else
 fi
 
 echo
+# The override is reported here, at the single place the verdict is decided, so
+# it cannot be a warning that scrolls past in the middle of 200 lines.
+if [ "$CERT_OVERRIDDEN" -eq 1 ]; then
+  bad "pin сертификата был переопределён через OF_EXPECTED_CERT — этот прогон ничего не доказывает"
+fi
 [ "$FAIL" -eq 0 ] && echo "AUDIT_OK" || echo "AUDIT_FAILED"
 exit $FAIL
