@@ -368,6 +368,36 @@ golines=$(find "$ROOT/OpenFlux" -name '*.go' -type f -not -path '*/.git/*' -exec
 [ "${golines:-0}" -ge 20000 ] && ok "Go-кода достаточно ($golines строк)" \
                              || bad "Go-кода всего ${golines:-0} строк — похоже на заглушки"
 
+echo "== 5c. lateinit-поля не затенены локальными переменными =="
+# This exact bug shipped once: `val resetBtn = Button(this)` inside build()
+# shadowed `lateinit var resetBtn`, so the field was never assigned,
+# enableActions() bailed on its ::isInitialized guard, and Сбросить/Сохранить
+# were dead on every path. It compiled clean, passed the build and passed this
+# audit - because the root project has no allWarningsAsErrors, so Kotlin's
+# "name shadowed" warning was never fatal and nothing else looked for it.
+# Eight lines of grep are cheaper than the one-button picker.
+shadow=0
+while IFS= read -r f; do
+  while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
+    # grep -v 'lateinit' matters: the declaration line itself is
+    # "lateinit var NAME" and so matches the pattern, which reported all eight
+    # fields as shadowed on a tree where none of them is.
+    hits=$(grep -nE "(^|[^A-Za-z0-9_.])(val|var)[[:space:]]+$nm([^A-Za-z0-9_]|$)" "$f" 2>/dev/null | grep -v 'lateinit')
+    if [ -n "$hits" ]; then
+      shadow=$((shadow + 1))
+      echo "        $f: локальная переменная затеняет lateinit $nm"
+      printf '%s\n' "$hits" | head -2 | sed 's/^/            /'
+    fi
+  done < <(grep -oE 'lateinit[[:space:]]+var[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' "$f" 2>/dev/null \
+           | awk '{print $3}')
+done < <(find "$ROOT/androidApp/src" "$ROOT/shared/src" -name '*.kt' -type f 2>/dev/null)
+if [ "$shadow" -eq 0 ]; then
+  ok "затенений lateinit не найдено"
+else
+  bad "найдено $shadow затенений lateinit — поля остаются неприсвоенными"
+fi
+
 echo "== 5b. go vet по ядру =="
 # mobile/ is a SEPARATE module with its own go.mod, so a plain ./... in the
 # core skips it - and it is the module holding the JNI bridge actually shipped

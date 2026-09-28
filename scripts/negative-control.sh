@@ -267,6 +267,15 @@ done
 resum
 echo "  $(run)"
 
+echo "--- 20. a lateinit field shadowed by a local val (shipped once already)"
+reset_dist
+F="$H/androidApp/src/main/kotlin/io/openflux/android/platform/AppSelectionActivity.kt"
+cp "$F" "$F.bak"
+sed -i 's/^\( *\)resetBtn = Button(this)/\1val resetBtn = Button(this)/' "$F"
+grep -q 'val resetBtn' "$F" || echo "   (подмена не применилась — проверка не проверена)"
+echo "  $(run)"
+mv "$F.bak" "$F"
+
 # --- source-destroying cases last: irreversible, and everything above needs the
 # --- trees intact.
 echo "--- 5. source tree removed"
