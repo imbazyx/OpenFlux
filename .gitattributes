@@ -1,33 +1,49 @@
-# Line endings are load-bearing here, not cosmetic.
+# Line endings: LF everywhere, on every platform.
 #
-# This tree is built and audited on WSL, but it is also checked out on Windows,
-# and the two disagree. A CRLF inside a shell script makes bash reject the very
-# first line it cares about:
+# This repository is built and audited on Linux (WSL) and its shell scripts must
+# run there, so LF is the only line ending that is always correct. `eol=lf`
+# states that explicitly for text files instead of leaving it to each machine's
+# core.autocrlf - which is what caused the trouble:
 #
-#     scripts/wsl-build.sh: line 8: set: pipefail: invalid option name
+#   * core.autocrlf=true was set to stop WSL git reporting every text file as
+#     modified, because the trees had been checked out on Windows with CRLF.
+#   * A rebase then rewrote the shell scripts through that setting, and bash
+#     refused them: "scripts/wsl-build.sh: line 8: set: pipefail: invalid
+#     option name". The build died before doing any work.
+#   * Setting it to false brought the phantom modifications back, and
+#     renormalizing then made all 40 tracked files look modified at once.
 #
-# The build then dies before doing any work, and nothing in the code says why.
-# That is not hypothetical: re-attributing the commit history on WSL rewrote
-# the scripts with CRLF and took the build down, because core.autocrlf had been
-# set to true to stop WSL git reporting every text file as modified.
+# The two settings cannot both be right, and neither is the right tool: they
+# apply one blanket rule to files that need opposite ones. This file is.
+# It travels with the repository, so it holds whatever a contributor's own
+# core.autocrlf happens to say.
 #
-# core.autocrlf cannot express what this repository needs - LF for the scripts
-# that run under bash, CRLF only for the Windows launchers - so it is stated
-# here, where it travels with the repository and applies on every platform
-# regardless of each machine's own settings.
+# The whole tree is committed with LF. Windows checkouts also get LF, which is
+# correct for Gradle, Kotlin, Go and XML, and the only workable choice for the
+# scripts in scripts/.
 
-# Scripts interpreted by a POSIX shell: must be LF on every platform.
-*.sh     text eol=lf
-gradlew  text eol=lf
+*               text=auto eol=lf
 
-# Windows launchers: CRLF is what cmd.exe expects.
-*.bat    text eol=crlf
-*.cmd    text eol=crlf
-*.ps1    text eol=crlf
+# Interpreted by a POSIX shell. Named explicitly because `text=auto` only
+# applies the rule to files it detects as text, and a script with CRLF is not
+# merely misformatted - it will not execute.
+*.sh            text eol=lf
+gradlew         text eol=lf
 
-# Build outputs and vendored binaries are never touched.
-*.apk    binary
-*.aar    binary
-*.jar    binary
-*.jks    binary
-*.keystore binary
+# Windows launchers, kept CRLF because cmd.exe requires it.
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+
+# Never touched: these are not text, and a line-ending filter would corrupt
+# them silently rather than loudly.
+*.apk           binary
+*.aar           binary
+*.jar           binary
+*.jks           binary
+*.keystore      binary
+*.so            binary
+*.png           binary
+*.jpg           binary
+*.webp          binary
+*.ico           binary
