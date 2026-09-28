@@ -31,8 +31,8 @@ tag.
 ## Getting the code
 
 ```bash
-git clone https://github.com/imbazyx/OpenFluxAndroid.git
-cd OpenFluxAndroid
+git clone https://github.com/imbazyx/OpenFlux.git
+cd OpenFlux
 ```
 
 That is the whole procedure. What the clone contains:

@@ -205,7 +205,7 @@ class AndroidPlatformServices(
         // if they were updates to this app. If this repository is renamed or
         // moved, this is the one string to change. A failed lookup is harmless -
         // latestRelease() ends in getOrNull, so it just offers no update.
-        private const val RELEASE_REPO = "imbazyx/OpenFluxAndroid"
+        private const val RELEASE_REPO = "imbazyx/OpenFlux"
         private const val TAG_PREFIX = "v"
         private const val MAX_QR_IMAGE = 2048
         private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif", "webp")

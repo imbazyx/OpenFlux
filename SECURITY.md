@@ -24,9 +24,10 @@ own **Logs** screen is the same data.
 
 You can expect an acknowledgement, and an assessment with any fix or
 mitigation. The core's sources live in this repository, under `OpenFlux/`, and
-are also released separately as
-[imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux) — so a vulnerability
-there should say which repository and commit it was seen in.
+they *are* this repository — the whole project, app and core, is one tree at
+[imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux). Its earlier history,
+when the core was released on its own, is preserved on the `core` branch; a
+vulnerability in it should say which branch and commit it was seen in.
 
 ## Signing
 
