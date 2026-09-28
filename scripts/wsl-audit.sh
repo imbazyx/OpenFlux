@@ -63,6 +63,13 @@ fi
 readonly CERT_OVERRIDDEN
 
 [ -f "$HOME/ofbuild.env" ] || { echo "run wsl-toolchain.sh first" >&2; exit 1; }
+# Remember the SDK before the source runs. Everything downstream is built on
+# $BT - aapt2, apksigner, and therefore the entire certificate check - and
+# $BT came out of a file this script calls untrusted input. Appending
+# `export ANDROID_HOME=<fake>` to ofbuild.env, with a stub apksigner that
+# prints the pinned digest and exits 0, made a rogue-signed dist pass. If the
+# source changes a path we then trust, that is the attack, not the setup.
+SDK_BEFORE=${ANDROID_HOME:-}
 # shellcheck disable=SC1090
 source "$HOME/ofbuild.env"
 # Re-check after the source rather than trusting the one above: the source is
@@ -72,7 +79,43 @@ if ! [[ "$EXPECTED_CERT" =~ ^[0-9a-f]{64}$ ]]; then
   echo "pin повреждён после source ofbuild.env: $EXPECTED_CERT" >&2
   exit 2
 fi
+if [ -z "$SDK_BEFORE" ]; then
+  # Normal: ofbuild.env is where ANDROID_HOME comes from, and the audit is run
+  # from a shell that never had it. Failing here would be red on every run,
+  # which is the same as not having the check. The tool-shape test below is what
+  # actually defends against substitution.
+  SDK_UNTRUSTED=0
+elif [ "$SDK_BEFORE" != "${ANDROID_HOME:-}" ]; then
+  echo "!! ВНИМАНИЕ: ofbuild.env подменил ANDROID_HOME: $SDK_BEFORE -> $ANDROID_HOME"
+  SDK_UNTRUSTED=1
+else
+  SDK_UNTRUSTED=0
+fi
 BT=$ANDROID_HOME/build-tools/35.0.0
+# Everything downstream - the certificate check above all - runs $BT/aapt2 and
+# $BT/apksigner, and $BT came out of a file this script calls untrusted input.
+# Appending `export ANDROID_HOME=<fake>` with a stub apksigner that prints the
+# pinned digest and exits 0 made a rogue-signed dist pass, so the pin was only
+# ever as strong as an env var.
+#
+# The path cannot be pinned; the tools' shape can. The real aapt2 is a 6.3 MB
+# ELF, and the real apksigner is a small script that loads a multi-megabyte jar
+# from the same SDK. A directory an attacker invented will have a 100-byte
+# script and no jar, whatever it is called.
+if [ -x "$BT/aapt2" ] && [ "$(stat -c%s "$BT/aapt2" 2>/dev/null || echo 0)" -gt 1000000 ] \
+   && [ "$(head -c 4 "$BT/aapt2" 2>/dev/null | od -An -c | tr -d ' \n')" = '177ELF' ]; then
+  :
+else
+  echo "!! ВНИМАНИЕ: aapt2 в $BT не похож на настоящий (ожидается ELF > 1 МБ)"
+  SDK_UNTRUSTED=1
+fi
+if [ -s "$BT/apksigner" ] && [ -s "$BT/lib/apksigner.jar" ] \
+   && [ "$(stat -c%s "$BT/lib/apksigner.jar" 2>/dev/null || echo 0)" -gt 1000000 ]; then
+  :
+else
+  echo "!! ВНИМАНИЕ: apksigner в $BT не похож на настоящий (нет lib/apksigner.jar)"
+  SDK_UNTRUSTED=1
+fi
 
 # Private scratch: a fixed /tmp/audit path collides between concurrent runs
 # and between users on the same machine.
@@ -94,6 +137,16 @@ COUNT=$(printf '%s\n' "$APK_LIST" | grep -c .)
 [ "$COUNT" -eq 5 ] && ok "5 APK в dist/" || bad "APK в dist/: $COUNT (ожидается 5)"
 
 if [ "$COUNT" -eq 0 ]; then echo "no APKs in $D" >&2; exit 1; fi
+
+# An artifact dated in the future is not evidence of anything, it is a deleted
+# timestamp. `find -newer $apk` compares against the APK's own mtime and nothing
+# bounds that value, so `touch -d 2030-01-01 dist/*.apk` made every source file
+# in the tree look older than the build - which is the enabler that let a
+# backdated edit, an assume-unchanged bit and a chmod all pass section 5a.
+# The fix is not to trust mtime, it is to stop accepting a nonsense one.
+nfuture=$(find "$D" -maxdepth 1 -name '*.apk' -newermt '+1 day' 2>/dev/null | grep -c . || true)
+[ "${nfuture:-0}" -eq 0 ] \
+  || { echo "  FAIL  ${nfuture} APK имеют будущую дату — mtime не является доказательством"; FAIL=1; }
 
 # Reading the list back with `IFS= read -r` keeps each path intact.
 apks() { printf '%s\n' "$APK_LIST" | grep .; }
@@ -164,6 +217,21 @@ while IFS= read -r apk; do
     done
     [ -z "$extra" ] && ok "$name: посторонних ABI нет" \
                     || bad "$name: кроме $abis внутри есть$extra — это universal под чужим именем"
+  fi
+  # That loop only ever looks for libgojni.so, so a directory belonging to
+  # another ABI walks past it entirely: `lib/arm64-v8a/libsupport.so`, a copy of
+  # the x86 library, shipped inside a single-ABI APK and loaded at runtime.
+  # Extra libraries inside the CORRECT abi are normal - this build really does
+  # ship libandroidx.graphics.path.so - so the rule is about directories, not
+  # about file names.
+  if [ "$want" -eq 1 ]; then
+    dirs=$(printf '%s\n' "$contents" | grep '^lib/' | cut -d/ -f2 | sort -u | tr '\n' ' ')
+    for d in $dirs; do
+      if [ "$d" != "$abis" ]; then
+        bad "$name: каталог lib/$d не соответствует заявленной архитектуре $abis"
+      fi
+    done
+    ok "$name: каталоги lib/ соответствуют $abis"
   fi
 done <<< "$(apks)"
 
@@ -279,9 +347,17 @@ while IFS= read -r apk; do
     # A real ELF, not a bag of strings prefixed with the magic. readelf -h has
     # to parse the header and readelf -d the program headers; 1.5 MB of "B"
     # behind \x7fELF satisfied every marker check below while exporting
-    # nothing. If readelf is missing this degrades to the old behaviour rather
-    # than failing the build on a missing optional tool.
-    if command -v readelf >/dev/null 2>&1; then
+    # nothing.
+    #
+    # readelf and go are REQUIRED, not optional. `command -v readelf` guarding
+    # this block was the same shape as the dexdump bug: the block skips itself
+    # when the tool is missing and the .so is declared good. A missing tool now
+    # fails the run instead of passing it.
+    for need in readelf go; do
+      command -v "$need" >/dev/null 2>&1 \
+        || { bad_so=$((bad_so+1)); echo "       $abi: нет $need — проверка .so пропущена"; }
+    done
+    if command -v readelf >/dev/null 2>&1 && command -v go >/dev/null 2>&1; then
       if ! readelf -h "$so" >/dev/null 2>&1; then
         bad_so=$((bad_so+1)); echo "       $abi: readelf -h не разобрал файл — это не ELF"
         continue
@@ -300,24 +376,17 @@ while IFS= read -r apk; do
         bad_so=$((bad_so+1)); echo "       $abi: Java_io_openflux нет в таблице динамических символов"
       fi
       # And it has to be a GO library, not C that happens to export a JNI name.
-      # A stub can be padded to any size and can name a function anything; the
-      # Go runtime's own symbols are not something a C file produces.
-      ngo=0
-      for gs in 'runtime.gopanic' 'go.buildid' 'runtime.goexit'; do
-        c=$(strings "$so" 2>/dev/null | grep -cF "$gs" || true)
-        [ "${c:-0}" -gt 0 ] && ngo=$((ngo + 1))
-      done
-      if [ "$ngo" -lt 2 ]; then
+      # Grepping the byte stream for three symbol NAMES is not a provenance
+      # check: three `const char*` in a C file satisfy it, and an 11.5 MB gcc
+      # stub with one Java_io_openflux_Auth_start and a padding array was
+      # accepted for all five APKs. `go version -m` reads the real build info
+      # block a Go linker writes, and has nothing to say about a C object.
+      if ! go version -m "$so" >/dev/null 2>&1; then
         bad_so=$((bad_so+1))
-        echo "       $abi: найдено $ngo из 3 символов Go-времени — это не Go-библиотека"
+        echo "       $abi: go version -m не читает файл — это не сборка Go"
       fi
     fi
     strings "$so" > "$T/so.strings"
-    for sym in 'Java_io_openflux' '_cgoexp'; do
-      grep -qF "$sym" "$T/so.strings" || { bad_so=$((bad_so+1)); echo "       $abi: нет символа $sym"; }
-    done
-    # The control strings prove the .so really unpacked; without them the
-    # marker results below would be meaningless.
     for m in 'M-DOCS' 'Auth OK' 'connectToDoc'; do
       n=$(grep -cF "$m" "$T/so.strings")
       [ "$n" -gt 0 ] || { bad_so=$((bad_so+1)); echo "       $abi: нет контрольной строки $m"; }
@@ -377,18 +446,51 @@ tree_clean() {
   git -C "$d" diff --quiet --ignore-cr-at-eol -- . 2>/dev/null || return 1
   git -C "$d" diff --cached --quiet --ignore-cr-at-eol -- . 2>/dev/null || return 1
   [ -z "$(git -C "$d" ls-files --others --exclude-standard 2>/dev/null)" ] || return 1
+  # core.filemode=false is set in the real submodule config, so a `chmod 755` on
+  # a tracked .go is invisible to a plain diff. Forcing core.fileMode=true does
+  # surface it - and also reports EVERY file as 100644 => 100755, because the
+  # tree lives on a Windows mount that marks everything executable. That is not
+  # a change anyone made, and treating it as one turns the check permanently
+  # red, which is how checks get deleted. So: ignore exactly that one pattern,
+  # fail on any other mode change.
+  local modes
+  modes=$(git -C "$d" -c core.fileMode=true diff --summary 2>/dev/null \
+    | grep -v 'mode change 100644 => 100755' | grep -c 'mode change' || true)
+  [ "${modes:-0}" -eq 0 ] || return 1
+  # ... but that listing honours .git/info/exclude, which is untracked and is
+  # never itself checked: one `echo backdoor.go >> .git/info/exclude` hides a
+  # whole file from the check above. info/exclude is not tracked, so refuse to
+  # trust the tree while it says anything.
+  local gd ex
+  gd=$(git -C "$d" rev-parse --git-dir 2>/dev/null) || return 1
+  ex=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$gd/info/exclude" 2>/dev/null | grep -c . )
+  [ "${ex:-0}" -eq 0 ] || return 1
+  # assume-unchanged / skip-worktree hide a tracked file from both diff and
+  # status. A lowercase letter in `ls-files -v` is exactly that flag.
+  local flags
+  flags=$(git -C "$d" ls-files -v 2>/dev/null | grep -c '^[a-z]')
+  [ "${flags:-0}" -eq 0 ] || return 1
   return 0
 }
 for mod in OpenFlux shared androidApp; do
-  if [ -e "$ROOT/$mod/.git" ]; then
-    if tree_clean "$ROOT/$mod"; then
+  # androidApp is NOT a submodule. It is a plain directory inside this repo, so
+  # $ROOT/androidApp/.git does not exist and `[ -e "$d/.git" ]` is false - which
+  # made the androidApp entry a check that reads correctly and checks nothing,
+  # committed as the fix for exactly that gap. The whole Kotlin application was
+  # still outside the tree check while the audit reported it as covered.
+  # For a plain directory the repository to compare against is the fork itself.
+  if [ "$mod" = androidApp ]; then d="$ROOT"; else d="$ROOT/$mod"; fi
+  if [ -e "$d/.git" ]; then
+    if tree_clean "$d"; then
       ok "модуль $mod: рабочее дерево совпадает с HEAD"
     else
       bad "модуль $mod: есть незакоммиченные изменения — APK им не соответствует"
-      git -C "$ROOT/$mod" ls-files --others --exclude-standard 2>/dev/null | head -3 | sed 's/^/        новый: /'
-      git -C "$ROOT/$mod" diff --name-only --ignore-cr-at-eol 2>/dev/null | head -3 | sed 's/^/        изменён: /'
+      git -C "$d" ls-files --others --exclude-standard 2>/dev/null | head -3 | sed 's/^/        новый: /'
+      git -C "$d" diff --name-only --ignore-cr-at-eol 2>/dev/null | head -3 | sed 's/^/        изменён: /'
       echo "        (сначала закоммитьте, потом пересоберите: отпечаток берётся с HEAD)"
     fi
+  else
+    bad "модуль $mod: нет репозитория по пути $d — дерево не проверено"
   fi
 done
 
@@ -399,8 +501,14 @@ echo "== 5b. исходники не выпотрошены =="
 # .go to a bare "package X" passed too, and go vet is vacuously clean on an
 # empty package - 19 lines standing in for 40k.
 kt=$(find "$ROOT/androidApp/src" "$ROOT/shared/src" -name '*.kt' -type f 2>/dev/null | grep -c . || true)
-[ "${kt:-0}" -ge 60 ] && ok "Kotlin-исходники на месте ($kt .kt)" \
-                     || bad "Kotlin-исходников всего ${kt:-0} — ожидалось не меньше 60"
+# 60 against a real 73 was a standing invitation: delete the whole Kotlin
+# application, drop in 60 one-line `package stub` files, backdate them, and the
+# count still clears. No .go lives under androidApp/shared, so all 29793 Go
+# lines are in OpenFlux - a tree-checked module. This file count is therefore
+# the ONLY structural constraint on the application itself. 71 leaves room to
+# delete two files and no more.
+[ "${kt:-0}" -ge 71 ] && ok "Kotlin-исходники на месте ($kt .kt)" \
+                     || bad "Kotlin-исходников всего ${kt:-0} — ожидалось не меньше 71"
 gof=$(find "$ROOT/OpenFlux" -name '*.go' -type f -not -path '*/.git/*' 2>/dev/null | grep -c . || true)
 [ "${gof:-0}" -ge 80 ] && ok "Go-исходники на месте ($gof .go)" \
                       || bad "Go-исходников всего ${gof:-0} — ожидалось не меньше 80"
@@ -644,6 +752,9 @@ echo
 # it cannot be a warning that scrolls past in the middle of 200 lines.
 if [ "$CERT_OVERRIDDEN" -eq 1 ]; then
   bad "pin сертификата был переопределён через OF_EXPECTED_CERT — этот прогон ничего не доказывает"
+fi
+if [ "${SDK_UNTRUSTED:-0}" -eq 1 ]; then
+  bad "путь SDK менялся при source или aapt2/apksigner отсутствуют — cert-проверка недоверенна"
 fi
 [ "$FAIL" -eq 0 ] && echo "AUDIT_OK" || echo "AUDIT_FAILED"
 exit $FAIL
