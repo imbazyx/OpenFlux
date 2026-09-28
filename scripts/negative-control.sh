@@ -40,11 +40,34 @@ install_core() {
     # ../../../OpenFlux - a path that means nothing in the copy.
     git -C "$H/OpenFlux" config --unset core.worktree 2>/dev/null
     git -C "$H/OpenFlux" config core.bare false 2>/dev/null
+    # --no-checkout fills the index but leaves the worktree empty, so git calls
+    # every tracked file deleted. The audit now requires the tree to match HEAD
+    # (that check is the one that catches an uncommitted tamper in the shipped
+    # core), so the harness has to present a real checkout or the baseline goes
+    # red for a reason that has nothing to do with what it is testing.
+    git -C "$H/OpenFlux" reset --hard -q 2>/dev/null
   else
     echo "!! clone не удался, контроли пойдут с отключённой проверкой HEAD" >&2
     git clone --shared --no-checkout "$SRC/.git/modules/OpenFlux" "$H/.core" 2>&1 | head -5 >&2
   fi
   rm -rf "$H/.core"
+  # shared/ is a submodule too, and it was being copied the same broken way: its
+  # .git is a POINTER to ../.git/modules/shared, which in the copy points outside
+  # the harness. Git could not resolve a repository at all, so the audit's
+  # "tree matches HEAD" check - correctly - reported the module as tampered and
+  # turned the baseline red for a reason unrelated to the attack under test.
+  # Give it a real repository the same way the core gets one.
+  if [ -e "$SRC/.git/modules/shared" ]; then
+    rm -rf "$H/.shared"
+    if git clone -q --shared --no-checkout "$SRC/.git/modules/shared" "$H/.shared" 2>/dev/null; then
+      rm -f "$H/shared/.git"
+      mv "$H/.shared/.git" "$H/shared/.git"
+      git -C "$H/shared" config --unset core.worktree 2>/dev/null
+      git -C "$H/shared" config core.bare false 2>/dev/null
+      git -C "$H/shared" reset --hard -q 2>/dev/null
+    fi
+    rm -rf "$H/.shared"
+  fi
   if [ -n "${OF_DEBUG:-}" ]; then
     echo "!! install_core: HEAD копии = $(git -C "$H/OpenFlux" rev-parse HEAD 2>&1)" >&2
   fi
@@ -169,6 +192,68 @@ echo "--- 11. provenance check disabled by removing the submodule's git"
 reset_dist
 rm -rf "$H/OpenFlux/.git"
 echo "  $(run)"
+install_core
+
+# The cases below cover the checks added after the red-team report. Each one is
+# a bypass that returned AUDIT_OK on a corrupted tree; a check with no case
+# against it is a check that quietly stops working.
+echo "--- 13. uncommitted edit inside the shipped core (mtime backdated)"
+reset_dist
+echo "// tamper" >> "$H/OpenFlux/utils/logging.go"
+touch -d "2020-01-01" "$H/OpenFlux/utils/logging.go" 2>/dev/null
+echo "  $(run)"
+git -C "$H/OpenFlux" checkout -- utils/logging.go 2>/dev/null
+
+echo "--- 14. x86 ABI renamed to mips (decoy substring used to satisfy the check)"
+reset_dist
+T2=$(mktemp -d)
+(cd "$T2" && unzip -o -q "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86-release.apk")
+mkdir -p "$T2/res/zdecoy/lib/x86"; echo decoy > "$T2/res/zdecoy/lib/x86/keep.txt"
+mv "$T2/lib/x86" "$T2/lib/mips"
+(cd "$T2" && zip -qr "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86-release.apk" .)
+rm -rf "$T2"
+resum
+echo "  $(run)"
+
+echo "--- 15. stray file in dist/"
+reset_dist
+echo "notes" > "$H/dist/extra-notes.txt"
+echo "  $(run)"
+rm -f "$H/dist/extra-notes.txt"
+
+echo "--- 16. every classes*.dex replaced by a padded string bag"
+reset_dist
+for a in "$H"/dist/*.apk; do
+  T2=$(mktemp -d); unzip -o -q "$a" -d "$T2"
+  find "$T2" -name 'classes*.dex' -delete
+  { printf 'dex\n035\0'; head -c 2500000 /dev/zero | tr '\0' 'A';
+    printf 'openflux-core@%s;per-app rule: none of;cannot allow;Lio/openflux/' "$sha"; } > "$T2/classes.dex"
+  (cd "$T2" && zip -qr "$a" .); rm -rf "$T2"
+done
+resum
+echo "  $(run)"
+
+echo "--- 17. every libgojni.so replaced by a padded ELF-magic string bag"
+reset_dist
+for a in "$H"/dist/*.apk; do
+  T2=$(mktemp -d); unzip -o -q "$a" -d "$T2"
+  find "$T2/lib" -name libgojni.so | while read -r f; do
+    { printf '\177ELF'; head -c 1500000 /dev/zero | tr '\0' 'B';
+      printf 'M-DOCS;Auth OK;connectToDoc;one-way channel;session rotation;doc key rotated;rx ping;Java_io_openflux;_cgoexp;'; } > "$f"
+  done
+  (cd "$T2" && zip -qr "$a" .); rm -rf "$T2"
+done
+resum
+echo "  $(run)"
+
+echo "--- 18. Kotlin and Go sources hollowed out"
+reset_dist
+find "$H/androidApp/src" "$H/shared/src" -name '*.kt' -delete 2>/dev/null
+find "$H/OpenFlux" -name '*.go' -not -path '*/.git/*' -exec sh -c 'echo "package stub" > "$1"' _ {} \;
+echo "  $(run)"
+install_core
+cp -a "$SRC/androidApp/src" "$H/androidApp/src" 2>/dev/null
+cp -a "$SRC/shared/src" "$H/shared/src" 2>/dev/null
 
 # --- source-destroying cases last: irreversible, and everything above needs the
 # --- trees intact.

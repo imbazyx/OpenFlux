@@ -211,6 +211,15 @@ if [ -f "$D/SHA256SUMS.txt" ]; then
     bad "SHA256SUMS.txt перечисляет не те файлы, что лежат в dist/"
     diff <(printf '%s\n' "$listed") <(printf '%s\n' "$present") | sed 's/^/       /'
   fi
+  # The APK *name* set was pinned but the folder contents were not, so a
+  # release note, a stray script or a second copy of a build sat next to the
+  # five APKs and nobody noticed. Nothing else may live here.
+  strays=$(cd "$D" && ls -A1 2>/dev/null | grep -v '\.apk$' | grep -v '^SHA256SUMS\.txt$' || true)
+  if [ -z "$strays" ]; then
+    ok "в dist нет посторонних файлов"
+  else
+    bad "в dist лежат посторонние файлы: $(printf '%s' "$strays" | tr '\n' ' ')"
+  fi
 else
   bad "нет SHA256SUMS.txt"
 fi
@@ -249,10 +258,15 @@ while IFS= read -r apk; do
         bad_so=$((bad_so+1)); echo "       $abi: readelf -h не разобрал файл — это не ELF"
         continue
       fi
-      readelf -d "$so" 2>/dev/null | grep -q 'SONAME' \
-        || { bad_so=$((bad_so+1)); echo "       $abi: нет DT_SONAME — похоже на не библиотеку"; }
       # The JNI entry points must be real dynamic symbols, not string data.
-      if readelf --dyn-syms "$so" 2>/dev/null | grep -q 'Java_io_openflux'; then
+      # (No DT_SONAME check: a Go-built library legitimately has none, so
+      # requiring it failed every honest APK in the suite.)
+      # Count, do not use `grep -q`. grep -q exits on the first match, readelf
+      # dies of SIGPIPE on the closed pipe, and under `set -o pipefail` the
+      # pipeline reports that failure - so the check reported "no symbols" on
+      # libraries that have 44 of them. grep -c reads the whole stream.
+      nsym=$(readelf --dyn-syms "$so" 2>/dev/null | grep -c 'Java_io_openflux' || true)
+      if [ "${nsym:-0}" -gt 0 ] 2>/dev/null; then
         :
       else
         bad_so=$((bad_so+1)); echo "       $abi: Java_io_openflux нет в таблице динамических символов"
@@ -313,25 +327,46 @@ echo "== 5a. рабочее дерево ядра неприкосновенно
 # whole chain was "40-hex in the dex" + "rev-parse HEAD" + mtime, and touch
 # -d breaks the last link. The build already stamps +patched for a dirty tree;
 # this is the same fact asserted on the tree itself.
-core_dirty=$(git -C "$ROOT/OpenFlux" status --porcelain --untracked-files=normal 2>/dev/null)
-if [ -z "$core_dirty" ]; then
-  ok "ядро OpenFlux: рабочее дерево чистое"
-else
-  bad "ядро OpenFlux: есть незакоммиченные изменения — APK не соответствует исходникам"
-  printf '%s\n' "$core_dirty" | head -5 | sed 's/^/        /'
-  echo "        (сначала закоммитьте, потом пересоберите: отпечаток берётся с HEAD)"
-fi
-for mod in shared; do
-  if [ -d "$ROOT/$mod/.git" ] || [ -f "$ROOT/$mod/.git" ]; then
-    d=$(git -C "$ROOT/$mod" status --porcelain --untracked-files=normal 2>/dev/null)
-    if [ -z "$d" ]; then
-      ok "модуль $mod: рабочее дерево чистое"
+#
+# --ignore-cr-at-eol is not leniency, it is correctness. The audit runs under
+# WSL git against a checkout written by Windows git: every file differs by CRLF
+# and `git status --porcelain` calls the entire tree dirty, which made this
+# check fail every honest build in the suite.
+tree_clean() {
+  local d="$1"
+  git -C "$d" diff --quiet --ignore-cr-at-eol -- . 2>/dev/null || return 1
+  git -C "$d" diff --cached --quiet --ignore-cr-at-eol -- . 2>/dev/null || return 1
+  [ -z "$(git -C "$d" ls-files --others --exclude-standard 2>/dev/null)" ] || return 1
+  return 0
+}
+for mod in OpenFlux shared; do
+  if [ -e "$ROOT/$mod/.git" ]; then
+    if tree_clean "$ROOT/$mod"; then
+      ok "модуль $mod: рабочее дерево совпадает с HEAD"
     else
-      bad "модуль $mod: есть незакоммиченные изменения"
-      printf '%s\n' "$d" | head -5 | sed 's/^/        /'
+      bad "модуль $mod: есть незакоммиченные изменения — APK им не соответствует"
+      git -C "$ROOT/$mod" ls-files --others --exclude-standard 2>/dev/null | head -3 | sed 's/^/        новый: /'
+      git -C "$ROOT/$mod" diff --name-only --ignore-cr-at-eol 2>/dev/null | head -3 | sed 's/^/        изменён: /'
+      echo "        (сначала закоммитьте, потом пересоберите: отпечаток берётся с HEAD)"
     fi
   fi
 done
+
+echo "== 5b. исходники не выпотрошены =="
+# A clean tree proves nothing about how much of it there is. Emptying
+# androidApp/src and shared/src to zero files still passed, because the >=200
+# floor was met entirely by the core tree and its .git directory. Reducing every
+# .go to a bare "package X" passed too, and go vet is vacuously clean on an
+# empty package - 19 lines standing in for 40k.
+kt=$(find "$ROOT/androidApp/src" "$ROOT/shared/src" -name '*.kt' -type f 2>/dev/null | grep -c . || true)
+[ "${kt:-0}" -ge 60 ] && ok "Kotlin-исходники на месте ($kt .kt)" \
+                     || bad "Kotlin-исходников всего ${kt:-0} — ожидалось не меньше 60"
+gof=$(find "$ROOT/OpenFlux" -name '*.go' -type f -not -path '*/.git/*' 2>/dev/null | grep -c . || true)
+[ "${gof:-0}" -ge 80 ] && ok "Go-исходники на месте ($gof .go)" \
+                      || bad "Go-исходников всего ${gof:-0} — ожидалось не меньше 80"
+golines=$(find "$ROOT/OpenFlux" -name '*.go' -type f -not -path '*/.git/*' -exec cat {} + 2>/dev/null | wc -l)
+[ "${golines:-0}" -ge 20000 ] && ok "Go-кода достаточно ($golines строк)" \
+                             || bad "Go-кода всего ${golines:-0} строк — похоже на заглушки"
 
 echo "== 5b. go vet по ядру =="
 # mobile/ is a SEPARATE module with its own go.mod, so a plain ./... in the
