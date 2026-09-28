@@ -32,11 +32,14 @@ EXPECTED_CODE=$(echo "$EXPECTED_VER" | awk -F. '{printf "%d", $1*10000 + $2*100 
 # reported at the verdict line, not only here in a comment.
 EXPECTED_PKG=${OF_EXPECTED_PKG:-io.openflux.client}
 
-# The certificate that has signed every personal build. A regenerated local
-# keystore produces a different one, and Android then refuses to update any
-# installed copy - silently, because the old APKs are still self-consistent.
-# Override only when deliberately switching to the project's CI key.
-EXPECTED_CERT=${OF_EXPECTED_CERT:-a33486233b8c50e4ddffd09c13622aafe5ca9d97a5c4a2e655505abb6e9b9144}
+# The certificate every published release is signed with: the project's own
+# key, not a personal one. A different keystore produces a different
+# certificate, and Android then refuses to update any installed copy - silently,
+# because the new APKs are still self-consistent with each other.
+# CN=OpenFlux, OU=Release, O=OpenFlux, valid to 2056-09-20.
+# Override only to audit a dist deliberately signed with something else; the
+# override voids this gate and the run says so.
+EXPECTED_CERT=${OF_EXPECTED_CERT:-60487280f6a493f6afd525d2727fa8b1772c217a24dd6ee148f90f3114a1f156}
 # A regular assignment is not a pin. ofbuild.env is sourced further down and can
 # reassign it - that is exactly how a dist re-signed with a rogue key got
 # AUDIT_OK with no warning at all. readonly is the whole fix: the source now
