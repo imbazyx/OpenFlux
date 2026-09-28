@@ -70,6 +70,23 @@ type MailruDocsTransport struct {
 
 	cookieJar *cookiejar.Jar
 	jarMu     sync.RWMutex
+
+	// lastRx is the wall-clock (unix nanos) of the last inbound frame of ANY
+	// kind (server Socket.IO ping "2", peer cursors, auth). rxIdleLoop uses
+	// it to detect a half-dead socket: more than rxIdleLimit of silence while
+	// "connected" means the channel is broken even though writes succeed.
+	lastRx atomic.Int64
+
+	// Tunnel-level (not frame-level) liveness. A client whose socket died for
+	// reads only still writes: its packets reach us, our replies never get
+	// ACKed, and both sides look "connected" forever. lastTxData/lastRxData
+	// expose exactly that asymmetry (verified 2026-09-27 on a phone: its SYNs
+	// arrived, our SYN-ACKs were never ACKed and retrans climbed).
+	lastTxData   atomic.Int64
+	lastRxData   atomic.Int64
+	peerAlive    atomic.Int64
+	sessionStart atomic.Int64
+	oneWaySince  atomic.Int64
 }
 
 // NewMailruDocsTransport accepts either a bare weblink ("AbCdEfGh1/IjKlMnOp2")
@@ -108,6 +125,9 @@ func (t *MailruDocsTransport) Start() error {
 
 	t.baseUserID = randUserID()
 	utils.SafeGo("mailru.keepAlive", t.keepAliveLoop)
+	utils.SafeGo("mailru.rxIdle", t.rxIdleLoop)
+	utils.SafeGo("mailru.docKey", t.docKeyLoop)
+	utils.SafeGo("mailru.health", t.healthLoop)
 	t.connectToDoc(0)
 
 	return nil
@@ -129,6 +149,7 @@ func (t *MailruDocsTransport) Send(data []byte) error {
 	select {
 	case session.WriteQueue <- data:
 		t.RecordSend(len(data))
+		t.lastTxData.Store(time.Now().UnixNano())
 		return nil
 	default:
 		return fmt.Errorf("write queue full")
@@ -206,10 +227,26 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		t.Mu.Lock()
 		t.session = session
 		t.SetConnected(true)
+		now := time.Now()
+		t.lastRx.Store(now.UnixNano()) // grace period for the first frame
+		t.sessionStart.Store(now.UnixNano())
+		// The one-way detector judges THIS session's peer, so its liveness
+		// clocks start here. Left over from the previous session they would let
+		// a brand new tunnel be judged by timestamps from the old one.
+		t.lastTxData.Store(0)
+		t.lastRxData.Store(0)
+		t.peerAlive.Store(0)
+		t.oneWaySince.Store(0)
 		t.Mu.Unlock()
 
 		if existingSession == nil {
 			utils.SafeGo("mailru.writer", t.writerLoop)
+		} else if existingSession.Conn != nil {
+			// We reused its WriteQueue, so this is the same logical session
+			// and its previous socket is now displaced. Nothing else closes it:
+			// its reader stays parked in ReadMessage holding a participant slot on
+			// the public link, and keeps calling CallReceive on a stale socket.
+			_ = existingSession.Conn.Close()
 		}
 
 		// Auth - fired immediately, same as the Yandex.Docs transport. No
@@ -267,7 +304,21 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				utils.Debugf("[M-DOCS] Read error: %v", err)
-				t.SetConnected(false)
+				// closeSession answers "was this the live session?". It MUST be
+				// consulted, not just called: connectToDoc closes the conn of the
+				// session it displaces, which wakes that session's own reader
+				// and lands it right here. Scheduling a reconnect from a reader
+				// whose session was already replaced starts a self-sustaining
+				// loop - install B, close A, reader A reconnects, installs C,
+				// closes B... - and because each pass resets `attempt` to 0/-1,
+				// MaxReconnectAttempts never trips, so the transport can never
+				// stay up. Only the reader that owned the live session has the
+				// right to reconnect on its behalf.
+				if !t.closeSession(session) {
+					utils.Debugf("[M-DOCS] reader of a displaced session stopped, not reconnecting")
+					conn.Close()
+					return
+				}
 				conn.Close()
 
 				next := attempt
@@ -303,11 +354,22 @@ func (t *MailruDocsTransport) writerLoop() {
 	var pending []byte
 	for t.IsRunning() {
 		if pending == nil {
-			packet, ok := <-queue
-			if !ok {
+			// Done() has to be in this select, not just the for condition: a bare
+			// receive parks here forever, and Stop() cannot release it. It would
+			// only return if something later enqueued a packet, so every Start()
+			// that found no session yet stacked another permanently parked
+			// goroutine - each holding the WriteQueue and pinning its packets.
+			// On mobile, where a transport is built per connection, that is one
+			// leak per connection for the life of the process.
+			select {
+			case packet, ok := <-queue:
+				if !ok {
+					return
+				}
+				pending = packet
+			case <-t.Done():
 				return
 			}
-			pending = packet
 		}
 
 		t.Mu.RLock()
@@ -330,21 +392,46 @@ func (t *MailruDocsTransport) writerLoop() {
 	}
 }
 
+// Stop also closes the document connection. BaseTransport.Stop only clears the
+// running flag and the done channel: the reader goroutine would otherwise sit
+// in ReadMessage until the server's next message, holding one of the two
+// participant slots on a public Mail.ru link and still feeding CallReceive
+// into a tunnel that is gone. Closing the socket unblocks the reader, which
+// returns as soon as it sees !IsRunning().
+func (t *MailruDocsTransport) Stop() error {
+	err := t.BaseTransport.Stop()
+	t.Mu.RLock()
+	session := t.session
+	t.Mu.RUnlock()
+	if session != nil && session.Conn != nil {
+		_ = session.Conn.Close()
+	}
+	return err
+}
+
 func (t *MailruDocsTransport) keepAliveLoop() {
-	ticker := time.NewTicker(t.GetConfig().KeepAliveInterval)
-	defer ticker.Stop()
+	// tick(), not a raw <-ticker.C: the other three watchdogs already select on
+	// Done(), and this one was the odd one out, so after Stop() the goroutine
+	// lingered for a full KeepAliveInterval. Harmless at the 10s default, but a
+	// long interval parks it for that long.
 	keepAliveMsg := `42["message",{"type":"cursor","cursor":"18;---KA---"}]`
 
-	for t.IsRunning() {
-		<-ticker.C
+	for t.tick(t.GetConfig().KeepAliveInterval) {
 		t.Mu.Lock()
 		session := t.session
 		t.Mu.Unlock()
 
 		if session != nil && session.Conn != nil {
 			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveMsg)); err != nil {
-				utils.Debugf("[M-DOCS] Keep-alive failed: %v", err)
-				t.SetConnected(false)
+				// closeSession re-checks identity. A plain SetConnected(false)
+				// here would blank the flag of a FRESH session if the
+				// reconnect installed one while this write was in flight:
+				// SetConnected(true) happens only at install, all watchdogs
+				// skip while disconnected, and the new socket never errors,
+				// so the tunnel would stay dead until the process restarts.
+				if t.closeSession(session) {
+					utils.Debugf("[M-DOCS] Keep-alive failed: %v", err)
+				}
 			}
 		}
 	}
@@ -353,12 +440,16 @@ func (t *MailruDocsTransport) keepAliveLoop() {
 func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 	text := string(data)
 
+	// Any inbound frame proves the channel is alive; reset the rx-idle clock.
+	t.lastRx.Store(time.Now().UnixNano())
+
 	if strings.Contains(text, "---KA---") {
 		return
 	}
 
 	// Socket.IO ping - respond with pong
 	if text == "2" {
+		utils.Debugf("[M-DOCS] rx ping") // liveness evidence for rxIdleLoop
 		if session != nil && session.Conn != nil {
 			session.safeWrite(websocket.TextMessage, []byte("3"))
 		}
@@ -369,6 +460,11 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 	}
 
 	if strings.Contains(text, `"type":"auth"`) && strings.Contains(text, `"result":1`) {
+		// session is nil-checked two branches above, but not on every path
+		// that can reach this line.
+		if session == nil {
+			return
+		}
 		utils.Debugf("[M-DOCS] Auth OK for user %s", session.UserID)
 		return
 	}
@@ -386,7 +482,231 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 		}
 
 		t.RecordReceive(len(decoded))
+		t.lastRxData.Store(time.Now().UnixNano())
 		t.CallReceive(decoded)
+	}
+}
+
+// Watchdog constants. A healthy Mail.ru Socket.IO session receives the
+// server's engine-level ping ("2") roughly every 25s even with no peers
+// attached, so silence is a reliable liveness signal — unlike our own cursor
+// markers, which the server never echoes back (verified 2026-09-24: "probe
+// ok" count was 0 across all exits; a loopback probe forced a reconnect
+// every ~90s and caused exactly the flapping it was meant to fix).
+const (
+	rxCheckEvery = 15 * time.Second
+	rxIdleLimit  = 90 * time.Second
+
+	// docKeyRecheckEvery: Mail.ru silently rotates the docKey of a public
+	// link (verified 2026-09-25: an exit kept dialing KEYYpRUT1ErCo81pXJ
+	// while fresh fetches returned KEY3nX3ek7ttW2ddC3). The peer refetches
+	// on every tunnel start, so after a rotation the two sides land in
+	// different "rooms": both see Auth OK, but zero relayed traffic.
+	docKeyRecheckEvery = 5 * time.Minute
+
+	// sessionRotateEvery forces a clean reconnect of our own session well
+	// inside the window where long-lived sessions were observed to go stale
+	// (working at 16h, dead after ~19h). Reconnect costs ~1s and the peer
+	// re-dials with it.
+	sessionRotateEvery = 6 * time.Hour
+
+	// One-way channel detector: we handed tunnel bytes to the write queue
+	// recently, but nothing came back for oneWayIdle — the peer's socket is
+	// dead for reads while still accepting writes. A quiet tunnel has zero
+	// on both counters, so this cannot fire on an idle link.
+	//
+	// oneWayPeerGrace guards against a false positive: a SYN to a blackholed
+	// destination produces exactly the same "we send, nothing returns" shape
+	// on a perfectly healthy socket. The peer-alive test is made ONCE, when
+	// the timer is armed, and its verdict is then frozen - see healthLoop.
+	// ponytail: a peer that spends 13 straight minutes (oneWayIdle 3m plus
+	// oneWayCooldown 10m) talking to one unresponsive host after healthy
+	// traffic still costs a ~1s blip, once per episode. Raise oneWayIdle
+	// before adding real flow analysis.
+	oneWayTxWindow  = 3 * time.Minute
+	oneWayIdle      = 3 * time.Minute
+	oneWayCooldown  = 10 * time.Minute
+	oneWayPeerGrace = 10 * time.Minute
+)
+
+// closeSession drops a session only if it is still the live one.
+//
+// Every watchdog snapshots t.session under RLock and then acts on it without
+// the lock. If connectToDoc installs a FRESH session in that window, the
+// watchdog's unconditional SetConnected(false) would mark the new one down
+// while closing the old, already-dead socket. Nothing sets the flag back
+// (SetConnected(true) happens once, at install), all three watchdogs skip
+// while IsConnected() is false, and the read loop never errors - a silent
+// stall with a perfectly live socket. Re-reading the pointer under the lock
+// and comparing identity closes that window.
+func (t *MailruDocsTransport) closeSession(session *DocSession) bool {
+	t.Mu.RLock()
+	current := t.session
+	t.Mu.RUnlock()
+	if session == nil || current != session {
+		return false
+	}
+	t.SetConnected(false)
+	if session.Conn != nil {
+		_ = session.Conn.Close()
+	}
+	return true
+}
+
+// tick waits for the next tick or for Stop(). Without the Done() case a
+// watchdog lives on until its next tick - up to 5 minutes for docKeyLoop.
+func (t *MailruDocsTransport) tick(interval time.Duration) bool {
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return t.IsRunning()
+	case <-t.Done():
+		return false
+	}
+}
+
+// rxIdleLoop tears down a half-dead WebSocket: connected, but nothing (not
+// even the server's ping) has arrived for rxIdleLimit. Closing the socket
+// makes the read loop notice and run the normal reconnect path.
+func (t *MailruDocsTransport) rxIdleLoop() {
+	for t.IsRunning() {
+		if !t.tick(rxCheckEvery) {
+			return
+		}
+		if !t.IsConnected() {
+			continue
+		}
+		t.Mu.RLock()
+		session := t.session
+		t.Mu.RUnlock()
+		if session == nil || session.Conn == nil {
+			continue
+		}
+		// Sampled AFTER the snapshot so the age cannot describe a newer
+		// session than the one we are about to close.
+		idle := time.Since(time.Unix(0, t.lastRx.Load()))
+		if idle <= rxIdleLimit {
+			continue
+		}
+		if t.closeSession(session) {
+			utils.Debugf("[M-DOCS] rx idle %v > %v, forcing reconnect", idle.Round(time.Second), rxIdleLimit)
+		}
+	}
+}
+
+// docKeyLoop re-fetches the public doc every docKeyRecheckEvery and forces a
+// reconnect when Mail.ru hands out a NEW DocKey than the one our live session
+// dialed. The reconnect path refetches anyway, so it lands in the fresh room.
+// Fetch errors are logged but never tear down a healthy session — only a
+// confirmed key mismatch does.
+func (t *MailruDocsTransport) docKeyLoop() {
+	for t.IsRunning() {
+		if !t.tick(docKeyRecheckEvery) {
+			return
+		}
+		if !t.IsConnected() {
+			continue
+		}
+		t.Mu.RLock()
+		session := t.session
+		t.Mu.RUnlock()
+		if session == nil || session.Conn == nil {
+			continue
+		}
+
+		info, err := t.fetchDocInfo(t.weblink)
+		if err != nil {
+			utils.Debugf("[M-DOCS] doc key recheck failed (keeping session): %v", err)
+			continue
+		}
+		if info.DocKey == "" || info.DocKey == session.Info.DocKey {
+			continue
+		}
+		// closeSession re-checks identity: a reconnect that swapped the
+		// session while we were fetching would otherwise make us close the
+		// new socket on the strength of the old one's key.
+		if t.closeSession(session) {
+			utils.Debugf("[M-DOCS] doc key rotated %s -> %s, forcing reconnect to fresh room",
+				session.Info.DocKey, info.DocKey)
+		}
+	}
+}
+
+// healthLoop runs two preventive checks on the live session:
+//
+//  1. sessionRotateEvery — recycle the session. Long-lived sessions (16h+)
+//     were observed to go stale; a 6h rotation keeps us inside the window
+//     where the relay still works. Costs ~1s of downtime every 6h.
+//  2. one-way channel — we are sending tunnel bytes but the peer sends
+//     nothing back. The peer's socket died for reads (verified 2026-09-27 on
+//     a phone: its SYNs reached us, our SYN-ACKs were never ACKed).
+//     Reconnecting our own socket cannot revive the peer's read path, but it
+//     drops our half-open session so the peer re-dials and the room state is
+//     rebuilt.
+func (t *MailruDocsTransport) healthLoop() {
+	for t.IsRunning() {
+		if !t.tick(rxCheckEvery) {
+			return
+		}
+		if !t.IsConnected() {
+			t.oneWaySince.Store(0)
+			continue
+		}
+		t.Mu.RLock()
+		session := t.session
+		t.Mu.RUnlock()
+		if session == nil || session.Conn == nil {
+			continue
+		}
+
+		now := time.Now()
+		drop := func(reason string) {
+			if t.closeSession(session) {
+				utils.Debugf("[M-DOCS] %s", reason)
+			}
+		}
+
+		if start := t.sessionStart.Load(); start > 0 && now.Sub(time.Unix(0, start)) > sessionRotateEvery {
+			drop("session rotation (>6h), reconnecting")
+			continue
+		}
+
+		tx := t.lastTxData.Load()
+		rx := t.lastRxData.Load()
+		if tx == 0 || rx == 0 {
+			continue // no tunnel traffic seen yet on this session
+		}
+		// Only judge when we recently wrote and the peer went quiet while
+		// it should be answering.
+		if now.Sub(time.Unix(0, tx)) > oneWayTxWindow {
+			continue
+		}
+		if now.Sub(time.Unix(0, rx)) <= oneWayIdle {
+			t.peerAlive.Store(now.UnixNano())
+			t.oneWaySince.Store(0)
+			continue
+		}
+		since := t.oneWaySince.Load()
+		if since == 0 {
+			// The "was the peer actually alive" test runs HERE, once, and its
+			// verdict is frozen by arming the timer. Re-checking it later
+			// cannot work: the silence we are measuring is itself what ages the
+			// evidence, so peerAlive would cross the grace window exactly when
+			// the cooldown expires, the guard would trip every time, and the
+			// detector would never fire. (oneWayIdle 3m + oneWayCooldown 10m is
+			// already longer than the 10m grace.)
+			if now.Sub(time.Unix(0, t.peerAlive.Load())) > oneWayPeerGrace {
+				continue // the peer never proved itself; leave the session alone
+			}
+			t.oneWaySince.Store(now.UnixNano())
+			continue
+		}
+		if now.Sub(time.Unix(0, since)) < oneWayCooldown {
+			continue
+		}
+		drop("one-way channel: sent tunnel data, peer silent >3m, reconnecting")
+		t.oneWaySince.Store(0)
 	}
 }
 
@@ -406,7 +726,13 @@ func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 
 	d := reconnectBackoff(next)
 	utils.Debugf("[M-DOCS] reconnecting in %v (attempt %d)", d, next)
-	time.Sleep(d)
+	// Wait on Done() rather than sleeping: with the 15s cap plus 50% jitter a
+	// plain Sleep left a ~22s reconnect loop running after Stop.
+	select {
+	case <-time.After(d):
+	case <-t.Done():
+		return
+	}
 	if !t.IsRunning() {
 		return
 	}

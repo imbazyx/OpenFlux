@@ -118,6 +118,7 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 		toPeer, fromPeer = network.DirInbound, network.DirOutbound
 	}
 	tunnelEP.onOutgoingPacket = func(data []byte) {
+		t.packetCount.Add(1)
 		network.LogPacket("TUNNEL", toPeer, data)
 		if err := trans.Send(data); err != nil {
 			utils.Debugf("[TUNNEL] trans.Send error: %v", err)

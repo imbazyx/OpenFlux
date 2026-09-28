@@ -50,7 +50,13 @@ func FormatPacket(dir PacketDirection, pkt []byte) string {
 // adds its hexdump at level 3 (-ddd). tag names the observer: "TUN", "L3",
 // "TUNNEL", "PKT". Each packet should be logged at one point per side.
 func LogPacket(tag string, dir PacketDirection, pkt []byte) {
-	if utils.Level() < utils.LevelPackets {
+	// The gate has to sit HERE, not only inside Packetf: Go evaluates call
+	// arguments before the call, so FormatPacket (a full Sprintf per packet) and
+	// hex.Dump (a heap-allocating slice) were being built for every packet even
+	// with packet logging switched off. Guarding only the write saved the logcat
+	// traffic, not the formatting. PacketsEnabled is the single predicate, so
+	// the two cannot disagree.
+	if !utils.PacketsEnabled() {
 		return
 	}
 	utils.Packetf("[%s] %s", tag, FormatPacket(dir, pkt))

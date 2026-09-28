@@ -73,6 +73,10 @@ func startPacket(build func() (transport.Transport, error)) string {
 	client.mu.Unlock()
 
 	utils.EnableDebug()
+	// One line per packet per direction, each through JNI into logcat, is far
+	// more expensive on a phone than the same volume on a server. Keep the
+	// operational logs; the packet log is opt-in via -ddd on the CLI.
+	utils.SetPackets(false)
 	utils.SetLogSink(appendLog)
 
 	fail := func(err error) string {

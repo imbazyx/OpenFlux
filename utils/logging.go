@@ -35,14 +35,18 @@ const (
 var (
 	level     atomic.Int32
 	sensitive atomic.Bool
-	output    = &swapWriter{}
-	debugLog  = log.New(output, "", log.LstdFlags|log.Lmicroseconds)
-	logSinkMu sync.RWMutex
-	logSink   func(string)
+	// packetLogging is the explicit per-packet off switch; see Packetf. Starts
+	// on so that SetLevel/CLI behaviour is unchanged.
+	packetLogging atomic.Bool
+	output        = &swapWriter{}
+	debugLog      = log.New(output, "", log.LstdFlags|log.Lmicroseconds)
+	logSinkMu     sync.RWMutex
+	logSink       func(string)
 )
 
 func init() {
 	output.Set(os.Stderr)
+	packetLogging.Store(true)
 }
 
 // swapWriter lets SetOutput redirect a logger that is already in use.
@@ -143,11 +147,34 @@ func Redact(label string, b []byte) string {
 }
 
 // Packetf logs a packet-movement line (LevelPackets and up).
+//
+// The level gate alone is not enough: LevelPackets (1) sits BELOW LevelDebug
+// (2), so anything that turns on operational debug - which every mobile entry
+// point does - also turns on one line per packet. On a phone that is one
+// formatted string per packet per direction, each crossing the gomobile JNI
+// boundary into logcat, which is far more expensive than the same volume on a
+// server. packetLogging is the explicit off switch for that case; the CLI keeps
+// the old behaviour because there -d is how you ASK for packet logs.
+//
+// Callers on a hot path must test PacketsEnabled first: Go evaluates call
+// arguments before the call, so a disabled Packetf still pays for building them.
 func Packetf(format string, args ...interface{}) {
-	if Level() >= LevelPackets {
+	if PacketsEnabled() {
 		emit(fmt.Sprintf(format, args...))
 	}
 }
+
+// PacketsEnabled reports whether per-packet logging would emit anything. It is
+// the single predicate behind both Packetf and network.LogPacket, so the gate
+// and the write cannot drift apart.
+func PacketsEnabled() bool {
+	return packetLogging.Load() && Level() >= LevelPackets
+}
+
+// SetPackets turns per-packet logging on or off independently of the debug
+// level. Used by the mobile bridge, which wants operational logs but not one
+// line per packet.
+func SetPackets(on bool) { packetLogging.Store(on) }
 
 // Debugf logs an operational message (LevelDebug and up).
 func Debugf(format string, args ...interface{}) {
