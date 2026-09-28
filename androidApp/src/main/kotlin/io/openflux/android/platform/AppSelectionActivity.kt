@@ -224,8 +224,7 @@ class AppSelectionActivity : Activity() {
             // anything, so Back asked "discard your changes?" over a rule that
             // would have degraded to a full tunnel anyway.
             isChecked = AppSelection.onlySelected(this@AppSelectionActivity) &&
-                AppSelection.selected(this@AppSelectionActivity)
-                    .count { it != packageName && isInstalled(it) } > 0
+                AppSelection.selected(this@AppSelectionActivity).any { isInstalled(it) }
             setTextColor(primary)
         }
         headerColumn.addView(only)
@@ -248,7 +247,11 @@ class AppSelectionActivity : Activity() {
         root.addView(summary)
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END }
-        val resetBtn = Button(this).apply {
+        // Bare assignment, NOT `val`: these are the lateinit fields above. A local
+        // `val` of the same name shadowed them, so enableActions() tested a field
+        // that was never assigned, returned on its guard forever, and left both
+        // buttons disabled on every path. Compiles clean, ships dead.
+        resetBtn = Button(this).apply {
             text = "Сбросить"
             setOnClickListener {
                 // Clears the form only, it does not save. A button that commits
@@ -264,7 +267,7 @@ class AppSelectionActivity : Activity() {
             }
         }
         row.addView(resetBtn)
-        val saveBtn = Button(this).apply {
+        saveBtn = Button(this).apply {
             text = "Сохранить"
             setOnClickListener {
                 // An enabled switch with nothing ticked would leave the phone
@@ -299,7 +302,11 @@ class AppSelectionActivity : Activity() {
      * would persist in that window, so the honest answer is to not offer it.
      */
     private fun enableActions() {
-        if (!::saveBtn.isInitialized) return
+        // No ::isInitialized guard. It used to be here and it is exactly what
+        // turned the shadowing bug above into a silent dead screen: the guard
+        // caught the never-assigned field and returned instead of crashing, so
+        // both buttons stayed greyed out with no error anywhere. build() assigns
+        // these before any callback can run, so there is nothing to guard.
         saveBtn.isEnabled = true
         resetBtn.isEnabled = true
     }
@@ -345,13 +352,16 @@ class AppSelectionActivity : Activity() {
     /** True when the form differs from what is stored, i.e. Back would lose work. */
     private fun dirty(): Boolean {
         val savedLive = AppSelection.selected(this@AppSelectionActivity).filter { isInstalled(it) }
-        // Compare against the same normalised rule the summary shows. Comparing
-        // against the raw stored set made dirty() permanently true for the most
-        // common real case - a saved rule whose apps were all uninstalled - so
-        // Back asked "discard your changes?" when the user had touched nothing.
+        // BOTH sides need the same filter, not just the stored one. Normalising
+        // only savedLive fixed the mode half and left the set half: picked still
+        // held packages the loader had not pruned yet, so a rule whose apps were
+        // all uninstalled still read as dirty and Back still asked "discard your
+        // changes?" over a form nobody had touched. It healed itself only once the
+        // async load finished, which is a window, not a fix.
+        val pickedLive = picked.filterTo(HashSet()) { isInstalled(it) }
         val sameMode = only.isChecked ==
             (AppSelection.onlySelected(this@AppSelectionActivity) && savedLive.isNotEmpty())
-        return !sameMode || picked.toSet() != savedLive.toSet()
+        return !sameMode || pickedLive != savedLive.toSet()
     }
 
     /**
@@ -402,13 +412,14 @@ class AppSelectionActivity : Activity() {
                     // saying "Загрузка…" over an error the user cannot act on.
                     loadError = true
                     loaded = true
-                    // Prune here too. The error path used to return before
-                    // retainAll, so `picked` kept packages we never managed to
-                    // list: the summary then advertised "N приложений" for a
-                    // rule that the tunnel would silently degrade to a full one,
-                    // and dirty() stayed true forever so Back kept nagging.
-                    val live = picked.filterTo(HashSet()) { isInstalled(it) }
-                    if (picked.size != live.size) picked.retainAll(live)
+                    // Do NOT prune here. Pruning asks isInstalled() about every
+                    // package, and the one component we know is broken right now
+                    // is exactly the one answering those questions: every lookup
+                    // comes back false and the whole selection is wiped in memory
+                    // - with no error shown, because dirty() then compares two
+                    // empty sets and reports no change. Guessing what is alive
+                    // while the only oracle is down is not a repair, it is data
+                    // loss. The stale entries stay until a load actually succeeds.
                     if (picked.isEmpty() && !userToggledOnly) setOnlyChecked(false)
                     enableActions()
                     sync()
