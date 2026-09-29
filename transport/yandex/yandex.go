@@ -89,6 +89,11 @@ type YandexDocsTransport struct {
 	// cookiesApplied wakes a scheduleReconnectNoCaptcha wait early. Unbuffered
 	// on purpose: a send only succeeds while such a wait is in progress.
 	cookiesApplied chan struct{}
+
+	// reconnecting keeps one reconnect in flight, so a network drop seen by
+	// several goroutines at once cannot dial a pile of fresh sessions that
+	// displace and close each other.
+	reconnecting transport.ReconnectGuard
 }
 
 func NewYandexDocsTransport(url string, config transport.TransportConfig) *YandexDocsTransport {
@@ -160,6 +165,12 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 	utils.Debugf("[YDOCS] connectToDoc attempt ...")
 
 	go func() {
+		// This attempt now owns the reconnect. Clearing the guard here is what
+		// lets a FAILED attempt schedule the next one: scheduleReconnect set
+		// the flag before calling us, and without this the failure path would
+		// find it still set, skip itself as "already in flight", and leave the
+		// tunnel down.
+		t.reconnecting.Release()
 		defer func() {
 			if r := recover(); r != nil {
 				utils.Debugf("[PANIC] recovered in yandex.connect: %v", r)
@@ -350,6 +361,15 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveMsg)); err != nil {
 				utils.Debugf("[YDOCS] Keep-alive failed: %v", err)
 				t.SetConnected(false)
+				// Close it as well. Leaving the socket open kept the reader
+				// blocked in ReadMessage on a connection nobody can write to,
+				// and the tunnel then sat there marked disconnected but never
+				// retried. Closing wakes the reader, and requestReconnect does
+				// not depend on it waking in time.
+				if session.Conn != nil {
+					_ = session.Conn.Close()
+				}
+				t.requestReconnect("keep-alive write failed")
 			}
 		}
 	}
@@ -413,7 +433,20 @@ func (t *YandexDocsTransport) extractBase64String(response string) string {
 
 func (t *YandexDocsTransport) scheduleReconnect(attempt int) {
 	next := attempt + 1
-	if !t.IsRunning() || next >= t.GetConfig().MaxReconnectAttempts {
+	if !t.IsRunning() {
+		return
+	}
+	if next >= t.GetConfig().MaxReconnectAttempts {
+		// Silent give-up used to be the worst failure mode here: the transport
+		// stayed down for good while the TUN interface remained up, so Android
+		// kept reporting "connected" and the phone kept routing into a tunnel
+		// with no session. Say it out loud.
+		utils.Debugf("[YDOCS] giving up after %d reconnect attempts, max is %d; "+
+			"the tunnel is down and will not recover on its own", next, t.GetConfig().MaxReconnectAttempts)
+		return
+	}
+	if !t.reconnecting.TryClaim() {
+		utils.Debugf("[YDOCS] reconnect already in flight, not scheduling another")
 		return
 	}
 
@@ -432,6 +465,22 @@ func (t *YandexDocsTransport) scheduleReconnect(attempt int) {
 
 	t.RecordReconnect()
 	t.connectToDoc(next)
+}
+
+// requestReconnect lets the keep-alive watchdog recover a session instead of
+// relying on the reader goroutine. This path used to only clear the connected
+// flag: the socket stayed open, nothing was scheduled, and a dead tunnel looked
+// alive to the rest of the system until the process was restarted.
+func (t *YandexDocsTransport) requestReconnect(reason string) {
+	if !t.IsRunning() {
+		return
+	}
+	if !t.reconnecting.TryClaim() {
+		return // a reconnect is already on its way
+	}
+	utils.Debugf("[YDOCS] session dead (%s), reconnecting", reason)
+	t.RecordReconnect()
+	t.connectToDoc(0)
 }
 
 // SetErrorNotifier installs a callback for out-of-band errors such as
