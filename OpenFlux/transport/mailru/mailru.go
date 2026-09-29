@@ -87,6 +87,16 @@ type MailruDocsTransport struct {
 	peerAlive    atomic.Int64
 	sessionStart atomic.Int64
 	oneWaySince  atomic.Int64
+
+	// reconnecting keeps one reconnect in flight. A single network drop is
+	// seen by several goroutines at once: the reader blocked in ReadMessage,
+	// the keep-alive writer, and the rx-idle watchdog. Each of them now
+	// schedules a reconnect, and without this guard they would dial three
+	// fresh sessions, each displacing and closing the previous one - the
+	// self-sustaining loop that closeSession's identity check was written to
+	// stop. Whoever loses the race simply does nothing; a reconnect is
+	// already on its way.
+	reconnecting transport.ReconnectGuard
 }
 
 // NewMailruDocsTransport accepts either a bare weblink ("AbCdEfGh1/IjKlMnOp2")
@@ -174,6 +184,12 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 	utils.Debugf("[M-DOCS] connectToDoc attempt %d", attempt)
 
 	go func() {
+		// This attempt now owns the reconnect. Clearing the guard here is what
+		// lets a FAILED attempt schedule the next one: scheduleReconnect set
+		// the flag before calling us, and without this the failure path would
+		// find it still set, skip itself as "already in flight", and leave the
+		// tunnel down.
+		t.reconnecting.Release()
 		defer func() {
 			if r := recover(); r != nil {
 				utils.Debugf("[PANIC] recovered in mailru.connect: %v", r)
@@ -441,6 +457,7 @@ func (t *MailruDocsTransport) keepAliveLoop() {
 				// so the tunnel would stay dead until the process restarts.
 				if t.closeSession(session) {
 					utils.Debugf("[M-DOCS] Keep-alive failed: %v", err)
+					t.requestReconnect("keep-alive write failed")
 				}
 			}
 		}
@@ -608,6 +625,7 @@ func (t *MailruDocsTransport) rxIdleLoop() {
 		}
 		if t.closeSession(session) {
 			utils.Debugf("[M-DOCS] rx idle %v > %v, forcing reconnect", idle.Round(time.Second), rxIdleLimit)
+			t.requestReconnect(fmt.Sprintf("no inbound frame for %v", idle.Round(time.Second)))
 		}
 	}
 }
@@ -681,6 +699,7 @@ func (t *MailruDocsTransport) healthLoop() {
 		drop := func(reason string) {
 			if t.closeSession(session) {
 				utils.Debugf("[M-DOCS] %s", reason)
+				t.requestReconnect(reason)
 			}
 		}
 
@@ -737,7 +756,23 @@ func (t *MailruDocsTransport) extractBase64String(response string) string {
 
 func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 	next := attempt + 1
-	if !t.IsRunning() || next >= t.GetConfig().MaxReconnectAttempts {
+	if !t.IsRunning() {
+		return
+	}
+	if next >= t.GetConfig().MaxReconnectAttempts {
+		// This used to return in silence. The transport then stayed down for
+		// good: the TUN interface remained up, so Android kept reporting
+		// "connected" and the phone kept routing into it, while no session
+		// existed. Observed 2026-09-29 on a phone over Beeline LTE - the
+		// tunnel went dark on a network drop and only came back when the user
+		// toggled the VPN by hand. Say it, so the next occurrence is one log
+		// line instead of a mystery.
+		utils.Debugf("[M-DOCS] giving up after %d reconnect attempts, max is %d; "+
+			"the tunnel is down and will not recover on its own", next, t.GetConfig().MaxReconnectAttempts)
+		return
+	}
+	if !t.reconnecting.TryClaim() {
+		utils.Debugf("[M-DOCS] reconnect already in flight, not scheduling another")
 		return
 	}
 
@@ -756,6 +791,29 @@ func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 
 	t.RecordReconnect()
 	t.connectToDoc(next)
+}
+
+// requestReconnect lets a watchdog recover a session instead of relying on the
+// reader goroutine. closeSession only flips the connected flag and closes the
+// socket: on its own that leaves recovery to whoever is blocked in
+// ReadMessage. When nobody is - a reader that already returned, or a socket
+// whose peer vanished without a FIN - the tunnel stayed down indefinitely with
+// the interface still up. Every caller of closeSession outside the reader goes
+// through here.
+func (t *MailruDocsTransport) requestReconnect(reason string) {
+	if !t.IsRunning() {
+		return
+	}
+	if !t.reconnecting.TryClaim() {
+		// A reconnect is already in flight; it will pick up this dead session
+		// on its own, because connectToDoc displaces whatever it finds.
+		return
+	}
+	utils.Debugf("[M-DOCS] session dead (%s), reconnecting", reason)
+	// Reconnect immediately: the backoff exists to spare a rate-limited
+	// service, but this socket is already dead, so there is nothing to wait for.
+	t.RecordReconnect()
+	t.connectToDoc(0)
 }
 
 // reconnectBackoff returns an exponential backoff with jitter, capped at 15s.
