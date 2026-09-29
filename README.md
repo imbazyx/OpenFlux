@@ -70,8 +70,8 @@ and `wsl-audit.sh` (verifies those artifacts). Everything runs from WSL; the
 Windows checkout is not used for building.
 
 ```bash
-scripts/wsl-build.sh 1.2.0     # -> dist/, five signed APKs
-scripts/wsl-audit.sh 1.2.0     # -> AUDIT_OK / AUDIT_FAILED
+scripts/wsl-build.sh 1.2.1     # -> dist/, five signed APKs
+scripts/wsl-audit.sh 1.2.1     # -> AUDIT_OK / AUDIT_FAILED
 ```
 
 `wsl-audit.sh` is not a formality: it re-checks each APK's package name,

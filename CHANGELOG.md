@@ -3,6 +3,42 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.1] - 2026-09-29
+
+### Fixed
+
+- **The tunnel could die and never come back.** Only the goroutine blocked in
+  `ReadMessage` was able to schedule a reconnect. Every other watchdog that
+  decided a session was dead - the keep-alive write, the rx-idle watchdog,
+  session rotation, the one-way detector - called `closeSession`, which only
+  cleared the flag and closed the socket, trusting the reader to notice. When
+  no reader was left to notice, the transport stayed down while its TUN
+  interface stayed up: Android kept reporting "connected" and kept routing
+  into it, DNS resolved, TCP connected, and then pages hung on a loading bar
+  until the user toggled the VPN by hand. Observed on a phone over LTE.
+  Every watchdog now schedules recovery itself, via `requestReconnect`.
+- Exhausting `MaxReconnectAttempts` returned in silence. It now logs that it
+  is giving up, because that silence is what made the failure
+  undiagnosable: nothing in the log separated "reconnecting" from "dead until
+  you restart".
+- Yandex's keep-alive path did not close the socket on failure, leaving the
+  reader parked on a connection nobody could write to.
+- `ReconnectGuard` admits exactly one reconnect at a time. One network drop is
+  noticed by the reader, the keep-alive writer and the health watchdog
+  simultaneously, and unguarded they would each dial a session that displaces
+  and closes the previous one - the loop `closeSession`'s identity check
+  exists to prevent, and one that never reaches `MaxReconnectAttempts`.
+
+  The guard is released as soon as the attempt starts, so a failed attempt
+  can schedule the next one instead of stranding the tunnel.
+
+### Added
+
+- Reconnect regression tests for both Mail.ru and Yandex. Mail.ru, the
+  transport this was seen on, previously had no tests at all. The keep-alive
+  test drives the real loop against a socket whose peer is gone, with no
+  reader goroutine: red without the fix, green with it.
+
 ## [1.2.0] - 2026-09-28
 
 Per-app VPN selection, and a release-hardening pass over the artifacts and
@@ -67,6 +103,13 @@ the core.
   service through the tunnel. It resolves in exit-node mode.
 
 ## [2.0.0] - 2026-09-27
+
+> **Never published.** This was the version number the app carried before the
+> project settled on `1.2.x`. No release was ever cut under it: the `v2.0.0`
+> tag pointed at the repository's first commit, so it described none of the
+> work below, and it is no longer reachable after the history root was
+> repaired. Everything here shipped as `1.2.0` and later. Kept as a record of
+> what the first release contained, not as a version anyone can install.
 
 First release of this app. Replaces the previous single-transport native
 app (tun2socks + pdnsd JNI, preserved at the
