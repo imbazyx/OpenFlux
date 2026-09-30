@@ -2,4 +2,5 @@
 # one in the tree would drift from the code beside it without anyone noticing.
 resources/
 build/
+dist/
 .gradle/
