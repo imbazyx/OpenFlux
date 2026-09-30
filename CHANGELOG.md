@@ -3,6 +3,54 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.0] - 2026-09-30
+
+The Windows client, and a set of things the Android one was quietly doing
+wrong.
+
+### Added
+- The Windows client checks for a newer release and installs it from inside
+  the app, on the same terms as Android: newest release carrying an `.msi`,
+  checked against the release's own `SHA256SUMS.txt` before `msiexec` starts.
+- The portable Windows build is produced by a Gradle task, and both Windows
+  artifacts are collected into `OpenFluxPC/dist/`.
+- The SOCKS5 server has a read limit, a read deadline, and stops logging
+  things that are not diagnostics.
+
+### Fixed
+- The user's MAX contacts - names and phone numbers - were printed to the log
+  on every login, and the tunnel's own payload was dumped on every packet.
+  Both land in the log buffer the apps show on their Logs screen. The count is
+  logged; the people and the traffic are not.
+- The MAX call token leaked into the log through the endpoint URL and through
+  gorilla's dial errors, which embed that URL.
+- A malformed call frame could panic the read loop, and a peer could pin it
+  forever: `oneme` was the only transport with neither a read limit nor a
+  deadline.
+- A wrong MAX token used to look exactly like a working transport - connect
+  and login errors were discarded and `IsConnected` answered `true` - so the
+  failover logic had nothing to react to.
+- SOCKS5 defaulted to `:1080`, which is every interface, and the server has no
+  authentication unless the caller sets one. It now defaults to loopback.
+- The HTTP proxy ran with no timeouts, which is a Slowloris target.
+- The "close to the notification area" switch is gone. There is no tray; it
+  defaulted to on and promised a menu that does not exist.
+- "About" on Windows pointed at a repository the Windows build was never
+  published to.
+- Windows helper processes hung the calling thread forever: the pipe was read
+  to EOF before `waitFor`, so the timeout could not fire.
+- The release scripts were pinned to 1.2.0 while the project was at 2.0.0, and
+  the negative-control's copies failed silently, so its 27 tampered-tree
+  checks were passing over an empty tree.
+
+### Changed
+- The Windows build is published from this repository, and `node-v1.0.0` is a
+  prerelease so the client release is the one GitHub shows as latest.
+- Node install scripts now pin to this repository, so a node runs the same core
+  as the apps rather than the upstream build.
+- The oneme transport logs through the project logger, so its output respects
+  a level like every other transport.
+
 ## [2.0.0] - 2026-09-29
 
 In-app updates. The app now checks GitHub for a newer release, says so next to
