@@ -6,7 +6,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="$ROOT/../OpenFluxPC/resources/windows"
+OUT="$ROOT/OpenFluxPC/resources/windows"
 VER="$OUT/openflux-core.version"
 
 export PATH="$PATH:/usr/local/go/bin"
