@@ -1,32 +1,73 @@
-# OpenFluxAndroid
+# OpenFlux
 
-Android client for [OpenFlux](https://github.com/imbazyx/OpenFlux):
-system VPN or local SOCKS5, multi-transport sessions with automatic
-failover, AES-256-GCM encryption, and the in-app flow for passing a
-transport's check (SmartCaptcha, a login wall) through the built-in browser.
+A VPN client that tunnels TCP over document-collaboration services, so it
+works on networks where an ordinary VPN is blocked.
 
-You can also choose **which apps go through the tunnel** — everything, or only
-a list you pick — from the app-selection screen.
+Two front ends, one interface, one core:
 
-> **Everything is in this one repository.** `OpenFlux/` (the core) and `shared/`
-> (the Compose Multiplatform UI and models) are ordinary directories here, not
-> submodules. They were submodules, and the pointer to one exact commit broke
-> twice during development — once naming commits that existed nowhere, once
-> going stale after a rebase. A directory has no such state: a clone is
-> buildable the moment it lands, with no extra steps.
->
-> The core is still released on its own as
-> [imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux) — that is the
-> repository to use for exit nodes, the CLI and the Windows/iOS clients. This
-> one is the Android app, and it carries the core sources it embeds.
+| | |
+|---|---|
+| **Android** | system VPN or local SOCKS5, per-app routing, camera QR |
+| **Windows 10–11** | system proxy or local SOCKS5, the same screens |
 
-This repository's app code and UI (the `androidApp/` and `shared/` modules)
-come from [meepo161/OpenFluxClient](https://github.com/meepo161/OpenFluxClient),
+## Which file do I download?
+
+Every release carries files for several platforms. Pick the row, not the one
+that happens to be first.
+
+**Releases:** <https://github.com/imbazyx/OpenFlux/releases>
+
+### Android — a phone
+
+| Download | What it is |
+|---|---|
+| `OpenFluxAndroid-*-arm64-v8a-release.apk` | **Almost every phone made since 2017.** Take this unless you are told otherwise. |
+| `OpenFluxAndroid-*-armeabi-v7a-release.apk` | Very old or very cheap 32-bit phones |
+| `OpenFluxAndroid-*-x86_64-release.apk` | Intel phone or emulator |
+| `OpenFluxAndroid-*-x86-release.apk` | 32-bit emulator |
+| `OpenFluxAndroid-*-universal-release.apk` | Every ABI in one file, the largest download — only if you cannot tell which one you have |
+
+Which one is your phone, if you are unsure: `arm64-v8a` covers virtually all
+modern Android phones, and if the install fails with a wrong-architecture
+error, install the universal one.
+
+### Windows — a PC
+
+| Download | What it is |
+|---|---|
+| `OpenFlux-*-windows-amd64.msi` | **The normal choice.** A standard installer; it puts the app in the Start menu. |
+| `OpenFlux-*-windows-amd64.zip` | No installer: unpack anywhere and run `OpenFlux.exe`. |
+
+Windows 10 or 11, 64-bit. Windows 7 is not supported — the interface is built
+with Compose Multiplatform, which needs Windows 10 or newer, and the reason is
+written up in [OpenFluxPC/README.md](OpenFluxPC/README.md).
+
+### Everything else
+
+The core itself (exit nodes and the command line) is released the same way —
+look for a file with no `Android` and no `windows` in its name. See
+[Building](#building) to compile it yourself.
+
+### Updating
+
+Both clients check this page for a newer version and can install it from
+inside the app, so you do not have to come back here after the first install.
+
+## About this repository
+
+> **Everything is in this one repository.** `OpenFlux/` (the core), `shared/`
+> (the Compose Multiplatform UI and models), `androidApp/` and `OpenFluxPC/`
+> (the two front ends) are ordinary directories here, not submodules. They were
+> submodules, and the pointer to one exact commit broke twice during
+> development — once naming commits that existed nowhere, once going stale
+> after a rebase. A directory has no such state: a clone is buildable the
+> moment it lands, with no extra steps.
+
+The app code and UI come from [meepo161/OpenFluxClient](https://github.com/meepo161/OpenFluxClient),
 used here with the author's agreement. **Huge thanks to
 [@meepo161](https://github.com/meepo161)** — see [Credits](#credits) below.
-The previous, simpler single-transport app that used to live in this
-repository is preserved at the [`legacy-native-app`](../../tree/legacy-native-app)
-tag.
+The previous, simpler single-transport Android app is preserved at the
+[`legacy-native-app`](../../tree/legacy-native-app) tag.
 
 ## Getting the code
 
@@ -93,6 +134,29 @@ scripts/wsl-build.sh: line 8: set: pipefail: invalid option name
 and the build dies before doing any work. `core.autocrlf` is left unset on
 purpose; it applies one blanket rule to files that need opposite ones.
 
+### Building the Windows client
+
+The core first, as a plain `.exe` rather than through gomobile:
+
+```bash
+scripts/build-pc-core.sh                          # -> OpenFluxPC/resources/windows/
+./gradlew :OpenFluxPC:createDistributable         # portable folder
+./gradlew :OpenFluxPC:packageMsi                  # installer
+```
+
+Two things about this one, both learned the hard way:
+
+- The last two steps must run **on Windows**. `jpackage` cannot produce a
+  Windows package from another operating system, and it is the only thing that
+  produces the `.exe` launcher at all.
+- Do not build for two operating systems into the same output directory. The
+  distributable path is not separated by OS, so a Linux build followed by a
+  Windows one leaves a mixture behind: the build is green and the app dies on
+  launch with `UnsatisfiedLinkError`. Run `:OpenFluxPC:clean` when switching.
+
+`OpenFluxPC/README.md` has the details, including why Windows 7 is not on the
+list.
+
 ## Per-app VPN
 
 From the app-selection screen you can route **all** of the phone's traffic
@@ -110,12 +174,17 @@ Two Android rules shape this, and the code depends on both:
 ## Structure
 
 ```
-androidApp/   VPN service, WebView-based check flow, camera (QR), settings
-shared/       models, service interfaces, design system, screens
-OpenFlux/     the core (CLI + the mobile/ gomobile bridge)
-scripts/      wsl-toolchain.sh, wsl-build.sh, wsl-audit.sh,
-              negative-control.sh, build-android-core.sh
+androidApp/   Android client: VPN service, check flow, camera (QR), settings
+OpenFluxPC/   Windows client: the window, and the packaging
+shared/       models, service interfaces, design system, screens (both clients)
+OpenFlux/     the core: CLI, the mobile/ gomobile bridge, transports
+scripts/      wsl-build.sh, wsl-audit.sh, negative-control.sh,
+              build-android-core.sh, build-pc-core.sh
 ```
+
+`shared/` is what makes the two clients look and behave the same: the screens,
+the design system and the models live there once, and each front end supplies
+only a window and the handful of things the platform owns.
 
 ## Credits
 
