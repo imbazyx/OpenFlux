@@ -132,7 +132,7 @@ compose.desktop {
             packageName = "OpenFlux"
             packageVersion = appVersion
             description = "OpenFlux VPN client"
-            // The core is not a JVM module: it ships as a file next to the app.
+            // The core is not a JVM module; it ships as a resource in the jar.
             modules("java.sql", "java.naming")
             windows {
                 // Without these the installer puts the program in Program Files
@@ -150,42 +150,6 @@ compose.desktop {
                 iconFile = appIcon
             }
         }
-    }
-}
-
-/**
- * Puts the core where the app looks for it.
- *
- * Two places, and the second one is the reason the MSI had no core at all.
- *
- * jpackage builds the installer from the app *input* directory - the one with
- * the jars - and puts the result in <install>/app. Anything sitting beside it
- * in the application image, such as <image>/resources, is simply not part of
- * the package: the image had a 14 MB core in it, the installed program had no
- * resources directory at all, and the app could not connect while looking
- * perfectly healthy. So the core goes into the input directory, where jpackage
- * carries it, and also stays in resources/ for the portable zip, which is
- * built from the image rather than by jpackage.
- *
- * checkCoreInInstaller below is what keeps this honest: the build reads the
- * finished MSI and fails if the core is not inside it.
- */
-fun File.copyCoreInto(dir: File) {
-    dir.mkdirs()
-    coreDir.asFile.listFiles()
-        ?.filter { it.isFile }
-        ?.forEach { it.copyTo(File(dir, it.name), overwrite = true) }
-}
-
-tasks.matching { it.name == "createDistributable" }.configureEach {
-    dependsOn(checkCore)
-    doLast {
-        val app = layout.buildDirectory.dir("compose/binaries/main/app/OpenFlux").get().asFile
-        // Into the jpackage input directory: this is the one that reaches the MSI.
-        coreDir.asFile.copyCoreInto(File(app, "app/$winResourceDir"))
-        // And into resources/ for the portable zip, which is the image itself.
-        coreDir.asFile.copyCoreInto(File(app, "resources/$winResourceDir"))
-        logger.lifecycle("Ядро уложено: app/$winResourceDir и resources/$winResourceDir")
     }
 }
 
