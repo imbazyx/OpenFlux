@@ -2,7 +2,7 @@
 # Audit of the built APKs. Exits non-zero if any check fails, so a silent
 # regression cannot pass as success.
 #
-#   wsl-audit.sh [X.Y.Z]     (default 1.2.0)
+#   wsl-audit.sh [X.Y.Z]     (default 2.0.0)
 #
 # Design rules this file follows, each one earned by a review finding:
 #  - `set -uo pipefail` WITHOUT -e on purpose. Every content check is
@@ -20,7 +20,7 @@ SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$SELF/.." && pwd)
 D=$ROOT/dist
 
-DEFAULT_VER=1.2.0
+DEFAULT_VER=2.0.0
 EXPECTED_VER=${1:-$DEFAULT_VER}
 if ! [[ $EXPECTED_VER =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then
   echo "version '$EXPECTED_VER' is not X.Y.Z (e.g. $DEFAULT_VER)" >&2

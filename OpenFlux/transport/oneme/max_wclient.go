@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"openflux/utils"
 )
 
 const (
@@ -32,13 +34,28 @@ func (c *MaxClient) Connect() error {
 	if err != nil {
 		return err
 	}
+	// The only transport in the tree with neither a read limit nor a deadline.
+	// gorilla allocates whatever frame arrives, and a peer that never sends
+	// another byte pins this goroutine forever - on the one transport that has
+	// to survive unattended to receive a call.
+	conn.SetReadLimit(maxWSFrameBytes)
 	c.conn = conn
 	go c.readLoop()
-	fmt.Println("[MAX] Connected")
+	utils.Debugf("[MAX] connected")
 	return nil
 }
 
 func (c *MaxClient) SetEventCallback(cb func(MaxPacket)) { c.onEvent = cb }
+
+// IsConnected reports a live socket, not merely an attempted one. The caller
+// decides whether to fail over to another transport, so a claim that cannot be
+// true is worse than no claim: the user is left with a dead tunnel and no
+// explanation.
+func (c *MaxClient) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn != nil && c.loggedIn
+}
 
 func (c *MaxClient) readLoop() {
 	defer func() {
@@ -47,7 +64,11 @@ func (c *MaxClient) readLoop() {
 		}
 	}()
 	for {
+		// Cleared immediately after: this connection is long-lived and the
+		// next frame may legitimately be a call that arrives minutes later.
+		_ = c.conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 		_, message, err := c.conn.ReadMessage()
+		_ = c.conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			return
 		}
@@ -107,12 +128,14 @@ func (c *MaxClient) LoginByToken(token string) error {
 	}
 	c.loggedIn = true
 	go c.keepalive()
-	users := c.getUserMap(resp)
-	fmt.Println("\n=== CONTACTS ===")
-	for id, u := range users {
-		fmt.Printf("  ID: %d | %s %s | Phone: %d\n", id, u.FirstName, u.LastName, u.Phone)
+	// The count, never the people. Names and phone numbers are the personal
+	// data of people who never asked to be in someone else's log window, and
+	// this package's stdout is captured by the app's Logs screen - so a dump
+	// here would put a contact list on screen every time the user connects.
+	// Diagnosing a sync problem needs the number and the ids, not identities.
+	if n := len(c.getUserMap(resp)); n > 0 {
+		utils.Debugf("[MAX] contacts synced: %d", n)
 	}
-	fmt.Println()
 	return nil
 }
 
