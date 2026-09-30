@@ -17,6 +17,10 @@
          hides the app list from apps by default, so the picker would show an
          empty screen without it. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Installing the downloaded release. It is a normal, user-confirmed
+         install of an APK this app published, signed with the same key, so it
+         updates in place instead of asking the user to start over. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".OpenFluxApplication"
@@ -57,6 +61,20 @@
             android:name=".platform.AppSelectionActivity"
             android:exported="false"
             android:label="Приложения через прокси" />
+
+        <!-- Hands the downloaded release to the system installer. The
+             installer refuses file:// from another app, so the APK is shared
+             through this provider instead. cache-path only: the update file
+             lives in the app's cache and nothing else is exposed. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
 
         <!-- Runs the core: the VPN (client), the local proxy or the exit node. -->
         <service

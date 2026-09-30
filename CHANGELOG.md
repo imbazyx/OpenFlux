@@ -3,6 +3,44 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.0.0] - 2026-09-29
+
+In-app updates. The app now checks GitHub for a newer release, says so next to
+its own version, and installs it without leaving the app.
+
+### Added
+
+- **Update check against this repository's releases.** Settings shows the
+  running version and, beside it, either «последняя версия» or «вышло
+  обновление X.Y.Z» — so the one question the screen answers (is this current?)
+  is answered without pressing anything first.
+- **In-app update install.** The APK matching the device's ABI is downloaded,
+  checked against the release's published SHA-256, and handed to the system
+  installer. It is signed with the same release key, so it updates in place:
+  the app's settings and saved documents survive.
+- Version comparison that will not offer a downgrade: numeric parts, not a
+  string compare, so 10.0.0 correctly beats 9.0.0. A pre-release is treated as
+  its own release, so a release candidate is never pushed at a user already on
+  the final.
+- ABI selection that matches whole ABI names, so an x86-only device is not
+  offered the x86_64 build.
+
+### Fixed
+
+- The repository link under Settings → About still read
+  `github.com/p1neappleXpress/OpenFlux`. The URL it opened was already the
+  fork's, so the link worked and the label under it was simply wrong.
+- A failed update check and "no update available" showed the same thing, so a
+  check that could not reach GitHub was indistinguishable from being up to
+  date. A failed check now says so.
+
+### Notes
+
+- 2.0.0 is a version bump, not a rewrite: the tunnel, transports and
+  reconnect fix are those of 1.2.1, unchanged.
+- `versionCode` is 20000, above 1.2.1's 10201, so Android accepts the update
+  without an uninstall.
+
 ## [1.2.1] - 2026-09-29
 
 ### Fixed
