@@ -89,10 +89,10 @@ That is the whole procedure. What the clone contains:
   sources are released separately as
   [imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux), with its own tags
   for exit nodes and the CLI.
-- `shared/` — the Compose Multiplatform UI and models, vendored from
-  [OpenFluxClientShared](https://github.com/p1neappleXpress/OpenFluxClientShared),
-  which [OpenFluxDesktop](https://github.com/p1neappleXpress/OpenFluxDesktop)
-  also uses. Kept here so this fork can carry its own fixes to it.
+- `shared/` — the Compose Multiplatform UI and models. Originally vendored
+  from the upstream `OpenFluxClientShared`, and now maintained here: this fork
+  carries its own fixes to it, so the copy in this repository is the one that
+  both the Android app and the Windows client are built from.
 
 ## Building
 
@@ -118,9 +118,14 @@ and `wsl-audit.sh` (verifies those artifacts). Everything runs from WSL; the
 Windows checkout is not used for building.
 
 ```bash
-scripts/wsl-build.sh 1.2.1     # -> dist/, five signed APKs
-scripts/wsl-audit.sh 1.2.1     # -> AUDIT_OK / AUDIT_FAILED
+scripts/wsl-build.sh            # -> dist/, five signed APKs
+scripts/wsl-audit.sh            # -> AUDIT_OK / AUDIT_FAILED
 ```
+
+Both read the version from `appVersion` in the root `gradle.properties`, so the
+Android build and the Windows client cannot end up at different numbers. Pass a
+version to build something else and the script says so on stderr rather than
+quietly producing artifacts that disagree with the release page.
 
 `wsl-audit.sh` is not a formality: it re-checks each APK's package name,
 embedded core provenance (the commit the core was built from), the native

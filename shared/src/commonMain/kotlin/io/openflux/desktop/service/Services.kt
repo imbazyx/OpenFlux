@@ -66,7 +66,15 @@ interface PlatformServices {
     val kind: PlatformKind get() = PlatformKind.Desktop
     val appVersion: String
     val coreVersion: String
-    /** Where this app's own releases are published, e.g. "p1neappleXpress/OpenFluxDesktop". */
+    /**
+     * Where this app's own releases are published, e.g. "imbazyx/OpenFlux".
+     *
+     * This is the repository the app was actually released from, and it drives
+     * both the About links and the update check. A value that still names the
+     * upstream repository sends people somewhere this build has never been
+     * published, and makes the update check look for releases that do not
+     * contain it.
+     */
     val clientRepo: String
     /** Whether this OS can point its system proxy at OpenFlux. */
     val systemProxySupported: Boolean
