@@ -14,10 +14,16 @@ import io.openflux.desktop.service.AppContainer
 fun createAppContainer(appVersion: String): AppContainer {
     val settings = FileSettingsRepository(AppDirs.config)
     val binary = CoreBinary()
+    val connection = CoreConnectionService(settings, binary)
+    // Nothing else can be relied on to run when the window closes. Left undone,
+    // the core keeps running as an orphan and Windows keeps pointing its
+    // system proxy at a SOCKS port nobody is listening on - the machine is
+    // then offline until the next launch restores the saved settings.
+    Runtime.getRuntime().addShutdownHook(Thread({ connection.shutdown() }, "openflux-shutdown"))
     return AppContainer(
         profiles = FileProfileRepository(AppDirs.config),
         settings = settings,
-        connection = CoreConnectionService(settings, binary),
+        connection = connection,
         platform = JvmPlatformServices(appVersion) { binary.version() },
         shareCodec = JvmShareLinkCodec(),
         nodeWizard = CoreNodeWizard(settings, binary),
