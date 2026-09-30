@@ -51,6 +51,7 @@ import io.openflux.desktop.model.CoreSource
 import io.openflux.desktop.model.ThemeMode
 import io.openflux.desktop.model.isActive
 import io.openflux.desktop.service.AppContainer
+import io.openflux.desktop.service.AppUpdate
 import io.openflux.desktop.service.LocalAppContainer
 import io.openflux.desktop.service.PlatformKind
 import io.openflux.desktop.ui.LocalTouchUi
@@ -99,6 +100,16 @@ class SettingsScreenModel(val container: AppContainer) : ScreenModel {
     var mobileDetailOpen by mutableStateOf(false)
     var latestRelease by mutableStateOf<String?>(null)
     var checkingRelease by mutableStateOf(false)
+    /**
+     * What the check found, null until it runs. [updateChecked] separates
+     * "checked, nothing newer" from "not checked yet": without it the screen
+     * would read "up to date" for a user who never asked, and a check that
+     * silently failed to reach GitHub would look identical.
+     */
+    var update by mutableStateOf<AppUpdate?>(null)
+    var updateChecked by mutableStateOf(false)
+    var updateFailed by mutableStateOf(false)
+    var installing by mutableStateOf(false)
 
     fun update(transform: (AppSettings) -> AppSettings) = container.settings.update(transform)
 }
@@ -498,8 +509,24 @@ private fun InterfaceSettings(model: SettingsScreenModel) {
 private fun AboutSettings(model: SettingsScreenModel) {
     val platform = model.container.platform
     val scope = rememberCoroutineScope()
+    val update = model.update
+    val canInstall = platform.kind == PlatformKind.Android
+
     AppCard(padding = 0.dp) {
-        KeyValueRow("Версия приложения", platform.appVersion)
+        // The version and its state on one line: a version alone says nothing
+        // about whether it is current, and that is the only question a user
+        // opens this screen to answer.
+        KeyValueRow(
+            "Версия приложения",
+            platform.appVersion + when {
+                model.checkingRelease -> "  ·  проверяю…"
+                !model.updateChecked -> ""
+                model.updateFailed -> "  ·  не проверить"
+                update != null && update.newer -> "  ·  вышло обновление ${update.version}"
+                update != null -> "  ·  последняя версия"
+                else -> "  ·  последняя версия"
+            },
+        )
         HorizontalRule()
         KeyValueRow("Ядро OpenFlux", platform.coreVersion)
         HorizontalRule()
@@ -507,21 +534,54 @@ private fun AboutSettings(model: SettingsScreenModel) {
             "Последний выпуск",
             when {
                 model.checkingRelease -> "проверяю…"
-                model.latestRelease != null -> model.latestRelease!!
+                update != null -> update.version
+                model.updateChecked -> "не найден"
                 else -> "не проверялось"
             },
         )
     }
-    AppButton("Проверить обновления", {
-        model.checkingRelease = true
-        scope.launch {
-            model.latestRelease = platform.latestRelease() ?: "не найден"
-            model.checkingRelease = false
-        }
-    }, style = ButtonStyle.Secondary)
+
+    AppButton(
+        when {
+            model.checkingRelease -> "Проверяю…"
+            update != null && update.newer -> "Скачать и установить ${update.version}"
+            else -> "Проверить обновления"
+        },
+        {
+            if (update != null && update.newer && canInstall) {
+                model.installing = true
+                scope.launch {
+                    platform.installUpdate(update)
+                    model.installing = false
+                }
+            } else {
+                model.checkingRelease = true
+                model.updateFailed = false
+                scope.launch {
+                    val found = platform.checkForUpdate()
+                    model.update = found
+                    model.updateChecked = true
+                    // Null means the lookup failed, not that nothing exists.
+                    model.updateFailed = found == null
+                    model.checkingRelease = false
+                }
+            }
+        },
+        enabled = !model.checkingRelease && !model.installing,
+        style = if (update != null && update.newer) ButtonStyle.Primary else ButtonStyle.Secondary,
+    )
+
+    if (update != null && update.newer) {
+        Text(
+            "Обновление ставится поверх: приложение и его настройки сохранятся.",
+            style = AppTheme.typography.bodySmall,
+            color = AppTheme.colors.textSecondary,
+            modifier = Modifier.padding(horizontal = AppTheme.spacing.s),
+        )
+    }
     SectionLabel("Репозитории")
     AppCard(padding = AppTheme.spacing.s) {
-        LinkRow("OpenFlux (ядро)", "github.com/p1neappleXpress/OpenFlux", "https://github.com/p1neappleXpress/OpenFlux", platform::openUrl)
+        LinkRow("OpenFlux (ядро)", "github.com/${platform.clientRepo}", "https://github.com/${platform.clientRepo}", platform::openUrl)
         LinkRow("OpenFlux Android", "github.com/damnurmum/OpenFlux-Android", "https://github.com/damnurmum/OpenFlux-Android", platform::openUrl)
         LinkRow("Этот клиент", "github.com/${platform.clientRepo}", "https://github.com/${platform.clientRepo}", platform::openUrl)
     }

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Only the app's own cache, and only the update directory within it. The
+  provider is not exported; access is granted per-URI and for a single
+  install session, and a broader path here would publish the rest of the
+  cache to whatever the user opens next.
+-->
+<paths>
+    <cache-path
+        name="updates"
+        path="." />
+</paths>

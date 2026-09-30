@@ -131,7 +131,35 @@ interface PlatformServices {
     fun now(): Long
     /** Newest app release tag on GitHub, null when unknown. */
     suspend fun latestRelease(): String?
+
+    /**
+     * The newest release, with the APK to install and whether it is actually
+     * newer than what is running. Null when GitHub cannot be reached or the
+     * release carries no APK - never an error string, so a failed lookup and
+     * "no update" cannot be confused by the caller.
+     */
+    suspend fun checkForUpdate(): AppUpdate? = null
+
+    /**
+     * Downloads [update] and hands it to the OS installer; false when this
+     * platform cannot install (the desktop build). Whether the user actually
+     * accepts the install is not this method's business.
+     */
+    suspend fun installUpdate(update: AppUpdate): Boolean = false
 }
+
+/**
+ * A release offered as an in-app update.
+ *
+ * [version] is the tag without its "v", so it can be compared against
+ * [PlatformServices.appVersion] directly.
+ */
+data class AppUpdate(
+    val version: String,
+    val downloadUrl: String,
+    val versionCode: Int,
+    val newer: Boolean,
+)
 
 /**
  * The "Своя нода" wizard's server side: installs an independent exit
