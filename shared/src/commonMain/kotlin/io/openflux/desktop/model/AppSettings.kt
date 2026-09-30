@@ -55,7 +55,15 @@ data class AppSettings(
     val logAutoScroll: Boolean = true,
     /** Hide document URLs and keys in the log view. */
     val maskSensitive: Boolean = true,
-    val closeToTray: Boolean = true,
+    /**
+     * Removed: there is no tray. The setting was read by nothing, defaulted to
+     * on, and its switch promised a notification-area icon and an exit menu
+     * that did not exist - so a user who turned it off was told the app
+     * minimises, and it did not. Kept out of the data class so no saved
+     * settings.json carries a key that means nothing.
+     *
+     * val closeToTray: Boolean = true,
+     */
     /** Exit mode: address clients dial for direct ("" = the core's guess). */
     val exitShareHost: String = "",
     /** Exit mode: TCP port for the direct transport. */
