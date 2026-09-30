@@ -3,7 +3,6 @@
 .git
 .gitignore
 .idea
-.claude
 
 # Prebuilt binaries — never belong in the image.
 openflux

@@ -117,13 +117,6 @@ public static class OpenFluxProxy {
 '@
 """.trimIndent()
 
-    private fun run(vararg command: String): String? = runCatching {
-        val process = ProcessBuilder(*command).redirectErrorStream(true).start()
-        val out = process.inputStream.bufferedReader().readText()
-        if (!process.waitFor(15, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            return null
-        }
-        if (process.exitValue() == 0) out else null
-    }.getOrNull()
+    private fun run(vararg command: String): String? =
+        ProcessRunner.run(15, TimeUnit.SECONDS, *command)
 }

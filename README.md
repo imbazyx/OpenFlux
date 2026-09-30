@@ -1,5 +1,12 @@
 # OpenFlux
 
+[![Releases](https://img.shields.io/github/v/release/imbazyx/OpenFlux?label=release&color=blue)](https://github.com/imbazyx/OpenFlux/releases/latest)
+[![License](https://img.shields.io/github/license/imbazyx/OpenFlux?color=blue)](LICENSE)
+[![Go](https://img.shields.io/badge/core-Go%201.26-00ADD8?logo=go&logoColor=white)](OpenFlux/)
+[![Kotlin](https://img.shields.io/badge/client-Kotlin%202.4-7F52FF?logo=kotlin&logoColor=white)](shared/)
+[![Compose](https://img.shields.io/badge/ui-Compose%20Multiplatform-4285F4?logo=jetpackcompose&logoColor=white)](shared/)
+[![Platforms](https://img.shields.io/badge/client-Android%20%7C%20Windows%2010--11-3DDC84)](https://github.com/imbazyx/OpenFlux/releases)
+
 A VPN client that tunnels TCP over document-collaboration services, so it
 works on networks where an ordinary VPN is blocked.
 

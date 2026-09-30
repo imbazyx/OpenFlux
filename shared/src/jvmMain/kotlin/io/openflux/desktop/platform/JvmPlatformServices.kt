@@ -147,8 +147,16 @@ class JvmPlatformServices(
     }
 
     companion object {
-        /** Where the desktop releases are published, tagged v1.2.3. */
-        const val RELEASE_REPO = "p1neappleXpress/OpenFluxDesktop"
+        /**
+         * Where the desktop releases are published.
+         *
+         * This pointed at the upstream desktop repository, so "О программе" on
+         * Windows sent people somewhere the Windows client has never been
+         * published - while the Android side already named this repository and
+         * carried a comment about exactly that mistake. Both clients now name
+         * the repository they are actually released from.
+         */
+        const val RELEASE_REPO = "imbazyx/OpenFlux"
         const val DESKTOP_TAG_PREFIX = "v"
     }
 }

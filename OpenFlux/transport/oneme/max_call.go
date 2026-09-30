@@ -36,7 +36,12 @@ func (h *CallHandler) readLoop() {
 	}()
 	logInfo("[%s] Signaling connected", h.tag)
 	for {
+		// Same reasoning as the account socket: bound the frame, and bound how
+		// long a read may block. The deadline is cleared right after so an idle
+		// signaling connection is not torn down between calls.
+		_ = h.conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 		_, message, err := h.conn.ReadMessage()
+		_ = h.conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			logError("[%s] Signaling disconnected: %v", h.tag, err)
 			h.signalReconnect()
@@ -45,7 +50,7 @@ func (h *CallHandler) readLoop() {
 		text := string(message)
 
 		if strings.Contains(text, "accepted-call") {
-			fmt.Println("call accepted")
+			logInfo("[%s] call accepted", h.tag)
 			h.callAccepted = true
 			continue
 		}
@@ -115,7 +120,7 @@ func (h *CallHandler) sendAcceptCall() {
 }
 
 func (h *CallHandler) createPeerConnection(convParams map[string]interface{}) {
-	logInfo("[%s] Creating PeerConnection...", h.tag)
+	logDebug("[%s] Creating PeerConnection...", h.tag)
 	turn := convParams["turn"].(map[string]interface{})
 	stun := convParams["stun"].(map[string]interface{})
 	var stunURLs, turnURLs []string
@@ -129,7 +134,7 @@ func (h *CallHandler) createPeerConnection(convParams map[string]interface{}) {
 	}
 	username, _ := turn["username"].(string)
 	credential, _ := turn["credential"].(string)
-	logInfo("[%s] STUN: %v  TURN: %v", h.tag, stunURLs, turnURLs)
+	logDebug("[%s] STUN: %v  TURN: %v", h.tag, stunURLs, turnURLs)
 
 	config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
@@ -153,34 +158,40 @@ func (h *CallHandler) createPeerConnection(convParams map[string]interface{}) {
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c != nil {
 			jsonC, _ := json.Marshal(c.ToJSON())
-			logInfo("[%s] Local ICE: %s", h.tag, string(jsonC))
+			logDebug("[%s] Local ICE: %s", h.tag, string(jsonC))
 			h.sendICE(string(jsonC))
 		} else {
-			logInfo("[%s] ICE gathering complete", h.tag)
+			logDebug("[%s] ICE gathering complete", h.tag)
 		}
 	})
 	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
-		logInfo("[%s] ICE: %s", h.tag, s.String())
+		logDebug("[%s] ICE: %s", h.tag, s.String())
 	})
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		logInfo("[%s] Connection: %s", h.tag, s.String())
+		logDebug("[%s] Connection: %s", h.tag, s.String())
 		if s == webrtc.PeerConnectionStateConnected && h.onConnected != nil {
 			logInfo("[%s] *** CONNECTED! ***", h.tag)
 			h.onConnected()
 		}
 	})
 	pc.OnSignalingStateChange(func(s webrtc.SignalingState) {
-		logInfo("[%s] Signaling: %s", h.tag, s.String())
+		logDebug("[%s] Signaling: %s", h.tag, s.String())
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 		dcID := uint16(0)
 		if dc.ID() != nil {
 			dcID = *dc.ID()
 		}
-		logInfo("[%s] Remote DC: %s (id=%d)", h.tag, dc.Label(), dcID)
+		logDebug("[%s] Remote DC: %s (id=%d)", h.tag, dc.Label(), dcID)
 		h.dc = dc
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-			logInfo("[%s] RECV: %s", h.tag, string(msg.Data))
+			// The payload is the tunnel itself - other people's IP packets. It
+			// used to be dumped here with logInfo, which logs unconditionally,
+			// so every byte of the user's traffic landed in a log the app keeps
+			// in a ring buffer and shows on its Logs screen. The byte count and
+			// the codec are enough to tell a stall from a failure; the contents
+			// are never diagnostic, because they are not text.
+			logDebug("[%s] data channel: %d bytes in", h.tag, len(msg.Data))
 			h.dcInbound(msg.Data)
 		})
 	})
@@ -199,11 +210,7 @@ func (h *CallHandler) createPeerConnection(convParams map[string]interface{}) {
 		return
 	}
 	h.dc = dc
-	//_ := uint16(0)
-	//if dc.ID() != nil {
-	//	dcID = *dc.ID()
-	//}
-	dc.OnOpen(func() { logInfo("[%s] DC opened", h.tag) })
+	dc.OnOpen(func() { logDebug("[%s] DC opened", h.tag) })
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		h.dcInbound(msg.Data)
 	})
@@ -219,9 +226,14 @@ func (h *CallHandler) sendSDP(sdp string, sdpType string) {
 	msg := fmt.Sprintf(`{"command":"transmit-data","sequence":%d,"participantId":%d,"data":{"sdp":{"type":"%s","sdp":%s},"animojiVersion":1},"participantType":"USER"}`,
 		h.seq, h.localID, sdpType, string(escaped))
 	h.seq++
-	logInfo("[%s] Sent SDP %s (%d bytes)", h.tag, sdpType, len(sdp))
-	fmt.Println(msg)
-	//h.conn.WriteMessage(websocket.TextMessage, []byte(msg))
+	logInfo("[%s] SDP %s built (%d bytes)", h.tag, sdpType, len(sdp))
+	// ponytail: the message is built and deliberately not written back. The
+	// transport carries data over the data channel once the call is up, and
+	// this signalling write is still commented out upstream; sending it
+	// unverified would change how calls are negotiated with no way here to
+	// test the result. Restore h.conn.WriteMessage once there is a real
+	// capture of a working call to compare against.
+	_ = msg
 }
 
 func (h *CallHandler) injectICE(payload []byte) {
@@ -372,7 +384,7 @@ func startOutgoingCall(client *MaxClient, calleeID int64) *CallHandler {
 			logInfo("[%s] conversationParams - creating offer", h.tag)
 			for {
 				time.Sleep(1 * time.Second)
-				fmt.Println("waiting for accept ...")
+				logDebug("waiting for accept ...")
 				if h.callAccepted || useICEInjection {
 					break
 				}
@@ -446,7 +458,7 @@ func startOutgoingCall(client *MaxClient, calleeID int64) *CallHandler {
 			endpoint := params.Endpoint + "&platform=WEB&appVersion=1.1&version=5&device=browser&capabilities=2A03F&clientType=ONE_ME&tgt=start"
 			conn, _, err := websocket.DefaultDialer.Dial(endpoint, nil)
 			if err != nil {
-				logError("[CALLER] Dial error: %v, retrying...", err)
+				logError("[CALLER] Dial error: %s, retrying...", redactedError(err))
 				time.Sleep(1 * time.Second)
 				continue
 			}
@@ -530,11 +542,11 @@ func startIncomingListener(client *MaxClient) *CallHandler {
 			}
 
 			endpoint := craftEndpoint(convID, callDetails)
-			logInfo("[RECEIVER] Initial endpoint: %s", endpoint)
+			logInfo("[RECEIVER] Initial endpoint: %s", redactedEndpoint(endpoint))
 
 			conn, _, err := websocket.DefaultDialer.Dial(endpoint, nil)
 			if err != nil {
-				logError("[RECEIVER] Connect error: %v", err)
+				logError("[RECEIVER] Connect error: %s", redactedError(err))
 				return
 			}
 			h.mu.Lock()

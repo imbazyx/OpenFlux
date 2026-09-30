@@ -254,7 +254,12 @@ func main() {
 	ipcSocketPath := flag.String("ipc-socket", "",
 		"Path to the Unix domain socket used by the mobile app to talk to the core. "+
 			"Empty = no IPC server.")
-	socksAddr := flag.String("socks5", ":1080", "SOCKS5 address")
+	// Loopback, not a bare port. ":1080" means 0.0.0.0:1080, and the SOCKS5
+	// server here has no authentication unless the caller sets one, so the old
+	// default handed every host on the network an anonymous proxy through the
+	// user's exit node. Sharing it deliberately still works - pass an explicit
+	// address - it is just no longer what you get by accident.
+	socksAddr := flag.String("socks5", "127.0.0.1:1080", "SOCKS5 address (loopback by default: this proxy is unauthenticated)")
 	httpProxyAddr := flag.String("http-proxy", "", "Client: also serve an HTTP proxy (CONNECT and plain requests) on this address, through the same tunnel")
 	flag.StringVar(&localIP, "local-ip", "", "Egress IP for exit node (l3 mode only, scoped RST drop)")
 
