@@ -12,14 +12,24 @@ set -euo pipefail
 # 1.100.0 and 2.0.0 would both be 20000, and 1.2.100 / 1.3.0 both 10300.
 # "1.2", "1.2.0" and "1.2.0-rc1" all collapse to 10200 too, and Android refuses an
 # update whose versionCode did not grow; a non-numeric version ships as 0.
-DEFAULT_VER=2.0.0
-VER=${1:-$DEFAULT_VER}
-[[ $VER =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]] || {
-  echo "version '$VER' is not X.Y.Z with bounded parts (e.g. $DEFAULT_VER)" >&2; exit 1; }
 # Derive the checkout from this script's own location, so moving the project
 # folder never breaks the build (scripts/ -> the fork's root).
 SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SRC=$(cd "$SELF/.." && pwd)
+
+# The default version is the one both clients build from - gradle.properties.
+# It used to be written out here as well, which is how this script ended up two
+# releases behind the app while looking perfectly correct: a build with no
+# argument quietly produced 1.2.0 over a 2.0.0 tree.
+DEFAULT_VER=$(sed -n 's/^appVersion=//p' "$SRC/gradle.properties" | tail -1)
+[ -n "$DEFAULT_VER" ] || { echo "appVersion is not set in $SRC/gradle.properties" >&2; exit 1; }
+VER=${1:-$DEFAULT_VER}
+[[ $VER =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]] || {
+  echo "version '$VER' is not X.Y.Z with bounded parts (e.g. $DEFAULT_VER)" >&2; exit 1; }
+if [ "$VER" != "$DEFAULT_VER" ]; then
+  echo "заметка: собираю $VER, а gradle.properties объявляет $DEFAULT_VER." >&2
+  echo "       версия попадёт и в артефакт, и в страницу релиза - они разойдутся." >&2
+fi
 # Not a hard error: the /mnt/* assumption is only about speed (reading a Windows
 # mount is slow) and line endings, neither of which the staging handles anyway.
 case "$SRC" in /mnt/*) ;; *) echo "note: $SRC is not a /mnt path; building anyway" >&2 ;; esac
