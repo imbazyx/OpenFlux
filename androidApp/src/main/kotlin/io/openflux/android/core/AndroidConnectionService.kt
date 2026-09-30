@@ -352,7 +352,7 @@ class AndroidConnectionService(
         }
         current.tunnel = tunnel
         tunnel.start()
-        log(LogLevel.Info, "VPN включён, DNS $dns")
+        log(LogLevel.Info, "VPN включён, DNS ${dns.joinToString(", ")}")
     }
 
     /** Exit mode: the link clients scan, with direct at this phone's address. */
@@ -628,11 +628,21 @@ class AndroidConnectionService(
 
     private fun proxyAddress(settings: AppSettings) = "$LOOPBACK:${settings.socksPort}"
 
-    /** The DNS server of the network the phone uses, before the VPN is up. */
-    private fun networkDns(): String = runCatching {
+    /**
+     * The DNS servers of the network the phone uses, before the VPN is up.
+     *
+     * All of them, not just the first. One resolver that is filtered or simply
+     * silent - a captive portal, a carrier that drops 53, an IPv6 resolver that
+     * never answers over IPv4 - used to black out every lookup on the phone,
+     * because there was no second one to try.
+     */
+    private fun networkDns(): List<String> = runCatching {
         val manager = context.getSystemService(ConnectivityManager::class.java)
-        manager.getLinkProperties(manager.activeNetwork)?.dnsServers?.firstOrNull { it is Inet4Address }?.hostAddress
-    }.getOrNull() ?: FALLBACK_DNS
+        manager.getLinkProperties(manager.activeNetwork)?.dnsServers
+            ?.mapNotNull { (it as? Inet4Address)?.hostAddress }
+            ?.distinct()
+            ?.takeIf { it.isNotEmpty() }
+    }.getOrNull()?.let { it } ?: listOf(FALLBACK_DNS)
 
     /** This phone's address on its local network (Wi-Fi first), for clients of the exit. */
     private fun localAddress(): String? = runCatching {

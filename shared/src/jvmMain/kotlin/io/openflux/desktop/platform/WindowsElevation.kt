@@ -10,10 +10,30 @@ import java.util.concurrent.TimeUnit
 object WindowsElevation {
     private val windows = System.getProperty("os.name").lowercase().contains("win")
 
-    /** Whether this process runs elevated; checked once. */
+    /**
+     * Whether this process runs elevated; checked once.
+     *
+     * The check spawns `net session` with a 10 second timeout, and it used to
+     * run on whichever thread touched the property first - which, because two
+     * screens read it to decide whether to show a banner, is the UI thread.
+     * The window froze for up to ten seconds on first draw. It is warmed on a
+     * background thread by [warm] instead.
+     */
     val elevated: Boolean by lazy {
         // "net session" needs an elevated token; it is the usual check without JNA.
         windows && ProcessRunner.run(10, TimeUnit.SECONDS, "net", "session") != null
+    }
+
+    /**
+     * Starts the check without waiting for it.
+     *
+     * The value is still read synchronously by callers that need it now, but
+     * by the time a screen is showing it the result is normally already in, so
+     * the cost lands off the UI thread.
+     */
+    fun warm() {
+        if (!windows) return
+        Thread({ elevated }, "openflux-elevation-check").apply { isDaemon = true }.start()
     }
 
     /**

@@ -98,11 +98,47 @@ val checkCore by tasks.registering {
                 "Соберите его: bash scripts/build-pc-core.sh"
             )
         }
+        // The full tunnel cannot work without it, and the app's own check for
+        // it names a folder the app unpacks. Shipping without it produced an
+        // error about a missing driver in a folder that did exist.
+        val wintun = coreDir.file("wintun.dll")
+        if (!wintun.asFile.isFile) {
+            throw GradleException(
+                "Рядом с ядром нет wintun.dll: ${wintun.asFile}\n" +
+                "Соберите его: bash scripts/build-pc-core.sh"
+            )
+        }
     }
 }
 
 /**
- * Puts the core inside the application jar.
+ * Records what went into the jar's windows/ folder, so the app can unpack all
+ * of it rather than the one file whose name it happens to know.
+ *
+ * The 2.2.0 client shipped the core inside the jar and unpacked that single
+ * file. wintun.dll, the driver the full tunnel needs, was in the jar too and
+ * stayed there: the app then reported the driver missing, from a folder it had
+ * written itself, one file sitting next to a file it had written itself. A
+ * name the app knows cannot catch a file added later, so the list travels with
+ * the files.
+ */
+val writeBundleManifest by tasks.registering {
+    dependsOn(checkCore)
+    val src = coreDir
+    val out = layout.buildDirectory.file("generated/pc/bundle/windows/bundle.txt")
+    inputs.dir(src)
+    outputs.file(out)
+    doLast {
+        val files = src.asFile.listFiles()?.filter { it.isFile }?.sortedBy { it.name }.orEmpty()
+        require(files.isNotEmpty()) { "в $src нет ни одного файла" }
+        out.get().asFile.apply { parentFile.mkdirs() }
+            .writeText(files.joinToString("\n") { "${it.name}\t${it.length()}" } + "\n")
+        logger.lifecycle("Состав пакета: " + files.joinToString(", ") { "${it.name} (${it.length()})" })
+    }
+}
+
+/**
+ * Puts the core, and everything the core needs to run, inside the jar.
  *
  * Every other place to put a file failed. jpackage builds the installed
  * program from the jars it is handed, and a separate file dropped beside them
@@ -117,8 +153,9 @@ val checkCore by tasks.registering {
  * CoreBinary unpacks it on first use.
  */
 tasks.named<ProcessResources>("processResources") {
-    dependsOn(checkCore)
+    dependsOn(writeBundleManifest)
     from(coreDir) { into("windows") }
+    from(writeBundleManifest) { into("windows") }
 }
 
 /** The application icon, generated from the Android one by scripts/make-pc-icon.sh. */
@@ -169,7 +206,13 @@ val checkCoreInInstaller by tasks.registering {
     doLast {
         val wanted = "windows/$winCoreName"
         val dir = jars.get().asFile
-        val jar = dir.listFiles()?.firstOrNull { it.name.endsWith(".jar") }
+        // Named, not "the first .jar". listFiles() has no defined order and
+        // build/libs routinely holds more than one jar, so this could have
+        // passed by inspecting an unrelated file - and then guarded nothing.
+        val jar = dir.listFiles()
+            ?.filter { it.name.endsWith(".jar") && !it.name.endsWith("-sources.jar") }
+            ?.sortedBy { if (it.name == "${project.name}.jar") 0 else 1 }
+            ?.firstOrNull()
             ?: throw GradleException("jar не найден в $dir")
         val inside = ZipFile(jar).use { zip ->
             zip.getEntry(wanted) != null
@@ -252,3 +295,11 @@ val collectDist by tasks.registering(Copy::class) {
 }
 
 tasks.named("processResources") { dependsOn(checkCore) }
+
+// The core check has to be attached to the two tasks that actually produce a
+// published Windows artifact. It used to be declared and then wired to
+// nothing, so a jar with no core in it built green and shipped: the app
+// installed, opened, and only failed at the first connect - which is exactly
+// the failure this check was written for.
+tasks.matching { it.name == "packageMsi" }.configureEach { dependsOn(checkCoreInInstaller) }
+tasks.named("packageZip") { dependsOn(checkCoreInInstaller) }

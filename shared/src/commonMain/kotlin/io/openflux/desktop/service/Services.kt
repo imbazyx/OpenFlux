@@ -149,11 +149,48 @@ interface PlatformServices {
     suspend fun checkForUpdate(): AppUpdate? = null
 
     /**
+     * The same answer, but with the difference between "checked and there is
+     * nothing new" and "could not check" kept in it.
+     *
+     * [checkForUpdate] returns null for both, and the settings screen then
+     * shows the same words for a GitHub that answered and one that never did.
+     * A user who pressed the button and was told the release was "не найден"
+     * had no way to tell a working check from a broken network, and neither
+     * did the next person reading their report.
+     */
+    suspend fun checkForUpdateDetailed(): UpdateCheck = UpdateCheck.Failed("платформа не умеет проверять обновления")
+
+    /**
      * Downloads [update] and hands it to the OS installer; false when this
      * platform cannot install (the desktop build). Whether the user actually
      * accepts the install is not this method's business.
      */
     suspend fun installUpdate(update: AppUpdate): Boolean = false
+}
+
+/**
+ * What an update check found.
+ *
+ * Three answers, not two. "Nothing newer", "here is a newer one" and "I could
+ * not find out" are different facts about the world, and a UI that draws them
+ * all as the same null tells the user something false.
+ */
+sealed interface UpdateCheck {
+    /**
+     * The check worked, and [latestVersion] - which is what is running - is
+     * the newest thing published. Carrying the version is what lets the screen
+     * say "2.2.0" instead of only refusing to offer anything.
+     */
+    data class UpToDate(val latestVersion: String) : UpdateCheck
+
+    /** A newer release exists and [update] says how to get it. */
+    data class Available(val update: AppUpdate) : UpdateCheck
+
+    /**
+     * The check did not complete. [reason] is for the user, in their language,
+     * and says what went wrong rather than only that something did.
+     */
+    data class Failed(val reason: String) : UpdateCheck
 }
 
 /**

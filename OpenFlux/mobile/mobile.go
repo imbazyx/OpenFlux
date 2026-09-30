@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"openflux/transport"
 	"openflux/transport/cupsonline"
@@ -25,6 +26,10 @@ type packetClient struct {
 	transport transport.Transport
 	packets   [][]byte
 	logs      []string
+	// dropped counts inbound packets refused because the queue was full. It
+	// is read without the lock, so it is a counter and not a queue: the number
+	// is what matters, not which packet went.
+	dropped atomic.Uint64
 }
 
 func appendLog(message string) {
@@ -100,8 +105,20 @@ func startPacket(build func() (transport.Transport, error)) string {
 			client.mu.Unlock()
 			return
 		}
+		// On overflow, drop the arriving packet instead of the oldest one.
+		//
+		// A receive queue holds IP packets belonging to many TCP streams.
+		// Discarding the oldest removes a segment from the middle of a stream
+		// that has already been acknowledged, so the sender never learns it
+		// went missing until its own timers expire - the flow stalls and
+		// retransmits. Discarding the newcomer is backpressure: nothing that
+		// was promised to a peer is retracted, and UDP/QUIC simply loses one
+		// datagram it will not miss. The overflow is counted either way, so a
+		// tunnel that is genuinely too slow is visible instead of merely slow.
 		if len(client.packets) >= maxQueue {
-			client.packets = client.packets[1:]
+			client.dropped.Add(1)
+			client.mu.Unlock()
+			return
 		}
 		client.packets = append(client.packets, packet)
 		client.mu.Unlock()
