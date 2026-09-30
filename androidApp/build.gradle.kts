@@ -6,7 +6,7 @@ plugins {
 }
 
 /** The app version: -PappVersion=1.2.3 (the release workflow passes the tag). */
-val appVersion = (findProperty("appVersion") as String?)?.removePrefix("v")?.takeIf { it.isNotBlank() } ?: "2.0.0"
+val appVersion = (findProperty("appVersion") as String?)?.removePrefix("v")?.takeIf { it.isNotBlank() } ?: "2.1.0"
 
 /** 1.2.3 -> 10203: grows with every release as Android requires. */
 val appVersionCode = appVersion.split('.', '-').take(3).map { it.toIntOrNull() ?: 0 }

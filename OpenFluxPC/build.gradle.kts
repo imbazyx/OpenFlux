@@ -9,8 +9,25 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-/** -PappVersion=2.0.0, the same property the Android app and the release use. */
-val appVersion = (findProperty("appVersion") as String?)?.removePrefix("v")?.takeIf { it.isNotBlank() } ?: "2.0.0"
+/**
+ * The app version. The default below is the source of truth for this module.
+ *
+ * -PappVersion works here, and the Android app uses the same property - but on
+ * Windows it goes through gradlew.bat, which truncates a dotted value at the
+ * first dot: `-PappVersion=2.1.0` arrives as "2". jpackage then refuses the MSI
+ * version, so this at least fails loudly rather than producing a package
+ * called "2"; for a Windows build, prefer OPENFLUX_VERSION or just leave the
+ * default alone. The Linux build path has no such wrapper and -P is exact.
+ */
+val appVersion = (findProperty("appVersion") as String?)?.removePrefix("v")?.takeIf { it.isNotBlank() }
+    ?: System.getenv("OPENFLUX_VERSION")?.removePrefix("v")?.takeIf { it.isNotBlank() }
+    ?: "2.1.0"
+
+require(Regex("""\d+\.\d+\.\d+""").matches(appVersion)) {
+    "OPENFLUX_VERSION/appVersion must look like 2.1.0, got \"$appVersion\". " +
+        "On Windows, -PappVersion=2.1.0 reaches the build as \"2\" - " +
+        "use the default or set the OPENFLUX_VERSION environment variable instead."
+}
 
 /**
  * The Go core for this OS, built by scripts/build-pc-core.sh into
