@@ -15,6 +15,7 @@ import io.openflux.desktop.updates.compareVersions
 import io.openflux.desktop.updates.pickApk
 import io.openflux.desktop.updates.versionCodeOf
 import io.openflux.desktop.service.AppUpdate
+import io.openflux.desktop.service.UpdateCheck
 import io.openflux.android.core.AppSelection
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
