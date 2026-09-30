@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 
 	"github.com/pierrec/lz4/v4"
@@ -61,6 +62,15 @@ func compress(data []byte) []byte {
 	return buf.Bytes()
 }
 
+// maxDecompressed bounds what a single frame may expand to.
+//
+// LZ4 on bytes taken off the wire has no natural bound: a few kilobytes can
+// expand to hundreds of megabytes, and io.ReadAll with no limit grows until
+// the process is killed. This runs on every received frame in the legacy
+// codec, so anyone who can put bytes on the carrier could end the session -
+// or the phone - with one message.
+const maxDecompressed = 1 << 20
+
 func decompress(data []byte) ([]byte, error) {
 	if len(data) < 1 {
 		return data, nil
@@ -71,5 +81,12 @@ func decompress(data []byte) ([]byte, error) {
 	}
 
 	r := lz4.NewReader(bytes.NewReader(data[1:]))
-	return io.ReadAll(r)
+	out, err := io.ReadAll(io.LimitReader(r, maxDecompressed+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > maxDecompressed {
+		return nil, fmt.Errorf("compressed: frame expands past %d bytes", maxDecompressed)
+	}
+	return out, nil
 }

@@ -75,14 +75,18 @@ class CoreService : VpnService() {
      * [AppSelection] narrows that to chosen applications when the user asked
      * for it: the TUN then carries only those, and the rest of the phone keeps
      * its normal route.
+     *
+     * Every resolver in [dns] is registered, not just the first. Android
+     * picks among them itself, so a network whose primary resolver is silent
+     * has a working backup instead of losing every lookup.
      */
-    fun establish(mtu: Int, dns: String): ParcelFileDescriptor? {
+    fun establish(mtu: Int, dns: List<String>): ParcelFileDescriptor? {
         val builder = Builder()
             .setSession("OpenFlux")
             .setMtu(mtu)
             .addAddress("10.10.10.2", 24)
             .addRoute("0.0.0.0", 0)
-            .addDnsServer(dns)
+            .apply { dns.forEach { addDnsServer(it) } }
             .setConfigureIntent(openAppIntent(this))
         // Cleared first so a previous run's notice cannot leak into this one.
         appRuleNotice = null

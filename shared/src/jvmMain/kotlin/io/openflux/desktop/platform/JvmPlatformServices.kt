@@ -11,6 +11,7 @@ import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import io.openflux.desktop.service.AppUpdate
+import io.openflux.desktop.service.UpdateCheck
 import io.openflux.desktop.service.PlatformServices
 import io.openflux.desktop.updates.compareVersions
 import io.openflux.desktop.updates.versionCodeOf
@@ -126,14 +127,42 @@ class JvmPlatformServices(
      * carries the same fact.
      */
     private suspend fun releaseFeed(): String? = withContext(Dispatchers.IO) {
-        runCatching {
-            val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
-                .followRedirects(HttpClient.Redirect.NORMAL).build()
-            val request = HttpRequest.newBuilder(URI("https://github.com/$RELEASE_REPO/releases.atom"))
-                .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(15)).build()
-            http.send(request, HttpResponse.BodyHandlers.ofString())
-                .takeIf { it.statusCode() == 200 }?.body()
-        }.getOrNull()
+        request("https://github.com/$RELEASE_REPO/releases.atom").body
+    }
+
+    /**
+     * One request, with the reason kept when it does not work.
+     *
+     * A result that only says "no answer" is what made this screen lie: a
+     * 403 from GitHub's address limit and a flat refusal to report an update
+     * both arrived as null and both read as "не найден".
+     */
+    private data class Answer(val body: String?, val problem: String?) {
+        val ok: Boolean get() = body != null
+    }
+
+    private fun request(url: String, head: Boolean = false): Answer = try {
+        val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
+            .followRedirects(HttpClient.Redirect.NORMAL).build()
+        val builder = HttpRequest.newBuilder(URI(url))
+            .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(15))
+        if (head) builder.method("HEAD", HttpRequest.BodyPublishers.noBody())
+        val response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString())
+        when {
+            response.statusCode() == 200 -> Answer(response.body(), null)
+            response.statusCode() == 404 -> Answer(null, "на GitHub нет такого файла")
+            response.statusCode() == 403 || response.statusCode() == 429 ->
+                Answer(null, "GitHub временно не отвечает (лимит запросов с одного адреса)")
+            else -> Answer(null, "GitHub ответил кодом ${response.statusCode()}")
+        }
+    } catch (e: java.net.ConnectException) {
+        Answer(null, "нет связи с интернетом")
+    } catch (e: java.net.UnknownHostException) {
+        Answer(null, "не найден адрес github.com")
+    } catch (e: java.net.http.HttpTimeoutException) {
+        Answer(null, "GitHub не ответил вовремя")
+    } catch (e: Exception) {
+        Answer(null, e.message ?: e::class.simpleName ?: "неизвестная ошибка")
     }
 
     /**
@@ -148,16 +177,6 @@ class JvmPlatformServices(
     internal fun newestTag(feed: String): String? =
         Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
             .find(feed)?.groupValues?.get(1)?.trim()
-
-    /** True when the URL resolves - so a renamed asset cannot become a download. */
-    private fun exists(url: String): Boolean = runCatching {
-        val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
-            .followRedirects(HttpClient.Redirect.NORMAL).build()
-        val head = HttpRequest.newBuilder(URI(url))
-            .method("HEAD", HttpRequest.BodyPublishers.noBody())
-            .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(15)).build()
-        http.send(head, HttpResponse.BodyHandlers.discarding()).statusCode() == 200
-    }.getOrDefault(false)
 
     override suspend fun latestRelease(): String? =
         releaseFeed()?.let { newestTag(it) }?.removePrefix(DESKTOP_TAG_PREFIX)
@@ -186,32 +205,51 @@ class JvmPlatformServices(
     /**
      * The newest release that carries a Windows installer.
      *
-     * This used to be unimplemented on the desktop, so the button reported
-     * "could not check" on every press while the README promised the Windows
-     * client would do exactly this. A failure still returns null - the UI shows
-     * "could not check" rather than "up to date", because those are different
-     * facts.
+     * The older [checkForUpdate] is kept for callers that only want the update
+     * or nothing, and is now a projection of this one rather than a second
+     * implementation that can disagree with it.
      */
-    override suspend fun checkForUpdate(): AppUpdate? {
-        val feed = releaseFeed() ?: return null
-        val tag = newestTag(feed) ?: return null
+    override suspend fun checkForUpdateDetailed(): UpdateCheck {
+        val feed = releaseFeed()
+            ?: return UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub")
+        val tag = newestTag(feed)
+            ?: return UpdateCheck.Failed("в списке выпусков не найдено ни одного тега")
+
         val version = tag.removePrefix(DESKTOP_TAG_PREFIX)
 
         // The installer is named after the version by the same rule the build
         // uses. Asking whether the file is actually there means a change to that
-        // rule leaves the app quietly reporting "no update" rather than handing
-        // the user a download link that 404s halfway through an install.
+        // rule is reported as what it is - "GitHub has no such file" - rather
+        // than as "no update", which is what a user cannot act on.
         val name = "OpenFlux-$version$WINDOWS_INSTALLER_SUFFIX"
         val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
-        if (!exists(url)) return null
+        val head = withContext(Dispatchers.IO) { request(url, head = true) }
+        if (!head.ok) {
+            return UpdateCheck.Failed(
+                "выпуск $tag есть, но установщик $name не отдаётся: ${head.problem}"
+            )
+        }
 
-        return AppUpdate(
+        val update = AppUpdate(
             version = version,
             downloadUrl = url,
             versionCode = versionCodeOf(version),
             newer = compareVersions(version, appVersion) > 0,
         )
+        return if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
     }
+
+    override suspend fun checkForUpdate(): AppUpdate? =
+        when (val result = checkForUpdateDetailed()) {
+            is UpdateCheck.Available -> result.update
+            is UpdateCheck.UpToDate -> AppUpdate(
+                version = result.latestVersion,
+                downloadUrl = "",
+                versionCode = versionCodeOf(result.latestVersion),
+                newer = false,
+            )
+            is UpdateCheck.Failed -> null
+        }
 
     /**
      * Downloads the MSI and hands it to Windows Installer.
@@ -222,18 +260,36 @@ class JvmPlatformServices(
      * update.
      *
      * msiexec /i runs the install straight away, and Windows Installer will
-     * refuse to replace files the running app holds open. So the install is
-     * started and the caller closes the app; that is why this returns true for
+     * refuse to replace files the running app holds open. So this starts the
+     * install and then closes the app itself, which is why it returns true for
      * "handed over", not "finished".
+     *
+     * The exit lives here rather than in the shared screen on purpose: only
+     * this platform has the constraint, and only this platform can close the
+     * window. The screen used to call the installer and then sit there running,
+     * so the update could never actually replace anything.
      */
     override suspend fun installUpdate(update: AppUpdate): Boolean = withContext(Dispatchers.IO) {
         val target = File(System.getProperty("java.io.tmpdir"), "OpenFlux-${update.version}-setup.msi")
         val downloaded = download(update.downloadUrl, target, publishedSha256(update.version, target.name))
         if (!downloaded) return@withContext false
 
-        ProcessBuilder("msiexec", "/i", target.absolutePath)
-            .redirectErrorStream(true)
-            .start()
+        val started = runCatching {
+            ProcessBuilder("msiexec", "/i", target.absolutePath)
+                .redirectErrorStream(true)
+                .start()
+            true
+        }.getOrDefault(false)
+        if (!started) return@withContext false
+
+        // Long enough for the installer window to come up on top of us, short
+        // enough that the user does not read it as a hang. The shutdown hook
+        // registered in AppFactory kills the core and restores the system proxy
+        // on this way out, so nothing is left running.
+        Thread({
+            Thread.sleep(1_500)
+            Runtime.getRuntime().exit(0)
+        }, "openflux-exit-for-update").apply { isDaemon = true }.start()
         true
     }
 

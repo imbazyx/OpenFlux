@@ -73,7 +73,13 @@ class LogsScreenModel(private val container: AppContainer) : ScreenModel {
         return lines.filter { line ->
             val levelOk = when (filter) {
                 LogFilter.All -> true
-                LogFilter.Important -> line.level != LogLevel.Debug && line.level != LogLevel.Info || line.text.contains("OpenFlux")
+                // The parens are the whole fix. && binds tighter than ||, so
+                // the old text read as "not debug and not info, OR mentions
+                // OpenFlux" - which let every Debug line containing the word
+                // into the «Важные» view while hiding Info lines that did not
+                // mention it. The filter showed the opposite of what it says.
+                LogFilter.Important ->
+                    line.level != LogLevel.Debug && (line.level != LogLevel.Info || line.text.contains("OpenFlux"))
                 LogFilter.Errors -> line.level == LogLevel.Error || line.level == LogLevel.Warning
             }
             levelOk && (q.isEmpty() || line.text.lowercase().contains(q))
