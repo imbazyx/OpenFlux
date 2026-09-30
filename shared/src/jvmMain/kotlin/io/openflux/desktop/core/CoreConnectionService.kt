@@ -529,13 +529,75 @@ class CoreBinary {
         else -> "linux"
     }
 
-    private fun bundledCandidates(): List<File> = listOfNotNull(
-        System.getProperty("compose.application.resources.dir")?.let { File(it, fileName) },
-        File(System.getProperty("user.dir"), "resources/$resourceDir/$fileName"),
-        File(System.getProperty("user.dir"), "desktopApp/resources/$resourceDir/$fileName"),
-    )
+    /**
+     * Where the core may be, in the order that best matches how each build
+     * lays itself out.
+     *
+     * Three packaging paths exist and they do not agree on a location: the MSI
+     * puts it under <install>/app/windows, the portable zip keeps it in
+     * <unpack>/resources/windows, and a developer run points the app at the
+     * source tree. A version that only looked in one of them produced an app
+     * that installed, opened, and then could not connect, which is the worst
+     * shape of failure: every visible part of the program is healthy.
+     */
+    private fun bundledCandidates(): List<File> {
+        val appDir = File(System.getProperty("user.dir"))
+        val resourceRoot = System.getProperty("compose.application.resources.dir")?.let(::File)
+        return listOfNotNull(
+            // Packaged by jpackage: the core rides in with the jars.
+            File(appDir, "app/$resourceDir/$fileName"),
+            // The app's own resources folder, with and without the OS segment:
+            // the property is set to the resources root, but a build that points
+            // it straight at the platform folder is equally reasonable.
+            resourceRoot?.let { File(it, "$resourceDir/$fileName") },
+            resourceRoot?.let { File(it, fileName) },
+            // The portable zip, unpacked anywhere, and a developer run from the
+            // module directory - the same place in both.
+            File(appDir, "resources/$resourceDir/$fileName"),
+            File(appDir, "desktopApp/resources/$resourceDir/$fileName"),
+        ).distinct()
+    }
 
-    fun bundled(): File? = bundledCandidates().firstOrNull { it.isFile }
+    fun bundled(): File? = bundledCandidates().firstOrNull { it.isFile } ?: unpackFromJar()
+
+    /**
+     * Unpacks the core out of the application jar.
+     *
+     * This is the one place the core reaches an installed Windows program.
+     * Windows Installer takes only the jars it is given and drops anything
+     * else, so a 14 MB executable placed beside them is simply not in the
+     * installed directory - while the build reported success and the app
+     * opened a perfectly healthy window over a missing core. A jar resource
+     * is the same thing a classpath entry is: the one payload the JVM and the
+     * installer both carry without being asked to.
+     *
+     * Written to the app's own data folder rather than next to the executable,
+     * because a program installed under Program Files cannot write there.
+     */
+    private fun unpackFromJar(): File? {
+        val url = javaClass.classLoader.getResource("$resourceDir/$fileName") ?: return null
+        val target = File(AppDirs.runtime, fileName)
+        return try {
+            // The size decides, because the unpacked file outlives the install
+            // it came from: it sits in the data folder across upgrades, and an
+            // old core left in place is exactly the bug this path removes.
+            val expected = url.openConnection().contentLengthLong
+            if (!target.isFile || expected <= 0 || target.length() != expected) {
+                target.parentFile.mkdirs()
+                url.openStream().use { input ->
+                    target.outputStream().use { input.copyTo(it) }
+                }
+                // The version marker travels with the core, or the settings
+                // screen reports "не найдено" about a core that is right there.
+                javaClass.classLoader.getResourceAsStream("$resourceDir/$VERSION_FILE")?.use { input ->
+                    File(target.parentFile, VERSION_FILE).outputStream().use { input.copyTo(it) }
+                }
+            }
+            target.takeIf { it.isFile && it.length() > 0L }
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     fun resolve(settings: AppSettings): File? = when (settings.coreSource) {
         CoreSource.Custom -> File(settings.customCorePath.trim()).takeIf { settings.customCorePath.isNotBlank() && it.isFile }
@@ -559,7 +621,11 @@ class CoreBinary {
     }
 
     /** The version file shipped next to the bundled core. */
-    fun version(): String = bundled()?.let { File(it.parentFile, "openflux-core.version") }
+    fun version(): String = bundled()?.let { File(it.parentFile, VERSION_FILE) }
         ?.takeIf { it.isFile }?.readText()?.trim()
         ?: if (bundled() != null) "встроенное" else "не найдено"
+
+    private companion object {
+        const val VERSION_FILE = "openflux-core.version"
+    }
 }
