@@ -40,3 +40,15 @@ plugins {
 // submodule pinned to a commit in someone else's repository.
 include(":shared")
 include(":androidApp")
+
+// The Windows client lives outside this repository so that the Android build
+// never sees it, but it is the same code: one shared module, two front ends.
+//
+// Conditional on purpose. Pointing at a directory outside the repository would
+// break the build for anyone who clones it without also having that directory
+// beside it, and a broken checkout fails the person who did nothing wrong.
+val pcAppDir = file("../OpenFluxPC")
+if (pcAppDir.isDirectory) {
+    include(":pcApp")
+    project(":pcApp").projectDir = pcAppDir
+}

@@ -49,7 +49,8 @@ class JvmPlatformServices(
 
     override fun restartElevated(): Boolean {
         if (!WindowsElevation.restartElevated(RELAUNCHED_ARG)) return false
-        // The shutdown hook stops the core and puts the system proxy back.
+        // createAppContainer registered the shutdown hook, so exiting here
+        // stops the core and puts the system proxy back.
         kotlin.system.exitProcess(0)
     }
 
