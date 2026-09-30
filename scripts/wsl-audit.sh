@@ -20,7 +20,11 @@ SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$SELF/.." && pwd)
 D=$ROOT/dist
 
-DEFAULT_VER=2.0.0
+# The same single source as the build: an audit that expects a different
+# version than the one being built reports a healthy build as broken, or worse,
+# passes a stale one.
+DEFAULT_VER=$(sed -n 's/^appVersion=//p' "$ROOT/gradle.properties" | tail -1)
+[ -n "$DEFAULT_VER" ] || { echo "appVersion is not set in $ROOT/gradle.properties" >&2; exit 2; }
 EXPECTED_VER=${1:-$DEFAULT_VER}
 if ! [[ $EXPECTED_VER =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then
   echo "version '$EXPECTED_VER' is not X.Y.Z (e.g. $DEFAULT_VER)" >&2

@@ -5,8 +5,15 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
-/** The app version: -PappVersion=1.2.3 (the release workflow passes the tag). */
-val appVersion = (findProperty("appVersion") as String?)?.removePrefix("v")?.takeIf { it.isNotBlank() } ?: "2.1.0"
+/**
+ * The app version, from the single `appVersion` in the root gradle.properties.
+ *
+ * Not written here on purpose: the Android app and the Windows client are
+ * released together from one page, and two hand-maintained copies of the same
+ * number is exactly how they end up disagreeing.
+ */
+val appVersion = providers.gradleProperty("appVersion").orNull?.removePrefix("v")?.takeIf { it.isNotBlank() }
+    ?: error("appVersion is not set - it belongs in the root gradle.properties")
 
 /** 1.2.3 -> 10203: grows with every release as Android requires. */
 val appVersionCode = appVersion.split('.', '-').take(3).map { it.toIntOrNull() ?: 0 }
