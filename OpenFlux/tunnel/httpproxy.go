@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"openflux/transport"
 	"openflux/utils"
@@ -34,13 +35,22 @@ func ServeHTTPProxy(ln net.Listener, dial func(address string) (net.Conn, error)
 			return dial(address)
 		},
 	}
-	return http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodConnect {
-			proxyConnect(w, r, dial)
-			return
-		}
-		proxyForward(w, r, upstream)
-	}))
+	// A server with no timeouts is a Slowloris target: one client opens a
+	// connection and dribbles a byte every 30 seconds, holding a goroutine and
+	// a socket for as long as it likes. The proxy is unauthenticated, so who
+	// can reach it can do that.
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect {
+				proxyConnect(w, r, dial)
+				return
+			}
+			proxyForward(w, r, upstream)
+		}),
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	return srv.Serve(ln)
 }
 
 func proxyConnect(w http.ResponseWriter, r *http.Request, dial func(string) (net.Conn, error)) {

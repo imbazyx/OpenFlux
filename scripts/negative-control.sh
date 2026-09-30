@@ -5,8 +5,18 @@
 # Not /tmp: this host wipes /tmp mid-session, which silently deleted the copy
 # between setup and the first case, and cases then failed for no real reason.
 set -uo pipefail
-SRC=/mnt/d/project/OpenFlux/OpenFluxAndroid
-H=/root/of-ctrl
+# Derived, not hardcoded. A path to one build machine committed here breaks
+# the script for everyone else, and breaks silently: it copies nothing and the
+# first case then fails for a reason that has nothing to do with the audit.
+SELF=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SRC=$(cd "$SELF/.." && pwd)
+# /tmp is deliberately avoided, see the note above.
+H=${OF_CTRL_DIR:-$HOME/of-ctrl}
+# Also outside $H, and derived the same way. /root is not a location that
+# belongs in a committed script; the default keeps the payload out of the
+# audited tree without naming anyone's home directory.
+UNIV_DIR=${OF_CTRL_UNIV_DIR:-$HOME/of-ctrl-outside}
+rm -rf "$UNIV_DIR"; mkdir -p "$UNIV_DIR"
 rm -rf "$H"; mkdir -p "$H"
 cp -r "$SRC/scripts" "$H/"
 # cp -a keeps mtimes; plain cp would stamp everything "now" and make the
@@ -67,19 +77,31 @@ reset_src() {
 }
 
 reset_dist
+# One version, read from the tree the controls actually operate on. It used to
+# be written out eleven times, so when the project moved to 2.0.0 every copy
+# silently failed and the cases still reported green.
+VER=$(ls "$H/dist" 2>/dev/null | grep -oP '^OpenFluxAndroid-\K[0-9]+(\.[0-9]+)*(?=-androidApp-)' | sort -u | head -1)
+if [ -z "$VER" ]; then
+  echo "FATAL: no OpenFluxAndroid-*-androidApp-*.apk under $H/dist -" >&2
+  echo "       build it first: scripts/wsl-build.sh $DEFAULT_VER" >&2
+  exit 2
+fi
+echo "контролирую версию: $VER"
 # Outside $H, not inside it. This is a payload for case 1, and the audit now
 # fails a tree that has untracked files - correctly. It used to live at
 # $H/universal.apk and turn the baseline red for a reason that had nothing to do
-# with any case under test.
-UNIV=/root/of-ctrl-universal.apk
-cp -a "$H/dist/OpenFluxAndroid-1.2.0-androidApp-universal-release.apk" "$UNIV"
+# with any case under test. $H is itself a git repository, so a payload left
+# inside it would be an untracked file and the baseline would be red again.
+UNIV="$UNIV_DIR/of-ctrl-universal.apk"
+cp -a "$H/dist/OpenFluxAndroid-$VER-androidApp-universal-release.apk" "$UNIV" \
+  || { echo "FATAL: нет universal APK версии $VER" >&2; exit 2; }
 run() {
   if [ -n "${OF_DEBUG:-}" ]; then
     # Show WHY, not just the verdict: a control that fails for a reason unrelated
     # to its own vector proves nothing, and that is invisible from the last line.
-    bash "$H/scripts/wsl-audit.sh" 1.2.0 2>&1 | grep -E 'FAIL|AUDIT' | sed 's/^/       /'
+    bash "$H/scripts/wsl-audit.sh" "$VER" 2>&1 | grep -E 'FAIL|AUDIT' | sed 's/^/       /'
   else
-    bash "$H/scripts/wsl-audit.sh" 1.2.0 2>&1 | tail -1
+    bash "$H/scripts/wsl-audit.sh" "$VER" 2>&1 | tail -1
   fi
 }
 # A tampered dist also needs fresh sums, or the SHA256SUMS check fires first and
@@ -104,14 +126,14 @@ echo "  $(run)"
 
 echo "--- 2. x86_64 replaced by a copy of x86, sums regenerated"
 reset_dist
-cp -a "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86-release.apk" \
-      "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86_64-release.apk"
+cp -a "$H/dist/OpenFluxAndroid-$VER-androidApp-x86-release.apk" \
+      "$H/dist/OpenFluxAndroid-$VER-androidApp-x86_64-release.apk"
 resum
 echo "  $(run)"
 
 echo "--- 3. one byte appended, sums regenerated"
 reset_dist
-printf 'X' >> "$H/dist/OpenFluxAndroid-1.2.0-androidApp-arm64-v8a-release.apk"
+printf 'X' >> "$H/dist/OpenFluxAndroid-$VER-androidApp-arm64-v8a-release.apk"
 resum
 echo "  $(run)"
 
@@ -122,8 +144,8 @@ echo "  $(run)"
 
 echo "--- 4b. universal renamed to arm64-v8a, sums regenerated"
 reset_dist
-mv "$H/dist/OpenFluxAndroid-1.2.0-androidApp-universal-release.apk" \
-   "$H/dist/OpenFluxAndroid-1.2.0-androidApp-arm64-v8a-release.apk"
+mv "$H/dist/OpenFluxAndroid-$VER-androidApp-universal-release.apk" \
+   "$H/dist/OpenFluxAndroid-$VER-androidApp-arm64-v8a-release.apk"
 resum
 echo "  $(run)"
 
@@ -148,18 +170,18 @@ fi
 # Same for a version that is X.Y.Z-shaped but wrong, and for the valid one: a
 # script that rejects everything proves the rejection by rejecting something
 # legitimate too.
-bash "$H/scripts/wsl-audit.sh" 1.2.0-rc1 >/dev/null 2>&1
+bash "$H/scripts/wsl-audit.sh" "$VER-rc1" >/dev/null 2>&1
 rc7b=$?
-bash "$H/scripts/wsl-audit.sh" 1.2.0 >/dev/null 2>&1
+bash "$H/scripts/wsl-audit.sh" "$VER" >/dev/null 2>&1
 rc7c=$?
-echo "  1.2.0-rc1 -> $rc7b (ожидался 2), 1.2.0 -> $rc7c (ожидался 0)"
+echo "  $VER-rc1 -> $rc7b (ожидался 2), $VER -> $rc7c (ожидался 0)"
 [ "$rc7" -eq 2 ] && [ "$rc7b" -eq 2 ] && [ "$rc7c" -eq 0 ] \
   || echo "  ^ КОНТРОЛЬ 7 НЕ СРАБОТАЛ: отказ и на мусоре, и на живом прогоне обязателен"
 
 echo "--- 12. wrong APK name set (5 files, one renamed)"
 reset_dist
-mv "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86-release.apk" \
-   "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86_64-release.apk.renamed.apk"
+mv "$H/dist/OpenFluxAndroid-$VER-androidApp-x86-release.apk" \
+   "$H/dist/OpenFluxAndroid-$VER-androidApp-x86_64-release.apk.renamed.apk"
 resum
 echo "  $(run)"
 
@@ -222,10 +244,10 @@ git -C "$H" checkout -- OpenFlux/utils/logging.go 2>/dev/null
 echo "--- 14. x86 ABI renamed to mips (decoy substring used to satisfy the check)"
 reset_dist
 T2=$(mktemp -d)
-(cd "$T2" && unzip -o -q "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86-release.apk")
+(cd "$T2" && unzip -o -q "$H/dist/OpenFluxAndroid-$VER-androidApp-x86-release.apk")
 mkdir -p "$T2/res/zdecoy/lib/x86"; echo decoy > "$T2/res/zdecoy/lib/x86/keep.txt"
 mv "$T2/lib/x86" "$T2/lib/mips"
-(cd "$T2" && zip -qr "$H/dist/OpenFluxAndroid-1.2.0-androidApp-x86-release.apk" .)
+(cd "$T2" && zip -qr "$H/dist/OpenFluxAndroid-$VER-androidApp-x86-release.apk" .)
 rm -rf "$T2"
 resum
 echo "  $(run)"

@@ -12,7 +12,7 @@ set -euo pipefail
 # 1.100.0 and 2.0.0 would both be 20000, and 1.2.100 / 1.3.0 both 10300.
 # "1.2", "1.2.0" and "1.2.0-rc1" all collapse to 10200 too, and Android refuses an
 # update whose versionCode did not grow; a non-numeric version ships as 0.
-DEFAULT_VER=1.2.0
+DEFAULT_VER=2.0.0
 VER=${1:-$DEFAULT_VER}
 [[ $VER =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]] || {
   echo "version '$VER' is not X.Y.Z with bounded parts (e.g. $DEFAULT_VER)" >&2; exit 1; }

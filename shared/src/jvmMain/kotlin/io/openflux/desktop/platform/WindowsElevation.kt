@@ -13,11 +13,7 @@ object WindowsElevation {
     /** Whether this process runs elevated; checked once. */
     val elevated: Boolean by lazy {
         // "net session" needs an elevated token; it is the usual check without JNA.
-        windows && runCatching {
-            val process = ProcessBuilder("net", "session").redirectErrorStream(true).start()
-            process.inputStream.readAllBytes()
-            process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0
-        }.getOrDefault(false)
+        windows && ProcessRunner.run(10, TimeUnit.SECONDS, "net", "session") != null
     }
 
     /**
@@ -33,12 +29,10 @@ object WindowsElevation {
         fun quote(s: String) = "'" + s.replace("'", "''") + "'"
         val list = if (args.isEmpty()) "" else " -ArgumentList @(" + args.joinToString(",") { quote(it) } + ")"
         val script = "Start-Process -FilePath ${quote(command)}$list -Verb RunAs"
-        return runCatching {
-            val process = ProcessBuilder("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-                .redirectErrorStream(true).start()
-            process.inputStream.readAllBytes()
-            // Start-Process fails when UAC is declined.
-            process.waitFor(60, TimeUnit.SECONDS) && process.exitValue() == 0
-        }.getOrDefault(false)
+        // Start-Process fails when UAC is declined, which is a non-zero exit.
+        return ProcessRunner.run(
+            60, TimeUnit.SECONDS,
+            "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script,
+        ) != null
     }
 }
