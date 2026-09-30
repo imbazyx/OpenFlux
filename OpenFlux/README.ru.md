@@ -36,6 +36,7 @@
 
 | Платформа | Скачать | Примечания |
 |-----------|---------|------------|
+| **Windows / Android из этого репозитория** | [Релизы imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux/releases/latest) | Собранный клиент: `OpenFlux-<версия>.msi` для Windows и `OpenFluxAndroid-<версия>-<abi>-release.apk` для Android |
 | **macOS**   | сборка из исходников | CLI + utun L3-клиент (`--inbound=tun`, по умолчанию на macOS) |
 | **Linux**   | сборка из исходников | CLI-клиент (SOCKS5) / выходная нода (L3 или L4) |
 | **Windows** | сборка из исходников | CLI-клиент (SOCKS5, либо `--inbound=tun` через Wintun - нужны права администратора) / выходная нода (`l4`, либо `l3` через QEMU - см. TODO) |
