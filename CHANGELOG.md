@@ -140,14 +140,18 @@ the core.
   outside its own VPN to avoid a routing loop, so it cannot query an IP echo
   service through the tunnel. It resolves in exit-node mode.
 
-## [2.0.0] - 2026-09-27
+## [Unreleased 2.0.0] - 2026-09-27
 
-> **Never published.** This was the version number the app carried before the
-> project settled on `1.2.x`. No release was ever cut under it: the `v2.0.0`
-> tag pointed at the repository's first commit, so it described none of the
-> work below, and it is no longer reachable after the history root was
-> repaired. Everything here shipped as `1.2.0` and later. Kept as a record of
-> what the first release contained, not as a version anyone can install.
+> **Never published, and the number has since been reused.** The app carried
+> this version before the project settled on `1.2.x`, but no release was ever
+> cut under it: the `v2.0.0` tag pointed at the repository's first commit, so
+> it described none of the work below, and it is no longer reachable after the
+> history root was repaired. Everything here shipped as `1.2.0` and later.
+>
+> This entry is kept under a name that is not a version, because
+> [2.0.0] above is now a real release and two different releases cannot share
+> one heading. What is written below is a record of what the first release
+> contained, not something anyone can install.
 
 First release of this app. Replaces the previous single-transport native
 app (tun2socks + pdnsd JNI, preserved at the
