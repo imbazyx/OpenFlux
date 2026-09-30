@@ -1,4 +1,5 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import java.util.zip.ZipFile
 
 plugins {
     // No version here: the shared module already put these on the build
@@ -36,6 +37,10 @@ require(Regex("""\d+\.\d+\.\d+""").matches(appVersion)) {
  */
 val coreDir = layout.projectDirectory.dir("resources/windows")
 val coreExe = coreDir.file("openflux-windows-amd64.exe")
+
+/** The folder name the core lives in inside the package, per OS. */
+val winResourceDir = "windows"
+val winCoreName = "openflux-windows-amd64.exe"
 
 kotlin {
     jvmToolchain(17)
@@ -96,6 +101,29 @@ val checkCore by tasks.registering {
     }
 }
 
+/**
+ * Puts the core inside the application jar.
+ *
+ * Every other place to put a file failed. jpackage builds the installed
+ * program from the jars it is handed, and a separate file dropped beside them
+ * does not survive into the MSI: the image had a 14 MB core in it, the
+ * installed program had no core at all, and it still reported BUILD SUCCESSFUL.
+ * Adding a directory to the application image is not enough either - the MSI is
+ * built from a staging area Compose assembles internally, not from that image.
+ *
+ * A jar resource is the same idea as a classpath entry, it is the one location
+ * the JVM already knows how to read from, and it survives into the MSI, the zip
+ * and a developer run without any of them needing to know the core exists.
+ * CoreBinary unpacks it on first use.
+ */
+tasks.named<ProcessResources>("processResources") {
+    dependsOn(checkCore)
+    from(coreDir) { into("windows") }
+}
+
+/** The application icon, generated from the Android one by scripts/make-pc-icon.sh. */
+val appIcon = layout.projectDirectory.file("icon/openflux.ico")
+
 compose.desktop {
     application {
         mainClass = "io.openflux.pc.MainKt"
@@ -106,6 +134,21 @@ compose.desktop {
             description = "OpenFlux VPN client"
             // The core is not a JVM module: it ships as a file next to the app.
             modules("java.sql", "java.naming")
+            windows {
+                // Without these the installer puts the program in Program Files
+                // and leaves nothing to click: no Start menu entry, no desktop
+                // icon, and nothing to pin or search for.
+                menu = true
+                menuGroup = "OpenFlux"
+                shortcut = true
+                perUserInstall = false
+                // Fixed, not generated: Windows Installer keys upgrades on this
+                // value. A fresh UUID per build makes every new version a
+                // different product that installs beside the old one instead
+                // of replacing it, which is what the in-app update does.
+                upgradeUuid = "8f3d1c26-5a47-4b90-9c15-2e7a4d6b81f0"
+                iconFile = appIcon
+            }
         }
     }
 }
@@ -113,25 +156,67 @@ compose.desktop {
 /**
  * Puts the core where the app looks for it.
  *
- * CoreBinary reads `compose.application.resources.dir`, which a packaged app
- * sets to its own resources folder. Copying into it after the distributable is
- * written is what makes the difference between an app that opens and an app
- * that can actually connect - a missing core fails at the first connect, not
- * at launch, so the window would look perfectly healthy.
+ * Two places, and the second one is the reason the MSI had no core at all.
+ *
+ * jpackage builds the installer from the app *input* directory - the one with
+ * the jars - and puts the result in <install>/app. Anything sitting beside it
+ * in the application image, such as <image>/resources, is simply not part of
+ * the package: the image had a 14 MB core in it, the installed program had no
+ * resources directory at all, and the app could not connect while looking
+ * perfectly healthy. So the core goes into the input directory, where jpackage
+ * carries it, and also stays in resources/ for the portable zip, which is
+ * built from the image rather than by jpackage.
+ *
+ * checkCoreInInstaller below is what keeps this honest: the build reads the
+ * finished MSI and fails if the core is not inside it.
  */
-fun File.copyCoreInto(resources: File) {
-    resources.mkdirs()
+fun File.copyCoreInto(dir: File) {
+    dir.mkdirs()
     coreDir.asFile.listFiles()
         ?.filter { it.isFile }
-        ?.forEach { it.copyTo(File(resources, it.name), overwrite = true) }
+        ?.forEach { it.copyTo(File(dir, it.name), overwrite = true) }
 }
 
 tasks.matching { it.name == "createDistributable" }.configureEach {
     dependsOn(checkCore)
     doLast {
         val app = layout.buildDirectory.dir("compose/binaries/main/app/OpenFlux").get().asFile
-        coreDir.asFile.copyCoreInto(File(app, "resources/windows"))
-        logger.lifecycle("Ядро уложено рядом с приложением: ${File(app, "resources/windows")}")
+        // Into the jpackage input directory: this is the one that reaches the MSI.
+        coreDir.asFile.copyCoreInto(File(app, "app/$winResourceDir"))
+        // And into resources/ for the portable zip, which is the image itself.
+        coreDir.asFile.copyCoreInto(File(app, "resources/$winResourceDir"))
+        logger.lifecycle("Ядро уложено: app/$winResourceDir и resources/$winResourceDir")
+    }
+}
+
+/**
+ * Fails if the core is not inside the jar that ships.
+ *
+ * checkCore only proves the core was built, which is what let a broken release
+ * through: the build passed, the installer installed cleanly, the window
+ * opened, and the failure only appeared at the first connect - the one step no
+ * automated check was watching. This opens the jar the packages are actually
+ * built from and looks for the file CoreBinary will ask for.
+ */
+val checkCoreInInstaller by tasks.registering {
+    dependsOn("jar")
+    val jars = layout.buildDirectory.dir("libs")
+    inputs.dir(jars)
+    doLast {
+        val wanted = "windows/$winCoreName"
+        val dir = jars.get().asFile
+        val jar = dir.listFiles()?.firstOrNull { it.name.endsWith(".jar") }
+            ?: throw GradleException("jar не найден в $dir")
+        val inside = ZipFile(jar).use { zip ->
+            zip.getEntry(wanted) != null
+        }
+        if (!inside) {
+            throw GradleException(
+                "Ядро ($wanted) не попало в ${jar.name}.\n" +
+                "Приложение установится и откроется, но подключиться не сможет."
+            )
+        }
+        logger.lifecycle("Ядро внутри ${jar.name}: $wanted")
     }
 }
 
