@@ -482,14 +482,12 @@ private fun InterfaceSettings(model: SettingsScreenModel) {
         Segmented(ThemeMode.entries, settings.theme, { it.label }, { t -> model.update { it.copy(theme = t) } }, Modifier.fillUpTo(420.dp))
     }
     AppCard(padding = AppTheme.spacing.s) {
-        if (!model.android) {
-            SwitchRow(
-                "Сворачивать в трей при закрытии",
-                "Окно прячется в область уведомлений, соединение остаётся. Выйти можно из меню значка",
-                settings.closeToTray,
-                { v -> model.update { it.copy(closeToTray = v) } },
-            )
-        }
+        // The tray switch was removed rather than implemented. It defaulted to
+        // on, promised "выйти можно из меню значка", and there is no tray code
+        // in the project at all: closing the window ended the app and the
+        // tunnel with it. A switch that describes a feature which does not exist
+        // is worse than no switch - it is a promise the app breaks on first use.
+        // It comes back when there is a tray to put it in.
         SwitchRow(
             "Автопрокрутка журнала",
             "Показывать новые строки журнала сразу",
@@ -510,7 +508,11 @@ private fun AboutSettings(model: SettingsScreenModel) {
     val platform = model.container.platform
     val scope = rememberCoroutineScope()
     val update = model.update
-    val canInstall = platform.kind == PlatformKind.Android
+    // Both clients can now install from here. The desktop used to be excluded,
+    // so the button was a "could not check" dead end on Windows while the README
+    // promised otherwise; JvmPlatformServices.checkForUpdate and installUpdate
+    // are what it needs.
+    val canInstall = platform.kind == PlatformKind.Android || platform.kind == PlatformKind.Desktop
 
     AppCard(padding = 0.dp) {
         // The version and its state on one line: a version alone says nothing
