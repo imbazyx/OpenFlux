@@ -202,7 +202,13 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--node-wizard" {
 		os.Exit(runNodeWizard(os.Stdin, os.Stdout))
 	}
-	fmt.Print("written by p1neappleXpress\n")
+	// Both names, on purpose. The tunnel, the transports and the negotiation
+	// protocol are p1neappleXpress's work and the GPL asks that its notice
+	// travels with the code; this fork is maintained by imbazyx. Replacing the
+	// original name instead of adding to it would be a claim of authorship over
+	// someone else's code, which is a different thing from saying who keeps it
+	// going.
+	fmt.Print("OpenFlux core by p1neappleXpress · fork by imbazyx — github.com/imbazyx/OpenFlux\n")
 
 	role := flag.String("role", roleClient, "client | exit | bench-send | bench-sink")
 	inbound := flag.String("inbound", "", "tun | socks5 (client only; default: tun on macOS, socks5 elsewhere)")

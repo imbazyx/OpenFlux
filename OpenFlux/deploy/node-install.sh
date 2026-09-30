@@ -37,10 +37,14 @@ set -u
 umask 077
 
 CORE_VERSION="node-v1.0.0"
-CORE_BASE="https://github.com/p1neappleXpress/OpenFlux/releases/download/$CORE_VERSION"
-SHA_amd64="37a503bc0ca549314e475cb2900b659b611a628fdf01c9478fe6637951c3793a"
-SHA_arm64="9d1f674f439fa9229e7e5046b33877602449fedaaf26187cb67979c7eb2ac426"
-SHA_arm="de0a10644ad05811ba3896565428b90c5c09c234e790a96342ccb2770aea893a"
+# This fork's repository, not the one the script came from. The binaries it
+# fetches are built from the core next to this file, so a node installed from
+# here runs the code that the phone and the PC client run, rather than a
+# different build that happens to share a name.
+CORE_BASE="https://github.com/imbazyx/OpenFlux/releases/download/$CORE_VERSION"
+SHA_amd64="f099a88bcac36565990ce84bc0ca3516d7baa06e4d6fb74ce1e6c6cfca536877"
+SHA_arm64="a1ed5da92632f67408e43d99b9e0cb9bd6c13206a71c56e642024ee142d34770"
+SHA_arm="0df77e692c1c876eb82c4e13e6a5542839226bdecf5a7e3c7dd2757f3d29c1cc"
 
 BIN_DIR="/opt/openflux-node/bin"
 CONF_ROOT="/etc/openflux-node"
