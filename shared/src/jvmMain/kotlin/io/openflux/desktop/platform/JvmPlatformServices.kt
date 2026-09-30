@@ -114,20 +114,53 @@ class JvmPlatformServices(
 
     override fun now(): Long = System.currentTimeMillis()
 
-    override suspend fun latestRelease(): String? = withContext(Dispatchers.IO) {
+    /**
+     * The releases Atom feed, which GitHub serves without an API token.
+     *
+     * The REST API was the obvious choice and it fails in the one situation
+     * where a user is most likely to ask: unauthenticated requests are limited
+     * per IP address, so everyone behind one connection - a office, a mobile
+     * carrier, a VPN, which is a fair use for this program - exhausts a shared
+     * budget together. The answer was a 403 that looked exactly like "no
+     * update". The feed has no such limit, and for "what is the newest tag" it
+     * carries the same fact.
+     */
+    private suspend fun releaseFeed(): String? = withContext(Dispatchers.IO) {
         runCatching {
-            // GitHub answers a renamed repository with a redirect.
             val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
                 .followRedirects(HttpClient.Redirect.NORMAL).build()
-            val request = HttpRequest.newBuilder(URI("https://api.github.com/repos/$RELEASE_REPO/releases?per_page=20"))
-                .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(10)).build()
-            val body = http.send(request, HttpResponse.BodyHandlers.ofString()).body()
-            Json.parseToJsonElement(body).jsonArray
-                .map { it.jsonObject["tag_name"]?.jsonPrimitive?.content.orEmpty() }
-                .firstOrNull { it.startsWith(DESKTOP_TAG_PREFIX) }
-                ?.removePrefix(DESKTOP_TAG_PREFIX)
+            val request = HttpRequest.newBuilder(URI("https://github.com/$RELEASE_REPO/releases.atom"))
+                .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(15)).build()
+            http.send(request, HttpResponse.BodyHandlers.ofString())
+                .takeIf { it.statusCode() == 200 }?.body()
         }.getOrNull()
     }
+
+    /**
+     * The newest client release tag, e.g. "v2.1.0".
+     *
+     * Read from the entry's <link href>, not its <id>: the id is
+     * `tag:github.com,2008:Repository/<id>/v2.1.0`, which has no releases path
+     * in it at all and changes shape with the repository. The link is the plain
+     * `.../releases/tag/v2.1.0` and is what the download URL is built from, so
+     * the two cannot disagree.
+     */
+    internal fun newestTag(feed: String): String? =
+        Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
+            .find(feed)?.groupValues?.get(1)?.trim()
+
+    /** True when the URL resolves - so a renamed asset cannot become a download. */
+    private fun exists(url: String): Boolean = runCatching {
+        val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
+            .followRedirects(HttpClient.Redirect.NORMAL).build()
+        val head = HttpRequest.newBuilder(URI(url))
+            .method("HEAD", HttpRequest.BodyPublishers.noBody())
+            .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(15)).build()
+        http.send(head, HttpResponse.BodyHandlers.discarding()).statusCode() == 200
+    }.getOrDefault(false)
+
+    override suspend fun latestRelease(): String? =
+        releaseFeed()?.let { newestTag(it) }?.removePrefix(DESKTOP_TAG_PREFIX)
 
     private fun decodeQr(image: BufferedImage): String? {
         val pixels = IntArray(image.width * image.height)
@@ -159,33 +192,25 @@ class JvmPlatformServices(
      * "could not check" rather than "up to date", because those are different
      * facts.
      */
-    override suspend fun checkForUpdate(): AppUpdate? = withContext(Dispatchers.IO) {
-        runCatching {
-            val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
-                .followRedirects(HttpClient.Redirect.NORMAL).build()
-            val request = HttpRequest.newBuilder(URI("https://api.github.com/repos/$RELEASE_REPO/releases/latest"))
-                .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(15)).build()
-            val body = http.send(request, HttpResponse.BodyHandlers.ofString()).body()
-            val release = Json.parseToJsonElement(body).jsonObject
+    override suspend fun checkForUpdate(): AppUpdate? {
+        val feed = releaseFeed() ?: return null
+        val tag = newestTag(feed) ?: return null
+        val version = tag.removePrefix(DESKTOP_TAG_PREFIX)
 
-            val tag = release["tag_name"]?.jsonPrimitive?.content ?: return@runCatching null
-            val version = tag.removePrefix(DESKTOP_TAG_PREFIX)
+        // The installer is named after the version by the same rule the build
+        // uses. Asking whether the file is actually there means a change to that
+        // rule leaves the app quietly reporting "no update" rather than handing
+        // the user a download link that 404s halfway through an install.
+        val name = "OpenFlux-$version$WINDOWS_INSTALLER_SUFFIX"
+        val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
+        if (!exists(url)) return null
 
-            val assets = release["assets"]?.jsonArray ?: return@runCatching null
-            val names = assets.map { it.jsonObject["name"]?.jsonPrimitive?.content.orEmpty() }
-            val urls = assets.map { it.jsonObject["browser_download_url"]?.jsonPrimitive?.content.orEmpty() }
-            // The MSI installs; the zip is what you unpack by hand. Offering
-            // the zip to msiexec would fail, so the MSI is what "update" means.
-            val index = names.indexOfFirst { it.endsWith(WINDOWS_INSTALLER_SUFFIX, ignoreCase = true) }
-                .takeIf { it >= 0 } ?: return@runCatching null
-
-            AppUpdate(
-                version = version,
-                downloadUrl = urls[index],
-                versionCode = versionCodeOf(version),
-                newer = compareVersions(version, appVersion) > 0,
-            )
-        }.getOrNull()
+        return AppUpdate(
+            version = version,
+            downloadUrl = url,
+            versionCode = versionCodeOf(version),
+            newer = compareVersions(version, appVersion) > 0,
+        )
     }
 
     /**
