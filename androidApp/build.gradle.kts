@@ -83,6 +83,29 @@ android {
     }
 }
 
+/**
+ * Refuse to build a release APK without a key.
+ *
+ * Without one the signing config is not attached, the APK comes out unsigned,
+ * and it installs nowhere - an error the user sees on their phone and nothing
+ * in the build output explains. That is a release-day surprise, so it is
+ * caught here instead.
+ *
+ * Checked against the task graph rather than thrown during configuration,
+ * because configuration also happens for an unrelated task: wsl-build.sh runs
+ * :shared:jvmTest before it exports the signing variables, and a throw in
+ * here would take that down too.
+ */
+gradle.taskGraph.whenReady {
+    val wantsReleaseApk = allTasks.any { it.name.contains("Release") && it.name.contains("Apk") }
+    if (wantsReleaseApk && android.signingConfigs.getByName("release").storeFile == null) {
+        throw GradleException(
+            "Нет ключа подписи: задайте ANDROID_KEYSTORE_FILE, " +
+                "ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD"
+        )
+    }
+}
+
 dependencies {
     implementation(project(":shared"))
     // The OpenFlux core (gomobile), built by scripts/build-android-core.sh.

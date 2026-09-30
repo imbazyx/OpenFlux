@@ -33,6 +33,7 @@ The original code is provided **as is**, **without any warranties**.
 
 | Platform | Download | Notes |
 |----------|----------|-------|
+| **Windows / Android from this repository** | [imbazyx/OpenFlux releases](https://github.com/imbazyx/OpenFlux/releases/latest) | The built client: `OpenFlux-<version>.msi` for Windows, `OpenFluxAndroid-<version>-<abi>-release.apk` for Android |
 | **macOS**   | build from source | CLI + utun L3 client (`--inbound=tun`, default on macOS) |
 | **Linux**   | build from source | CLI client (SOCKS5) / exit node (L3 or L4) |
 | **Windows** | build from source | CLI client (SOCKS5, or `--inbound=tun` via Wintun - needs administrator) / exit node (`l4`, or `l3` via QEMU - see TODO) |
