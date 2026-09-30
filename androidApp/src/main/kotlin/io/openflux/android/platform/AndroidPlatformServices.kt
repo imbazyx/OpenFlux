@@ -166,17 +166,7 @@ class AndroidPlatformServices(
     override fun now(): Long = System.currentTimeMillis()
 
     override suspend fun latestRelease(): String? = withContext(Dispatchers.IO) {
-        runCatching {
-            val connection = URL("https://api.github.com/repos/$RELEASE_REPO/releases?per_page=20").openConnection() as HttpURLConnection
-            connection.connectTimeout = 8000
-            connection.readTimeout = 10000
-            connection.setRequestProperty("User-Agent", "OpenFlux-Android")
-            val body = connection.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
-            Json.parseToJsonElement(body).jsonArray
-                .map { it.jsonObject["tag_name"]?.jsonPrimitive?.content.orEmpty() }
-                .firstOrNull { it.startsWith(TAG_PREFIX) }
-                ?.removePrefix(TAG_PREFIX)
-        }.getOrNull()
+        releaseFeed()?.let { newestTag(it) }?.removePrefix(TAG_PREFIX)
     }
 
     /**
@@ -184,32 +174,56 @@ class AndroidPlatformServices(
      *
      * Only the newest release is considered, and only if it is strictly newer
      * than the running version: offering the user a downgrade would be worse
-     * than offering nothing. A GitHub failure returns null, which the UI shows
-     * as "could not check" rather than "up to date" - the two are different
-     * facts and collapsing them would hide a broken check.
+     * than offering nothing.
+     *
+     * This reads the releases Atom feed rather than the REST API, for the same
+     * reason the desktop client does: unauthenticated API calls are limited per
+     * address, and the 403 that comes back from an exhausted quota arrived here
+     * as a null indistinguishable from "nothing new". A user on a phone is on a
+     * mobile carrier address far more often than anyone is behind a fixed line,
+     * so this is where the limit is actually reached.
      */
-    override suspend fun checkForUpdate(): AppUpdate? = withContext(Dispatchers.IO) {
-        runCatching {
-            val release = githubGet("https://api.github.com/repos/$RELEASE_REPO/releases/latest")
-                ?.jsonObject ?: return@runCatching null
-            val tag = release["tag_name"]?.jsonPrimitive?.content ?: return@runCatching null
-            val version = tag.removePrefix(TAG_PREFIX)
-            val current = BuildConfig.VERSION_NAME
-            val newer = compareVersions(version, current) > 0
+    override suspend fun checkForUpdateDetailed(): UpdateCheck = withContext(Dispatchers.IO) {
+        val feed = releaseFeed()
+            ?: return@withContext UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub")
+        val tag = newestTag(feed)
+            ?: return@withContext UpdateCheck.Failed("в списке выпусков не найдено ни одного тега")
 
-            val assets = release["assets"]?.jsonArray ?: return@runCatching null
-            val names = assets.map { it.jsonObject["name"]?.jsonPrimitive?.content.orEmpty() }
-            val urls = assets.map { it.jsonObject["browser_download_url"]?.jsonPrimitive?.content.orEmpty() }
-            val index = pickApk(names, android.os.Build.SUPPORTED_ABIS.toList())
-                ?: return@runCatching null
-            AppUpdate(
-                version = version,
-                downloadUrl = urls[index],
-                versionCode = versionCodeOf(version),
-                newer = newer,
-            )
-        }.getOrNull()
+        val version = tag.removePrefix(TAG_PREFIX)
+
+        // Every ABI this device can run, best first, then the universal build.
+        // The universal APK is the fallback the old check had through pickApk:
+        // a release that published only it, or only a narrower ABI than this
+        // device prefers, must still be installable - otherwise a phone whose
+        // first supported ABI has no split simply can never update.
+        val candidates = android.os.Build.SUPPORTED_ABIS.filter { it in KNOWN_ABIS } + "universal"
+        val found = candidates.firstNotNullOfOrNull { abi ->
+            val name = "OpenFluxAndroid-$version-androidApp-$abi-release.apk"
+            val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
+            if (exists(url)) url else null
+        }
+            ?: return@withContext UpdateCheck.Failed("выпуск $tag есть, но APK для этого устройства не отдаётся")
+
+        val update = AppUpdate(
+            version = version,
+            downloadUrl = found,
+            versionCode = versionCodeOf(version),
+            newer = compareVersions(version, BuildConfig.VERSION_NAME) > 0,
+        )
+        if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
     }
+
+    override suspend fun checkForUpdate(): AppUpdate? =
+        when (val result = checkForUpdateDetailed()) {
+            is UpdateCheck.Available -> result.update
+            is UpdateCheck.UpToDate -> AppUpdate(
+                version = result.latestVersion,
+                downloadUrl = "",
+                versionCode = versionCodeOf(result.latestVersion),
+                newer = false,
+            )
+            is UpdateCheck.Failed -> null
+        }
 
     /**
      * Downloads the APK to the cache and opens the system installer on it.
@@ -314,6 +328,32 @@ class AndroidPlatformServices(
         githubText(url)?.let { Json.parseToJsonElement(it) }
     }.getOrNull()
 
+    /** The releases feed, which GitHub serves without an API token and without a per-address quota. */
+    private fun releaseFeed(): String? = githubText("https://github.com/$RELEASE_REPO/releases.atom")
+
+    /**
+     * The newest release tag, e.g. "v2.2.0".
+     *
+     * From the entry's link, not its id: the Atom id is
+     * `tag:github.com,2008:Repository/<id>/v2.2.0` and carries no releases path,
+     * so a parser looking for one finds nothing and reports "no update".
+     */
+    internal fun newestTag(feed: String): String? =
+        Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
+            .find(feed)?.groupValues?.get(1)?.trim()
+
+    /** True when the URL resolves, so a download is not offered before it exists. */
+    private fun exists(url: String): Boolean = runCatching {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = 8000
+        connection.readTimeout = 10000
+        connection.requestMethod = "HEAD"
+        connection.setRequestProperty("User-Agent", "OpenFlux-Android")
+        val code = connection.responseCode
+        connection.disconnect()
+        code in 200..399
+    }.getOrDefault(false)
+
     private fun sha256Hex(file: java.io.File): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
@@ -356,13 +396,19 @@ class AndroidPlatformServices(
         // This fork's own releases, not p1neappleXpress/OpenFluxAndroid: pointing
         // at the original would offer that repository's releases to our users as
         // if they were updates to this app. If this repository is renamed or
-        // moved, this is the one string to change. A failed lookup is harmless -
-        // latestRelease() ends in getOrNull, so it just offers no update.
+        // moved, this is the one string to change.
         private const val RELEASE_REPO = "imbazyx/OpenFlux"
         private const val TAG_PREFIX = "v"
         private const val MAX_QR_IMAGE = 2048
         private const val TAG = "OpenFluxUpdates"
         private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif", "webp")
+
+        /**
+         * ABIs the build publishes a split for, checked against the assets of
+         * v2.2.0. "universal" is appended by the caller, not listed here, so the
+         * device's own preference order decides between the real splits.
+         */
+        private val KNOWN_ABIS = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
         /**
          * The live instance, so [io.openflux.android.core.AppSelection.save] can

@@ -121,7 +121,15 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 		t.packetCount.Add(1)
 		network.LogPacket("TUNNEL", toPeer, data)
 		if err := trans.Send(data); err != nil {
-			utils.Debugf("[TUNNEL] trans.Send error: %v", err)
+			// Packetf, not Debugf, for the same reason the batching layer's
+			// per-batch lines are: mobile.Start() turns debug logging on for
+			// the whole session, every Debugf goes to os.Stderr (ERROR
+			// priority in logcat) and to the app's log sink, and that sink
+			// takes the same mutex the packet path uses. A degraded tunnel
+			// failing to send once per packet therefore turns into a storm of
+			// logging that contends with the packets it is complaining about -
+			// the failure makes the tunnel slower.
+			utils.Packetf("[TUNNEL] trans.Send error: %v", err)
 		}
 	}
 	t.tunnelEP = tunnelEP

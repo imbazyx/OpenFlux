@@ -52,6 +52,8 @@ import io.openflux.desktop.model.ThemeMode
 import io.openflux.desktop.model.isActive
 import io.openflux.desktop.service.AppContainer
 import io.openflux.desktop.service.AppUpdate
+import io.openflux.desktop.service.UpdateCheck
+import io.openflux.desktop.ui.components.LocalToaster
 import io.openflux.desktop.service.LocalAppContainer
 import io.openflux.desktop.service.PlatformKind
 import io.openflux.desktop.ui.LocalTouchUi
@@ -98,20 +100,68 @@ class SettingsScreenModel(val container: AppContainer) : ScreenModel {
     val android = container.platform.kind == PlatformKind.Android
     var category by mutableStateOf(SettingsCategory.Connection)
     var mobileDetailOpen by mutableStateOf(false)
-    var latestRelease by mutableStateOf<String?>(null)
     var checkingRelease by mutableStateOf(false)
+
     /**
-     * What the check found, null until it runs. [updateChecked] separates
-     * "checked, nothing newer" from "not checked yet": without it the screen
-     * would read "up to date" for a user who never asked, and a check that
-     * silently failed to reach GitHub would look identical.
+     * Whether a check has been run at all.
+     *
+     * Without it the screen reads "up to date" for a user who never asked, and
+     * a check that failed looks like one that found nothing.
      */
-    var update by mutableStateOf<AppUpdate?>(null)
     var updateChecked by mutableStateOf(false)
-    var updateFailed by mutableStateOf(false)
     var installing by mutableStateOf(false)
 
     fun update(transform: (AppSettings) -> AppSettings) = container.settings.update(transform)
+
+    private var view by mutableStateOf(UpdateView())
+
+    val update: AppUpdate? get() = view.update
+    val updateFailed: Boolean get() = view.failed
+    val updateProblem: String? get() = view.problem
+    val latestRelease: String? get() = view.latest
+
+    /**
+     * Records what the check found.
+     *
+     * The mapping is [UpdateView.apply], a plain function, because "checked
+     * and up to date" and "could not check" landing on the same values is
+     * exactly the defect this replaced - and that is the kind of thing a test
+     * can hold onto while the screen around it is rewritten.
+     */
+    fun apply(result: UpdateCheck) {
+        view = view.apply(result)
+        updateChecked = true
+        checkingRelease = false
+    }
+}
+
+/**
+ * What the update row knows, as one value rather than four that can disagree.
+ */
+data class UpdateView(
+    val update: AppUpdate? = null,
+    val failed: Boolean = false,
+    val problem: String? = null,
+    val latest: String? = null,
+)
+
+/**
+ * What a check result means for the screen.
+ *
+ * Kept pure and separate from the model so it can be tested without a
+ * container: a user on 2.2.0 was told the latest release was "не найден" when
+ * the check had in fact failed, because the two drew the same null.
+ */
+fun UpdateView.apply(result: UpdateCheck): UpdateView = when (result) {
+    is UpdateCheck.Available -> UpdateView(update = result.update)
+    // A check that worked is not a failure, and the version it found is worth
+    // showing: "2.2.0" answers the question the button was pressed to ask.
+    is UpdateCheck.UpToDate -> UpdateView(latest = result.latestVersion)
+    // A reason, because "не проверить" alone gives the user nothing to do and
+    // the next person reading the report nothing to go on. The last version
+    // actually seen is kept: it is the last thing known to be true, and the
+    // row shows the reason rather than the version while this state is up.
+    is UpdateCheck.Failed -> UpdateView(failed = true, problem = result.reason, latest = latest)
 }
 
 object SettingsTab : Tab {
@@ -506,6 +556,7 @@ private fun InterfaceSettings(model: SettingsScreenModel) {
 @Composable
 private fun AboutSettings(model: SettingsScreenModel) {
     val platform = model.container.platform
+    val toaster = LocalToaster.current
     val scope = rememberCoroutineScope()
     val update = model.update
     // Both clients can now install from here. The desktop used to be excluded,
@@ -525,7 +576,6 @@ private fun AboutSettings(model: SettingsScreenModel) {
                 !model.updateChecked -> ""
                 model.updateFailed -> "  ·  не проверить"
                 update != null && update.newer -> "  ·  вышло обновление ${update.version}"
-                update != null -> "  ·  последняя версия"
                 else -> "  ·  последняя версия"
             },
         )
@@ -537,36 +587,52 @@ private fun AboutSettings(model: SettingsScreenModel) {
             when {
                 model.checkingRelease -> "проверяю…"
                 update != null -> update.version
+                // "could not check" and "checked, nothing newer" both used to
+                // read "не найден". A user who pressed the button and was told
+                // the release did not exist had no way to tell a working check
+                // from a broken network - and neither did the next reader.
+                model.updateFailed -> "не удалось узнать"
+                model.latestRelease != null -> model.latestRelease!!
                 model.updateChecked -> "не найден"
                 else -> "не проверялось"
             },
+        )
+    }
+    if (model.updateFailed && model.updateProblem != null) {
+        Text(
+            model.updateProblem!!,
+            style = AppTheme.typography.bodySmall,
+            color = AppTheme.colors.textSecondary,
+            modifier = Modifier.padding(AppTheme.spacing.s),
         )
     }
 
     AppButton(
         when {
             model.checkingRelease -> "Проверяю…"
+            model.installing -> "Устанавливаю…"
             update != null && update.newer -> "Скачать и установить ${update.version}"
             else -> "Проверить обновления"
         },
         {
             if (update != null && update.newer && canInstall) {
+                val pending = update
                 model.installing = true
                 scope.launch {
-                    platform.installUpdate(update)
+                    // The result used to be discarded, so a failed download or
+                    // a refused install left the user with a click that
+                    // appeared to work and nothing at all in return. Closing
+                    // the app is the platform's own business: only the desktop
+                    // needs it, because Windows Installer will not replace the
+                    // running executable.
+                    if (!platform.installUpdate(pending)) {
+                        toaster.show("Не удалось установить обновление", Tone.Danger)
+                    }
                     model.installing = false
                 }
             } else {
                 model.checkingRelease = true
-                model.updateFailed = false
-                scope.launch {
-                    val found = platform.checkForUpdate()
-                    model.update = found
-                    model.updateChecked = true
-                    // Null means the lookup failed, not that nothing exists.
-                    model.updateFailed = found == null
-                    model.checkingRelease = false
-                }
+                scope.launch { model.apply(platform.checkForUpdateDetailed()) }
             }
         },
         enabled = !model.checkingRelease && !model.installing,
@@ -583,9 +649,19 @@ private fun AboutSettings(model: SettingsScreenModel) {
     }
     SectionLabel("Репозитории")
     AppCard(padding = AppTheme.spacing.s) {
-        LinkRow("OpenFlux (ядро)", "github.com/${platform.clientRepo}", "https://github.com/${platform.clientRepo}", platform::openUrl)
-        LinkRow("OpenFlux Android", "github.com/damnurmum/OpenFlux-Android", "https://github.com/damnurmum/OpenFlux-Android", platform::openUrl)
-        LinkRow("Этот клиент", "github.com/${platform.clientRepo}", "https://github.com/${platform.clientRepo}", platform::openUrl)
+        // One row, because it is one repository.
+        //
+        // The list had three rows: two already pointed at this repository
+        // under different names, and the third pointed at somebody else's
+        // Android project - so a user reading "OpenFlux Android" reasonably
+        // concluded the app came from there, and it does not. Both clients and
+        // the core are released from the same place, so that is what is said.
+        LinkRow(
+            "Исходный код, ядро и выпуски",
+            "github.com/${platform.clientRepo}",
+            "https://github.com/${platform.clientRepo}",
+            platform::openUrl,
+        )
     }
     Text(
         "OpenFlux — экспериментальный проект без независимого аудита безопасности. Используйте свои ноды и не публикуйте ключи и ссылки openflux://.",

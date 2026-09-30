@@ -209,7 +209,15 @@ func netsh(args ...string) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("netsh %s: %v: %s", strings.Join(args[:4], " "), err, strings.TrimSpace(string(out)))
+		// args[:4] unconditionally: this helper is variadic and every call
+		// site today happens to pass four or more, so a shorter call would
+		// have panicked here while formatting an error - taking down the
+		// client at the exact moment it is trying to report a failure.
+		head := args
+		if len(head) > 4 {
+			head = head[:4]
+		}
+		return fmt.Errorf("netsh %s: %v: %s", strings.Join(head, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

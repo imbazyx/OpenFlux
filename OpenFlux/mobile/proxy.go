@@ -8,6 +8,8 @@ package mobile
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -25,6 +27,7 @@ type proxyState struct {
 	transport transport.Transport
 	tun       *tunnel.TCPTunnel
 	server    *socks5.SOCKS5Server
+	httpLn    net.Listener
 }
 
 // StartProxy launches the local SOCKS5 proxy in classic single-transport
@@ -101,11 +104,27 @@ func startProxyWith(build func() (transport.Transport, error), listenAddr, usern
 		return fmt.Sprintf("Порт %s уже занят", listenAddr)
 	}
 
+	// An HTTP proxy on the next port, because SOCKS5 is not something a phone
+	// browser can speak. Android's Wi-Fi proxy setting, Chrome and the system
+	// WebView all speak HTTP only, and the SOCKS5 listener answers a non-SOCKS
+	// greeting with a bare close - so a user who followed this app's own
+	// instruction and pointed a browser at the SOCKS port got a reset on every
+	// request and a page that never opened. The listener already exists on the
+	// desktop CLI; it was simply never started here.
+	httpAddr, httpLn, httpErr := listenNextTo(listenAddr)
+	if httpErr != nil {
+		// Not fatal: the SOCKS5 proxy is the documented one and still works
+		// for anything that can speak it. Say why one of the two is missing
+		// rather than failing the connection the user asked for.
+		appendLog(fmt.Sprintf("[WARN] HTTP-прокси не запущен: %v", httpErr))
+	}
+
 	proxy.mu.Lock()
 	proxy.running = true
 	proxy.transport = trans
 	proxy.tun = tun
 	proxy.server = server
+	proxy.httpLn = httpLn
 	proxy.mu.Unlock()
 
 	utils.SafeGo("mobile.proxyServe", func() {
@@ -118,24 +137,62 @@ func startProxyWith(build func() (transport.Transport, error), listenAddr, usern
 		}
 	})
 
+	if httpLn != nil {
+		utils.SafeGo("mobile.httpProxyServe", func() {
+			if err := tunnel.ServeHTTPProxy(httpLn, tun.DialTCP); err != nil {
+				appendLog(fmt.Sprintf("[ERROR] HTTP-прокси остановлен: %v", err))
+			}
+		})
+		appendLog(fmt.Sprintf("[SUCCESS] HTTP-прокси слушает %s", httpAddr))
+	}
+
 	appendLog(fmt.Sprintf("[SUCCESS] SOCKS5-прокси слушает %s", listenAddr))
 	return ""
+}
+
+// listenNextTo binds the port immediately above addr, so the HTTP proxy gets a
+// number the user can type without being told it somewhere else. A port that
+// is already taken is reported rather than silently skipped: "the browser
+// cannot connect" is much harder to act on than "that port is in use".
+func listenNextTo(addr string) (string, net.Listener, error) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", nil, err
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return "", nil, err
+	}
+	next := net.JoinHostPort(host, strconv.Itoa(port+1))
+	ln, err := net.Listen("tcp", next)
+	if err != nil {
+		return next, nil, err
+	}
+	return next, ln, nil
 }
 
 func StopProxy() {
 	proxy.mu.Lock()
 	server := proxy.server
 	trans := proxy.transport
+	httpLn := proxy.httpLn
 	proxy.running = false
 	proxy.transport = nil
 	proxy.tun = nil
 	proxy.server = nil
+	proxy.httpLn = nil
 	proxy.mu.Unlock()
 	detachCaptcha()
 	CancelCaptcha()
 	setAuthProxy(nil)
 	clearRoute()
 	appendLog("[ANDROID] Остановка прокси-транспорта")
+	// The HTTP listener first: it is a bound socket the user may still have
+	// pointed a browser at, and leaving it accepting would hand the next
+	// request to a transport that is about to be torn down.
+	if httpLn != nil {
+		_ = httpLn.Close()
+	}
 	if server != nil {
 		_ = server.Close()
 	}
