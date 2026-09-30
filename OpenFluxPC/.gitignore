@@ -1,0 +1,5 @@
+# Build products, not source: a 20 MB binary has no business in git, and the
+# one in the tree would drift from the code beside it without anyone noticing.
+resources/
+build/
+.gradle/

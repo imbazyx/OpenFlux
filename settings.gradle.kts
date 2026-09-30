@@ -38,17 +38,9 @@ plugins {
 // shared/ is an ordinary directory in this repository, vendored from
 // OpenFluxClientShared. It carries fixes of its own, so it is deliberately not a
 // submodule pinned to a commit in someone else's repository.
+// The Windows client. Same shared module, a second front end: one interface,
+// one core, two platforms. The directory name matches the module, so there is
+// no projectDir line to keep in step with anything.
 include(":shared")
 include(":androidApp")
-
-// The Windows client lives outside this repository so that the Android build
-// never sees it, but it is the same code: one shared module, two front ends.
-//
-// Conditional on purpose. Pointing at a directory outside the repository would
-// break the build for anyone who clones it without also having that directory
-// beside it, and a broken checkout fails the person who did nothing wrong.
-val pcAppDir = file("../OpenFluxPC")
-if (pcAppDir.isDirectory) {
-    include(":pcApp")
-    project(":pcApp").projectDir = pcAppDir
-}
+include(":OpenFluxPC")
