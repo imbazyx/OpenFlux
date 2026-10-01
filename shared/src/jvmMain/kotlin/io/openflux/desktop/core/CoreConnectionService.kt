@@ -36,12 +36,10 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.nio.file.Files
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
-import java.net.ProxySelector
+import java.net.Proxy
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -376,22 +374,36 @@ class CoreConnectionService(
 
     override fun refreshExitAddress() {
         val checked = synchronized(lock) { run } ?: return
-        val proxy = checked.httpProxy
+        val exitProxy = checked.httpProxy
         // Full tunnel: this app's own traffic goes through it like any other.
-        if (proxy == null && !checked.settings.fullTunnel) return
+        if (exitProxy == null && !checked.settings.fullTunnel) return
         _exitAddress.value = ExitAddress.Checking
         scope.launch {
             val result = runCatching {
-                val builder = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20))
-                if (proxy != null) {
-                    val (host, port) = proxy.split(":").let { it[0] to it[1].toInt() }
-                    builder.proxy(ProxySelector.of(InetSocketAddress(host, port)))
+                // HttpURLConnection rather than java.net.http: the shipped
+                // runtime is a jlink image without that module, and a class
+                // referring to it fails to verify and takes the app down at
+                // startup. Proxy is set explicitly either way, because with a
+                // full tunnel this request has to go out the same way the user
+                // does - or, with no tunnel, around the system proxy the app
+                // itself may have set, which would otherwise be asking the
+                // core for the address it just gave it.
+                val route = if (exitProxy != null) {
+                    val (host, port) = exitProxy.split(":").let { it[0] to it[1].toInt() }
+                    Proxy(Proxy.Type.HTTP, InetSocketAddress(host, port))
                 } else {
-                    builder.proxy(HttpClient.Builder.NO_PROXY)
+                    Proxy.NO_PROXY
                 }
-                val client = builder.build()
-                val request = HttpRequest.newBuilder(URI("https://api.ipify.org")).timeout(Duration.ofSeconds(30)).build()
-                val body = client.send(request, HttpResponse.BodyHandlers.ofString()).body().trim()
+                val connection = URI("https://api.ipify.org").toURL().openConnection(route) as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 20_000
+                connection.readTimeout = 30_000
+                connection.setRequestProperty("User-Agent", "OpenFlux-Desktop")
+                val body = try {
+                    connection.inputStream.bufferedReader().readText().trim()
+                } finally {
+                    connection.disconnect()
+                }
                 require(IP.matches(body)) { "неожиданный ответ" }
                 ExitAddress.Known(body)
             }.getOrElse { ExitAddress.Unavailable(it.message ?: "нет ответа") }
@@ -531,13 +543,69 @@ class CoreBinary {
         else -> "linux"
     }
 
+    /** Unpacking happens once; a second connect must not redo 15 MB of I/O. */
+    private val once = java.util.concurrent.atomic.AtomicReference<File?>()
+
     private fun bundledCandidates(): List<File> = listOfNotNull(
         System.getProperty("compose.application.resources.dir")?.let { File(it, fileName) },
         File(System.getProperty("user.dir"), "resources/$resourceDir/$fileName"),
         File(System.getProperty("user.dir"), "desktopApp/resources/$resourceDir/$fileName"),
     )
 
-    fun bundled(): File? = bundledCandidates().firstOrNull { it.isFile }
+    /**
+     * The core that shipped inside the app, unpacked on first use.
+     *
+     * A packaged build has no resources folder next to the launcher: the core,
+     * wintun.dll and the version stamp are entries of the app jar, under
+     * `windows/`, and nothing on disk is named `openflux-windows-amd64.exe`
+     * until somebody writes it out. The search above therefore finds nothing in
+     * an installed app, and the app reports that it was built without a core
+     * when it is carrying one.
+     *
+     * bundle.txt is the list of what belongs next to the core and how large
+     * each file is; it is written by the build for exactly this. Sizes are
+     * checked after writing, because a jar entry that came out truncated
+     * produces a core that fails later with something far less obvious than
+     * "the download was damaged".
+     */
+    private fun fromJar(): File? = once.get() ?: synchronized(this) {
+        once.get() ?: unpack().also { once.set(it) }
+    }
+
+    private fun unpack(): File? {
+        val base = "/$resourceDir/"
+        val expected = readBundle(base) ?: return null
+        val target = AppDirs.runtime
+        target.mkdirs()
+        for ((name, size) in expected) {
+            val stream = CoreBinary::class.java.getResourceAsStream("$base$name") ?: return null
+            val bytes = stream.use { it.readBytes() }
+            // A jar entry that came out short produces a core that fails much
+            // later with something that looks like a network problem, so the
+            // size the build recorded is checked here.
+            if (bytes.size.toLong() != size) return null
+            File(target, name).writeBytes(bytes)
+        }
+        return File(target, fileName).takeIf { it.isFile }
+    }
+
+    /**
+     * What belongs beside the core, and how large the build made each file.
+     *
+     * bundle.txt is written as `name<TAB>size`, one per line.
+     */
+    private fun readBundle(base: String): Map<String, Long>? {
+        val text = CoreBinary::class.java.getResourceAsStream("${base}bundle.txt")
+            ?.use { it.readBytes().decodeToString() } ?: return null
+        val entries = text.lineSequence().mapNotNull { line ->
+            val parts = line.trim().split(Regex("\\s+"), limit = 2)
+            if (parts.size == 2) parts[1].toLongOrNull()?.let { parts[0] to it } else null
+        }.toMap()
+        // The core itself has to be listed, whatever else the manifest says.
+        return entries.takeIf { fileName in it }
+    }
+
+    fun bundled(): File? = bundledCandidates().firstOrNull { it.isFile } ?: fromJar()
 
     fun resolve(settings: AppSettings): File? = when (settings.coreSource) {
         CoreSource.Custom -> File(settings.customCorePath.trim()).takeIf { settings.customCorePath.isNotBlank() && it.isFile }

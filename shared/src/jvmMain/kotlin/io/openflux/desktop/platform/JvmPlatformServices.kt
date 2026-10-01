@@ -30,10 +30,9 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.image.BufferedImage
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Duration
@@ -141,28 +140,51 @@ class JvmPlatformServices(
         val ok: Boolean get() = body != null
     }
 
-    private fun request(url: String, head: Boolean = false): Answer = try {
-        val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
-            .followRedirects(HttpClient.Redirect.NORMAL).build()
-        val builder = HttpRequest.newBuilder(URI(url))
-            .header("User-Agent", "OpenFlux-Desktop").timeout(Duration.ofSeconds(15))
-        if (head) builder.method("HEAD", HttpRequest.BodyPublishers.noBody())
-        val response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString())
-        when {
-            response.statusCode() == 200 -> Answer(response.body(), null)
-            response.statusCode() == 404 -> Answer(null, "на GitHub нет такого файла")
-            response.statusCode() == 403 || response.statusCode() == 429 ->
-                Answer(null, "GitHub временно не отвечает (лимит запросов с одного адреса)")
-            else -> Answer(null, "GitHub ответил кодом ${response.statusCode()}")
+    /**
+     * One HTTP round trip, and what it could not do.
+     *
+     * HttpURLConnection, not java.net.http. The shipped runtime is a jlink
+     * image with eleven modules in it and java.net.http is not one of them, so
+     * a reference to HttpTimeoutException anywhere in this class - even in a
+     * catch clause, which is part of the method's exception table - makes the
+     * class fail to verify, and the app dies at startup with
+     * NoClassDefFoundError before it draws anything. HttpURLConnection is in
+     * java.base, which is in every runtime there is.
+     */
+    private fun request(url: String, head: Boolean = false): Answer {
+        val connection = runCatching {
+            (URI(url).toURL().openConnection() as HttpURLConnection).apply {
+                requestMethod = if (head) "HEAD" else "GET"
+                connectTimeout = 8_000
+                readTimeout = 15_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "OpenFlux-Desktop")
+                setRequestProperty("Accept", "*/*")
+            }
+        }.getOrElse {
+            return Answer(null, when (it) {
+                is java.net.UnknownHostException -> "не найден адрес github.com"
+                is java.net.ConnectException -> "нет связи с интернетом"
+                else -> it.message ?: "неизвестная ошибка"
+            })
         }
-    } catch (e: java.net.ConnectException) {
-        Answer(null, "нет связи с интернетом")
-    } catch (e: java.net.UnknownHostException) {
-        Answer(null, "не найден адрес github.com")
-    } catch (e: java.net.http.HttpTimeoutException) {
-        Answer(null, "GitHub не ответил вовремя")
-    } catch (e: Exception) {
-        Answer(null, e.message ?: e::class.simpleName ?: "неизвестная ошибка")
+        return try {
+            val code = connection.responseCode
+            val body = if (head || code !in 200..299) null else connection.inputStream.bufferedReader().readText()
+            when {
+                code in 200..299 -> Answer(body, null)
+                code == 404 -> Answer(null, "на GitHub нет такого файла")
+                code == 403 || code == 429 ->
+                    Answer(null, "GitHub временно не отвечает (лимит запросов с одного адреса)")
+                else -> Answer(null, "GitHub ответил кодом $code")
+            }
+        } catch (e: SocketTimeoutException) {
+            Answer(null, "GitHub не ответил вовремя")
+        } catch (e: Exception) {
+            Answer(null, e.message ?: e::class.simpleName ?: "неизвестная ошибка")
+        } finally {
+            connection.disconnect()
+        }
     }
 
     /**
@@ -302,12 +324,18 @@ class JvmPlatformServices(
     private fun download(url: String, target: File, expected: String?): Boolean {
         val part = File(target.parentFile, target.name + ".part")
         return runCatching {
-            val request = HttpRequest.newBuilder(URI(url))
-                .timeout(Duration.ofMinutes(20))
-                .header("User-Agent", "OpenFlux-Desktop").build()
-            val bytes = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
-                .followRedirects(HttpClient.Redirect.NORMAL).build()
-                .send(request, HttpResponse.BodyHandlers.ofByteArray()).body()
+            val connection = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20 * 60_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "OpenFlux-Desktop")
+            }
+            val bytes = try {
+                connection.inputStream.readBytes()
+            } finally {
+                connection.disconnect()
+            }
             part.writeBytes(bytes)
             if (expected != null) {
                 val actual = MessageDigest.getInstance("SHA-256")
@@ -333,12 +361,18 @@ class JvmPlatformServices(
     }.getOrNull()
 
     private fun fetchText(url: String): String? = runCatching {
-        val request = HttpRequest.newBuilder(URI(url))
-            .timeout(Duration.ofSeconds(20))
-            .header("User-Agent", "OpenFlux-Desktop").build()
-        HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
-            .followRedirects(HttpClient.Redirect.NORMAL).build()
-            .send(request, HttpResponse.BodyHandlers.ofString()).body()
+        val connection = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 20_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "OpenFlux-Desktop")
+        }
+        try {
+            connection.inputStream.bufferedReader().readText()
+        } finally {
+            connection.disconnect()
+        }
     }.getOrNull()
 
     companion object {
