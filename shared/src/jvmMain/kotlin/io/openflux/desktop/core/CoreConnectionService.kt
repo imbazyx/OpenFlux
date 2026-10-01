@@ -207,13 +207,20 @@ class CoreConnectionService(
                 log(level, line)
                 friendlyProblem(line)?.let { run.lastProblem = it }
                 SHARE_LINK.find(line)?.let { _exitShareLink.value = it.value }
-                // Without IPC (classic profiles) the core's start banner is
-                // the only sign it is up.
-                if (line.contains("Running as CLIENT") || line.contains("Running as EXIT NODE")) {
+                // Readiness, and it is announced differently per inbound. The
+                // TUN path has no SOCKS5 listener: it prints "Tunnel active"
+                // once the default route is inside the tunnel. The legacy path
+                // prints "Running as CLIENT (SOCKS5 ...)". Watching only the
+                // latter left the window on "Подключение" for ever with a
+                // working tunnel behind it - the traffic was already going
+                // out through the node, and nothing said so.
+                if (announcesReady(line)) {
                     run.bannerSeen = true
-                    if (!run.usesIpc || run.ipcUnavailable) markConnected(run)
+                    // "Tunnel active" is the strongest signal there is, and it
+                    // is worth acting on even when IPC is up: the status feed
+                    // may never carry a connected=true message.
+                    if (!run.usesIpc || run.ipcUnavailable || line.contains("Tunnel active")) markConnected(run)
                 }
-                if (run.settings.mode == ConnectionMode.Exit && line.contains("Running as EXIT NODE")) markConnected(run)
             }
         }
     }
@@ -521,6 +528,19 @@ class CoreConnectionService(
         }
     }
 }
+
+/**
+ * Does this line from the core mean the tunnel is up?
+ *
+ * The three strings below are the core's own readiness announcements
+ * (main.go). Kept in one place and tested, because the two paths print
+ * different words and matching only one of them leaves the window on
+ * "Подключение" while everything already works.
+ */
+internal fun announcesReady(line: String): Boolean =
+    line.contains("Running as CLIENT") ||
+        line.contains("Running as EXIT NODE") ||
+        line.contains("Tunnel active")
 
 /** Finds the core binary: the user's file or the one shipped with the app. */
 class CoreBinary {
