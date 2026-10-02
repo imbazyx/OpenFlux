@@ -3,6 +3,158 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.0] - 2026-09-30
+
+Android connectivity, Wintun delivery, an honest update check — and then three
+Windows defects that only a person running the installer could find.
+
+### Fixed
+
+- **The Windows client did not start at all.** The launcher reported *failed to
+  launch JVM*, which is what it says when the JVM dies before the first frame.
+  It did start. The shipped runtime is a jlink image of eleven modules and
+  `java.net.http` is not one of them, so any class naming
+  `HttpTimeoutException` anywhere — including in a `catch`, which is part of
+  the method's exception table — fails verification on load. The four call
+  sites now use `HttpURLConnection` from `java.base`.
+- **"В этой сборке нет встроенного ядра".** The installed app has no
+  `resources/` directory: the core travels as `windows/` jar entries and
+  `CoreBinary` looked only for a file on disk. The `bundle.txt` manifest the
+  build already wrote — and nothing read — is now read, and each entry is
+  unpacked into the data folder on first use with its size verified, so a
+  truncated copy fails here instead of later masquerading as a network fault.
+- **The window stayed on «Подключение» while the tunnel was already carrying
+  traffic.** Readiness was detected by watching for `Running as CLIENT`, which
+  the core prints only on the legacy gVisor SOCKS5 path; the Wintun path
+  announces itself with `Tunnel active`. Everything up to the first payload
+  worked — the node's address was already the one an IP echo service showed —
+  and nothing on screen said so. All three of the core's announcements are now
+  one named predicate, tested against the log of the real run that showed it.
+
+  No blind timeout was added as a safety net: a core that is alive but has not
+  authenticated looks exactly like one that is starting, and reporting
+  «Подключено» there would trade a hang for a lie.
+
+- **Duplicated frames from the carrier no longer reach the TCP stack.** Mail.ru
+  Docs relays a document update as a cursor event and does not promise
+  exactly-once. Captured on both ends at once: the client sent one SYN in one
+  batch, the exit received it twice with the same sequence number, 5ms apart.
+  Everything downstream dispatched it once, so the second copy was injected as
+  a fresh packet — and a duplicate SYN for a live connection resets it. The
+  answer arrived as an RST and no payload ever crossed. Duplicates inside a
+  250ms window are dropped before injection, which is the safe direction: TCP
+  already treats a lost segment as normal and retransmits on its own timer.
+
+  The duplication is intermittent and had stopped on its own before this was
+  exercised — the guard logged zero drops during the runs that succeeded. It is
+  insurance for the mechanism above, not a demonstrated cure for that outage.
+
+### Added
+
+- The repository avatar. It is rendered from the same vector drawables the
+  launcher icon is built from, so the two cannot drift, and the palette stays
+  the one the fork has carried since 1.2.0 — purple to red, repainted then so
+  it would not be mistaken for upstream's blue.
+- Release topics, so the repository is findable.
+
+### Changed
+
+- An unsigned release APK is refused outright. The check runs when the task
+  graph is ready, not while configuring, so an ordinary debug build and
+  `:shared:jvmTest` still work with no key present.
+- The core README names this repository.
+
+### Notes
+
+- **The `v2.3.0` tag still points at `237b553`**, the commit the version was
+  originally cut at. The Windows artifacts have since been re-published four
+  times from later commits, because the fixes above were found after the tag
+  and the decision was to ship them under the same version rather than bump it.
+  The tag is left where it is: moving a published tag would rewrite history,
+  which was explicitly declined. What the tag means and what the download
+  contains are therefore not the same commit — read this section, not the tag.
+- Android APKs are byte-identical to the previous publication. The change is
+  confined to the core and the Windows client, so there was nothing to rebuild
+  for Android.
+
+## [2.2.0] - 2026-09-30
+
+The Windows client, and a set of things the Android one was quietly doing
+wrong.
+
+### Added
+- The Windows client checks for a newer release and installs it from inside
+  the app, on the same terms as Android: newest release carrying an `.msi`,
+  checked against the release's own `SHA256SUMS.txt` before `msiexec` starts.
+- The portable Windows build is produced by a Gradle task, and both Windows
+  artifacts are collected into `OpenFluxPC/dist/`.
+- The SOCKS5 server has a read limit, a read deadline, and stops logging
+  things that are not diagnostics.
+
+### Fixed
+- The user's MAX contacts - names and phone numbers - were printed to the log
+  on every login, and the tunnel's own payload was dumped on every packet.
+  Both land in the log buffer the apps show on their Logs screen. The count is
+  logged; the people and the traffic are not.
+- The MAX call token leaked into the log through the endpoint URL and through
+  gorilla's dial errors, which embed that URL.
+- A malformed call frame could panic the read loop, and a peer could pin it
+  forever: `oneme` was the only transport with neither a read limit nor a
+  deadline.
+- A wrong MAX token used to look exactly like a working transport - connect
+  and login errors were discarded and `IsConnected` answered `true` - so the
+  failover logic had nothing to react to.
+- SOCKS5 defaulted to `:1080`, which is every interface, and the server has no
+  authentication unless the caller sets one. It now defaults to loopback.
+- The HTTP proxy ran with no timeouts, which is a Slowloris target.
+- The "close to the notification area" switch is gone. There is no tray; it
+  defaulted to on and promised a menu that does not exist.
+- "About" on Windows pointed at a repository the Windows build was never
+  published to.
+- Windows helper processes hung the calling thread forever: the pipe was read
+  to EOF before `waitFor`, so the timeout could not fire.
+- The release scripts were pinned to 1.2.0 while the project was at 2.0.0, and
+  the negative-control's copies failed silently, so its 27 tampered-tree
+  checks were passing over an empty tree.
+
+### Changed
+- The Windows build is published from this repository, and `node-v1.0.0` is a
+  prerelease so the client release is the one GitHub shows as latest.
+- Node install scripts now pin to this repository, so a node runs the same core
+  as the apps rather than the upstream build.
+- The oneme transport logs through the project logger, so its output respects
+  a level like every other transport.
+
+### Fixed - Windows client, found by running the installer
+
+The MSI installed cleanly, opened a window and could not connect. Every step of
+that looked healthy, which is what let these through a verified build.
+
+- **The core is now in the application jar.** Windows Installer takes only the
+  jars it is handed; a 14 MB executable dropped beside them, or in the
+  application image, is not in the installed program. The MSI shipped with no
+  core at all, and `CoreBinary` looked for it in a `resources` folder that
+  jpackage also dropped — and in a path that omitted the platform segment, so
+  it would not have found the core in the zip either. `checkCoreInInstaller`
+  now opens the jar the packages are built from and fails if the core is
+  missing; `checkCore` only proved it had been built, which is what let this
+  ship.
+- **Start menu and desktop shortcuts.** `windows { menu, menuGroup, shortcut }`
+  were never set: the installer put the program in Program Files and left
+  nothing to click. `upgradeUuid` is fixed rather than generated, because
+  Windows Installer keys upgrades on it and a fresh UUID installs each version
+  beside the last one.
+- The build now fails when the Windows client does not open a window, instead
+  of reporting success for a package that cannot start.
+- `Wintun.dll` travels beside the core rather than relying on PATH.
+- The Windows client points at this repository, not at where the code came
+  from.
+
+### Changed - package size
+- The core is no longer copied into the application image as well as the jar.
+  With it in the jar it was in both the MSI and the zip, so a second copy in
+  the image meant three 14 MB copies in one download.
+
 ## [2.1.0] - 2026-09-30
 
 The Windows client, and a set of things the Android one was quietly doing
@@ -163,7 +315,8 @@ the core.
 
 ### Changed
 
-- Launcher icon recoloured purple to red.
+- Launcher icon recoloured purple to red. *(This is still the palette — it is
+  what ships, and the repository avatar is rendered from the same vectors.)*
 - **One repository.** `OpenFlux/` and `shared/` are ordinary directories here
   instead of submodules. The pointer to a single exact commit broke twice: once
   naming commits that existed in no repository, once going stale after a rebase.
