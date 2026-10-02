@@ -3,6 +3,35 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.1] - 2026-10-02
+
+Both clients on one core, and a tag that means what it says.
+
+### Changed
+
+- **The Android app now ships the same core the PC does.** The `.aar` in
+  `androidApp/libs/` was built at `f2855a7` and never rebuilt, so the phone ran
+  a core from before the duplicate-packet guard while the PC ran one from after
+  it. Two clients, one interface, one core — the claim the README makes — was
+  not true of the binaries. The Android core is rebuilt from the same tree and
+  the version stamp under Settings → About now reports it.
+- The version is 2.3.1 rather than another 2.3.0, and the tag points at the
+  commit the files were built from.
+
+### Notes
+
+- 2.3.0 was published four times under one version number while the Windows
+  fixes were still being found, and its tag was left at the commit the version
+  was originally cut at. So for 2.3.0 the tag and the download were two
+  different commits. That is the thing 2.3.1 exists to end: here the tag, the
+  commit and the artifacts agree, and the release notes say so.
+- The Android APKs are rebuilt and therefore have different hashes from the
+  2.3.0 ones. They install over an existing 2.3.0 in place — same signing key,
+  same application id, and a higher version code — so settings and saved
+  documents survive. Signing is checked before publishing: an APK carrying a
+  different certificate could not update an installed copy, and nothing else
+  in the build would notice.
+
 ## [2.3.0] - 2026-09-30
 
 Android connectivity, Wintun delivery, an honest update check — and then three

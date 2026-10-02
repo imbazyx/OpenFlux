@@ -14,10 +14,10 @@ works on networks where an ordinary VPN is blocked.
 
 Two front ends, one interface, one core:
 
-| | |
+| Platform | What it does |
 |---|---|
-| **Android** | system VPN or local SOCKS5, per-app routing, camera QR |
-| **Windows 10–11** | system proxy or local SOCKS5, the same screens |
+| **Android** | System VPN or a local SOCKS5 proxy, per-app routing, camera QR |
+| **Windows 10–11** | System proxy or a local SOCKS5 proxy, the same screens |
 
 ## Which file do I download?
 
@@ -47,9 +47,9 @@ error, install the universal one.
 | `OpenFlux-<version>.msi` | **The normal choice.** A standard installer; it puts the app in the Start menu. |
 | `OpenFlux-<version>-windows-amd64.zip` | No installer: unpack anywhere and run `OpenFlux.exe`. |
 
-The two names are not interchangeable: the installer is `OpenFlux-2.3.0.msi`,
-with no `-windows-amd64`, while the portable zip carries it. Pick the row, not
-the one that looks similar.
+The two names are not interchangeable: the installer carries **no**
+`-windows-amd64`, while the portable zip does. Pick the row, not the one that
+looks similar.
 
 Windows 10 or 11, 64-bit. Windows 7 is not supported — the interface is built
 with Compose Multiplatform, which needs Windows 10 or newer, and the reason is
