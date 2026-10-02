@@ -1,5 +1,7 @@
 # OpenFlux
 
+<img src="branding/icon.png" alt="OpenFlux" width="96" align="right">
+
 [![Releases](https://img.shields.io/github/v/release/imbazyx/OpenFlux?label=release&color=blue)](https://github.com/imbazyx/OpenFlux/releases/latest)
 [![License](https://img.shields.io/github/license/imbazyx/OpenFlux?color=blue)](LICENSE)
 [![Go](https://img.shields.io/badge/core-Go%201.26-00ADD8?logo=go&logoColor=white)](OpenFlux/)
@@ -42,8 +44,12 @@ error, install the universal one.
 
 | Download | What it is |
 |---|---|
-| `OpenFlux-*-windows-amd64.msi` | **The normal choice.** A standard installer; it puts the app in the Start menu. |
-| `OpenFlux-*-windows-amd64.zip` | No installer: unpack anywhere and run `OpenFlux.exe`. |
+| `OpenFlux-<version>.msi` | **The normal choice.** A standard installer; it puts the app in the Start menu. |
+| `OpenFlux-<version>-windows-amd64.zip` | No installer: unpack anywhere and run `OpenFlux.exe`. |
+
+The two names are not interchangeable: the installer is `OpenFlux-2.3.0.msi`,
+with no `-windows-amd64`, while the portable zip carries it. Pick the row, not
+the one that looks similar.
 
 Windows 10 or 11, 64-bit. Windows 7 is not supported — the interface is built
 with Compose Multiplatform, which needs Windows 10 or newer, and the reason is
@@ -51,9 +57,12 @@ written up in [OpenFluxPC/README.md](OpenFluxPC/README.md).
 
 ### Everything else
 
-The core itself (exit nodes and the command line) is released the same way —
-look for a file with no `Android` and no `windows` in its name. See
-[Building](#building) to compile it yourself.
+Exit-node operators do not install anything from here. The core is a separate
+pre-release — [`node-v1.0.0`](https://github.com/imbazyx/OpenFlux/releases/tag/node-v1.0.0)
+— carrying `openflux-linux-{386,amd64,arm,arm64}`, built `-s -w` and statically
+linked. It is marked pre-release on purpose: it is not a client, and it is not
+covered by the same update path the two apps use. See [Building](#building) to
+compile it yourself from `OpenFlux/`.
 
 ### Updating
 
@@ -86,9 +95,9 @@ cd OpenFlux
 That is the whole procedure. What the clone contains:
 
 - `OpenFlux/` — the core this app embeds as a library (gomobile). The same
-  sources are released separately as
-  [imbazyx/OpenFlux](https://github.com/imbazyx/OpenFlux), with its own tags
-  for exit nodes and the CLI.
+  sources are released separately as a pre-release for exit-node operators,
+  under the tag [`node-v1.0.0`](https://github.com/imbazyx/OpenFlux/releases/tag/node-v1.0.0)
+  (Linux 386/amd64/arm/arm64, `-s -w`, statically linked).
 - `shared/` — the Compose Multiplatform UI and models. Originally vendored
   from the upstream `OpenFluxClientShared`, and now maintained here: this fork
   carries its own fixes to it, so the copy in this repository is the one that
