@@ -142,6 +142,13 @@ library's Go build ID, the launcher icon, ABI layout, timestamps and checksums,
 and fails on any mismatch. `scripts/negative-control.sh` attacks the audit
 with 27 tampered trees to prove the checks actually fire.
 
+[`OPERATIONS.md`](OPERATIONS.md) records the parts that are not visible from
+the code: which of the two core checkouts on a machine is this fork, that the
+Windows installer is only produced on a Windows host, that the NDK comes from
+`wsl-toolchain.sh` and not from `gomobile init`, how the signing credentials'
+variable names map onto the ones the build reads, and how to check a release
+before publishing it.
+
 ### Line endings
 
 The whole tree is committed with LF, and `.gitattributes` says so — `*.sh` and
