@@ -20,23 +20,24 @@ what to build.
 
 ## First: which tree is which
 
-There used to be two full copies of the core on one machine, and they were not
-the same code. The fork now sits at the top of the project directory, so this
-is no longer a live trap — but the knowledge is kept, because it cost a release
-to acquire, and because a clone still lands wherever it lands.
+There used to be two full copies of the core on this machine, and they were not
+the same code. The upstream checkout has since been deleted, so the trap is
+closed — but the knowledge is kept, because it cost a release to acquire, and
+because a fresh `git clone` still lands wherever it lands.
 
 | Path | What it is |
 |---|---|
-| `<drive>:/project/OpenFluxAndroid/` | **This fork.** The git repository everything ships from. |
-| `<drive>:/project/OpenFlux/` | An upstream checkout of `p1neappleXpress/OpenFlux`. Reference and comparison only; **not** built from. |
+| `<drive>:/project/OpenFluxAndroid/` | **This fork, and the only tree that has it.** The git repository everything ships from. |
 
-They were separate repositories with separate remotes, one nested in the other's
-directory. Building from the parent produced the upstream core — no
-duplicate-packet guard, none of this fork's fixes — and nothing in the build
-complained. The tell was `OpenFlux/tunnel/dedupe.go`: present here, absent
-there. The parent's `main.go` was also roughly a third the size of this fork's.
+The fork used to live one directory deeper, inside a checkout of upstream
+`p1neappleXpress/OpenFlux`. Both were separate git repositories with separate
+remotes. Building from the parent produced the upstream core — no duplicate-packet
+guard, none of this fork's fixes — and nothing in the build complained. The tell
+was `OpenFlux/tunnel/dedupe.go`: present here, absent there. The parent's
+`main.go` was also roughly a third the size of this fork's.
 
-Always build from the fork root.
+If a copy of upstream's core ever reappears next to this one, do not build from
+it. Build from the fork root.
 
 ---
 
