@@ -12,6 +12,10 @@ confirm you have the right one is here; what they are is not.
 Machine-specific paths, the exit-node inventory and the credentials' locations
 are in `OPERATIONS.local.md`, which is not committed.
 
+For project state — what has been done, what was deliberately left undone, and
+what is still open — read `HANDOVER.md`. This file is how to build; that one is
+what to build.
+
 ---
 
 ## First: which tree is which
