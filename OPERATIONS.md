@@ -16,22 +16,41 @@ are in `OPERATIONS.local.md`, which is not committed.
 
 ## First: which tree is which
 
-This matters more than it sounds, because there are two full copies of the core
-on a typical machine and they are **not** the same code.
+There used to be two full copies of the core on one machine, and they were not
+the same code. The fork now sits at the top of the project directory, so this
+is no longer a live trap — but the knowledge is kept, because it cost a release
+to acquire, and because a clone still lands wherever it lands.
 
 | Path | What it is |
 |---|---|
-| `<project>/OpenFluxAndroid/` | **This fork.** The git repository everything ships from. |
-| `<project>/` (one level up) | An upstream checkout of `p1neappleXpress/OpenFlux`. Reference only. |
+| `<drive>:/project/OpenFluxAndroid/` | **This fork.** The git repository everything ships from. |
+| `<drive>:/project/OpenFlux/` | An upstream checkout of `p1neappleXpress/OpenFlux`. Reference and comparison only; **not** built from. |
 
-They are separate repositories with separate remotes. Building from the parent
-directory produces the upstream core — without this fork's fixes, including the
-duplicate-packet guard — and nothing in the build will complain. The parent's
-`main.go` is roughly a third the size of this fork's, and it has no
-`OpenFlux/tunnel/dedupe.go` at all, which is the quickest way to tell them
-apart.
+They were separate repositories with separate remotes, one nested in the other's
+directory. Building from the parent produced the upstream core — no
+duplicate-packet guard, none of this fork's fixes — and nothing in the build
+complained. The tell was `OpenFlux/tunnel/dedupe.go`: present here, absent
+there. The parent's `main.go` was also roughly a third the size of this fork's.
 
 Always build from the fork root.
+
+---
+
+## Things that must never be committed
+
+`.gitignore` carries the guard, but the reasoning matters more than the line,
+because both of these are inside the working tree now rather than one level
+outside it:
+
+- `reserve/openflux-release.jks` — a backup of the release signing key. A
+  signing key in the history is extractable by anyone who clones, and a key
+  that signs your updates is worse than no key at all: it cannot be revoked.
+- `OPERATIONS.local.md`, `TODO.local.md` — node addresses and the owner's
+  private decisions.
+
+The exit-node unit files under `reserve/exit-nodes/` are not secret, but they
+name document URLs that are, so the folder is ignored whole rather than
+partly.
 
 ---
 
