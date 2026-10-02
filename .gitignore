@@ -17,3 +17,13 @@ androidApp/libs/openflux-core.version
 # should not. The signing keystore itself is never in this tree at all - see
 # SECURITY.md.
 OPERATIONS.local.md
+
+# The signing keystore's backup copy, and the owner's private notes.
+#
+# This guard is here, in the project's own .gitignore, rather than in a
+# parent directory where the folder used to sit. reserve/ is inside the working
+# tree now, and without this line `git add -A` would stage a private signing key:
+# a key in the history is extractable by anyone who clones the repository, and
+# a key that signs your updates is worse than no key at all.
+TODO.local.md
+/reserve/
