@@ -64,6 +64,8 @@ type TCPTunnel struct {
 	stopOnce    sync.Once
 	stopCh      chan struct{}
 	udpFlows    atomic.Int32
+	// seen guards the TCP stack against the carrier's at-least-once delivery.
+	seen *dedupe
 }
 
 var (
@@ -94,6 +96,7 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 		exitMode:   mode,
 		startTime:  time.Now(),
 		stopCh:     make(chan struct{}),
+		seen:       newDedupe(),
 	}
 
 	utils.Debugf("[TUNNEL] Net stack init...")
@@ -146,6 +149,13 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 	}
 
 	trans.Receive(func(data []byte) {
+		// The carrier is at-least-once; a copy that reaches the TCP stack
+		// resets the connection it belongs to. See dedupe.go for the capture
+		// from both ends that shows it.
+		if t.seen.duplicate(data, time.Now()) {
+			utils.Debugf("[TUNNEL] dropped duplicate packet of %d bytes (%d so far)", len(data), t.seen.droppedCount())
+			return
+		}
 		network.LogPacket("TUNNEL", fromPeer, data)
 		tunnelEP.InjectInbound(data)
 	})
