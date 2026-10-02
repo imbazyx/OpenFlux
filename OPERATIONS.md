@@ -177,6 +177,31 @@ The string is the evidence.
 
 ---
 
+## House rules
+
+These have been decided, not assumed. Breaking one costs the user something
+that cannot be recovered automatically.
+
+- **Do not bump the version to re-publish a fix.** The user installs over the
+  top. 2.3.0 was uploaded four times under one number, which is what produced
+  the tag/content mismatch this document keeps warning about.
+- **Do not rewrite history or move a published tag.** An annotated tag is
+  cheap to move right up until someone has fetched it; after that, it is a
+  rewrite. Ask first, always.
+- **Do not commit scratch scripts.** Anything left in the user's home
+  directory is not in this repository and will not survive a reinstall. If a
+  procedure is worth repeating, it belongs in `scripts/` with its reasoning in
+  the comment above the command.
+- **Never claim verification without it.** During the 2.3.0 work a stale
+  extracted artifact read as a shipping defect, two packet counts were wrong
+  because the log format was `[ACK PSH]` and not `[PSH]`, and an A/B test came
+  within one observation of reporting a fix that had not fixed anything. State
+  what was checked and what was assumed.
+- **Say what a fix does not prove.** The duplicate-packet guard closes a
+  mechanism captured on live traffic; it never fired during the runs that
+  succeeded, and the outage ended on its own first. Both facts belong in the
+  notes.
+
 ## Cores inside the clients differ, deliberately
 
 `androidApp/libs/openflux.aar` is gitignored, built by
