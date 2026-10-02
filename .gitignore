@@ -11,3 +11,9 @@ androidApp/libs/openflux-core.version
 # Build output of scripts/wsl-build.sh: five APKs and their checksums, well over
 # 100 MB. They are produced, not authored, and dist/ is wiped on every build.
 /dist/
+
+# Machine-specific inventory: credential locations and the exit-node addresses.
+# OPERATIONS.md beside it is committed; this one names what a public repository
+# should not. The signing keystore itself is never in this tree at all - see
+# SECURITY.md.
+OPERATIONS.local.md

@@ -44,7 +44,9 @@ repository. The build reads it from the environment:
 The CI release workflow expects the keystore itself as
 `ANDROID_KEYSTORE_BASE64`. Losing this key means the published APKs can no
 longer be updated in place — Android refuses to install over them. Back it up
-somewhere you control.
+somewhere you control. [`OPERATIONS.md`](OPERATIONS.md) records where the
+credentials live and how the variable names map onto the ones the build reads;
+the values are not in this repository, deliberately.
 
 The release key's SHA-256 fingerprint is
 `60487280f6a493f6afd525d2727fa8b1772c217a24dd6ee148f90f3114a1f156`
