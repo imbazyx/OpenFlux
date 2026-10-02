@@ -19,15 +19,16 @@ the three files to read, and the two things not to do.
 
 | | |
 |---|---|
-| Project root | `D:\project\OpenFluxAndroid` |
-| Upstream checkout | `D:\project\OpenFlux` — reference only, never build from it |
+| Project root | `D:\project\OpenFluxAndroid` — the only tree with the project in it |
 | Repository | `git@github.com:imbazyx/OpenFlux.git`, branch `main` |
 | Version | 2.3.1, declared once in `gradle.properties` |
 
-The fork used to live one directory deeper, inside the upstream checkout. Both
-were git repositories, so building from the wrong one produced the upstream
-core — no duplicate-packet guard, none of this fork's fixes — with nothing in
-the build complaining. It has since moved up a level.
+There was once a second checkout of upstream `p1neappleXpress/OpenFlux` beside
+this one. The fork also used to live one directory deeper, inside *that* tree.
+Both were git repositories, so building from the wrong one produced the upstream
+core — no duplicate-packet guard, none of this fork's fixes — with nothing in the
+build complaining. The upstream checkout has since been deleted; everything the
+project needs is inside this directory.
 
 ---
 
@@ -35,15 +36,15 @@ the build complaining. It has since moved up a level.
 
 | | |
 |---|---|
-| HEAD | `cce2e1e`, identical to `origin/main`, working tree clean |
+| Branch | `main`, in step with `origin/main` |
 | Tag `v2.3.1` | `f73b98c` |
 | Latest release | `OpenFlux 2.3.1`, 8 assets |
 | Exit nodes | five, all `active` |
 
-**The tag is three commits behind HEAD, and that is correct.** Those three
-commits are `.gitignore` and the two documentation files — no source, no build
-input. The property that matters holds: `v2.3.1` points at the commit the
-released artifacts were built from. Verify it with:
+**The tag is behind HEAD, and that is correct.** Every commit since `v2.3.1` is
+`.gitignore` or documentation — no source, no build input. The property that
+matters holds: `v2.3.1` points at the commit the released artifacts were built
+from. Verify it with:
 
 ```bash
 git rev-list -n1 v2.3.1          # must equal the commit in the release notes
@@ -197,20 +198,26 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 
 1. Repository avatar — Settings → General, upload `branding/icon.png`.
 2. Make the RST rule survive a reboot.
-3. Decide whether the upstream checkout at `D:\project\OpenFlux` is still
-   wanted; it is safe to delete now.
+3. Keep a third copy of `reserve/` off this machine. `D:\project` and
+   `D:\Backup` are the same physical disk, so both existing copies die with it.
 
 ---
 
 ## Verifying this state yourself
 
 ```bash
-git rev-parse HEAD                      # cce2e1e
-git rev-list -n1 v2.3.1                 # f73b98c
+git rev-parse HEAD                      # the commit you are on
+git rev-list -n1 v2.3.1                 # f73b98c, unchanged by any commit since
 git status --porcelain                  # empty
 grep appVersion gradle.properties       # 2.3.1
 scripts/wsl-audit.sh                    # AUDIT_OK
 ```
+
+HEAD is not written down here on purpose: it moves every time documentation is
+committed, and a literal hash in this file is a claim that decays silently. The
+one that must hold is the tag — `v2.3.1` points at the commit the released
+artifacts were built from, and every commit after it is documentation or
+`.gitignore`.
 
 `scripts/wsl-audit.sh` is the project's own audit: package name, embedded core
 provenance, native library build ID, launcher icon, ABI layout, timestamps and
