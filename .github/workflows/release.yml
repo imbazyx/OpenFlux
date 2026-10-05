@@ -223,7 +223,7 @@ jobs:
             --generate-notes \
             --notes "APK универсальный или под архитектуру устройства. Ядро: \`$(git -C OpenFlux rev-parse --short HEAD)\`. Контрольные суммы — в \`SHA256SUMS.txt\`."
 
-      - name: Fail if the desktop installer is missing from the release
+      - name: Warn if the desktop installer is missing from the release
         if: always() && (startsWith(github.ref, 'refs/tags/v') || (inputs.publish && inputs.version != ''))
         env:
           GH_TOKEN: ${{ github.token }}
@@ -245,11 +245,27 @@ jobs:
           # where it can still be seen before anyone installs 2.3.2.
           for attempt in 1 2 3 4 5 6; do
             if gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null \
-                 | grep -qx "OpenFlux-${tag#v}.msi"; then
+                 | grep -qxF "OpenFlux-${tag#v}.msi"; then
               echo "установщик приложен: OpenFlux-${tag#v}.msi"
               exit 0
             fi
             sleep 10
           done
-          echo "::error::к выпуску $tag не приложен OpenFlux-${tag#v}.msi — кнопка обновления на Windows вернёт 404. Приложите вручную: gh release upload $tag OpenFluxPC/dist/OpenFlux-${tag#v}.msi"
-          exit 1
+          # A WARNING, not an error, and that is a correction of the previous
+          # version of this step.
+          #
+          # It was `exit 1`, which was wrong twice over. It runs AFTER
+          # `gh release create`, so the tag and the public release already
+          # exist - failing the run un-publishes nothing, it only reddens a job
+          # that is already finished with the work it was for. And the runner
+          # never holds the MSI: there is no desktop job in this workflow, it
+          # is built on the owner's Windows machine and uploaded by hand
+          # (OPERATIONS.md), and this window is six times ten seconds. A human
+          # cannot land an upload inside it. So the step was guaranteed to fail
+          # on every single release - which teaches everyone to ignore red,
+          # and buries the one thing it was built to make visible.
+          #
+          # What it can honestly do is name the gap, loudly, every release. The
+          # real gate has to be a desktop job this workflow depends on, which
+          # is a change to the release process and not to a check inside it.
+          echo "::warning::к выпуску $tag не приложен OpenFlux-${tag#v}.msi — кнопка обновления на Windows вернёт 404, пока приложение обновлений на Windows. Приложите: gh release upload $tag OpenFluxPC/dist/OpenFlux-${tag#v}.msi"

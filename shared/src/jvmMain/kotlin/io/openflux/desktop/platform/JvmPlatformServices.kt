@@ -311,9 +311,11 @@ class JvmPlatformServices(
                 // newer failure is written where the user will actually see it,
                 // because the UpToDate branch has nowhere to carry it.
                 if (newestAppTag != null && newestAppTag != tag && newestProblem != null) {
-                    val newestName = "OpenFlux-" + newestAppTag.removePrefix(DESKTOP_TAG_PREFIX) +
-                        WINDOWS_INSTALLER_SUFFIX
-                    BrowserLog.problem("выпуск $newestAppTag есть, но установщик $newestName не отдаётся: $newestProblem")
+                    // newestProblem is logged RAW. It already reads "выпуск X
+                    // есть, но установщик Y не отдаётся: <reason>" - wrapping it
+                    // in that sentence again produced the same text twice, once
+                    // with the version in the middle.
+                    BrowserLog.problem(newestProblem)
                 }
                 return if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
             }
