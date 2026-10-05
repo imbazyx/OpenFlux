@@ -419,6 +419,7 @@ class AndroidPlatformServices(
                         installedVersionCode,
                         ownSigner,
                         BuildConfig.VERSION_NAME,
+                        taggedVersion = update.version,
                     )
                 }
                 if (refusal != null) {
