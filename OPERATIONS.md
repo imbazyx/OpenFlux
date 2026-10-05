@@ -269,7 +269,7 @@ inside `OpenFlux/`. Do not enable `ci.yml` casually: it triggers on `push`, so i
 would run on every commit for the first time, and it has never been exercised
 against the current toolchain.
 
-## Three workflows in this repository have never run
+## The `.aar` stamp does not prove the phone has that core
 
 The `.aar` is a build artifact and is not committed, so the version stamp alone
 does not prove the phone carries the core you just built. Compare the shipped
