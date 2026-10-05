@@ -320,18 +320,23 @@ install_core() {
     core="$BIN_DIR/openflux-$CORE_VERSION"
     want=$(core_sha "$1")
     if [ ! -x "$core" ] || [ "$(sha256_of "$core")" != "$want" ]; then
-        tmp=$(mktemp "$BIN_DIR/.download.XXXXXX") || { CORE_ERROR="не удалось создать временный файл"; return 1; }
-        if ! fetch "$CORE_BASE/openflux-linux-$1" "$tmp"; then
-            rm -f "$tmp"
+        # Named for what it is, not `tmp`. write_cookies used the global `tmp`
+        # as well, and so does anything else added later; install_core happens
+        # to run first today, which is the only reason a downloaded core has
+        # never landed in the cookies path. One global renamed away from a
+        # collision that only the current call order prevents.
+        tmp_core=$(mktemp "$BIN_DIR/.download.XXXXXX") || { CORE_ERROR="не удалось создать временный файл"; return 1; }
+        if ! fetch "$CORE_BASE/openflux-linux-$1" "$tmp_core"; then
+            rm -f "$tmp_core"
             CORE_ERROR="не удалось скачать ядро с GitHub"
             return 1
         fi
-        if [ "$(sha256_of "$tmp")" != "$want" ]; then
-            rm -f "$tmp"
+        if [ "$(sha256_of "$tmp_core")" != "$want" ]; then
+            rm -f "$tmp_core"
             CORE_ERROR="SHA-256 скачанного ядра не совпал, установка остановлена"
             return 1
         fi
-        chmod 0755 "$tmp" && mv -f "$tmp" "$core"
+        chmod 0755 "$tmp_core" && mv -f "$tmp_core" "$core"
         CREATED_BIN=1
     fi
     ln -sfn "openflux-$CORE_VERSION" "$BIN_DIR/openflux"
