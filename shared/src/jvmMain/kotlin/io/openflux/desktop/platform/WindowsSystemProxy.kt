@@ -56,14 +56,19 @@ object WindowsSystemProxy {
             ?: throw IllegalStateException("Не удалось изменить системный прокси ($name)")
     }
 
-    // Throws, like set() does, and this is not cosmetic. A restore whose server
-    // or override list was empty takes the DELETE branch, so without this a
-    // failed `reg delete` returned normally, restore() reported success, and
-    // the caller erased the saved settings - leaving Windows on the proxy
-    // point with nothing to put back. That is most installs, not an edge case:
-    // a user who had no proxy is exactly the user whose empty fields are
-    // deleted rather than set.
+    // Absent is the desired end state, not a failure.
+    //
+    // `reg delete` exits non-zero when the value does not exist, so throwing on
+    // every non-zero exit scored "already gone" as an error. Worse, this is
+    // the first statement restore() runs for a user who had no proxy, so the
+    // throw skipped the two lines that actually matter - ProxyEnable=0 and
+    // apply() - leaving Windows still enabled and pointed at a dead 127.0.0.1,
+    // with the saved record unable to ever succeed on retry. ProcessRunner
+    // cannot tell the two cases apart because it returns null and discards the
+    // output on any non-zero exit, so ask the registry whether the value is
+    // there before trying to remove it.
     private fun delete(name: String) {
+        if (query(name) == null) return
         run("reg", "delete", KEY, "/v", name, "/f")
             ?: throw IllegalStateException("Не удалось убрать системный прокси ($name)")
     }
