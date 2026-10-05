@@ -19,6 +19,7 @@ import io.openflux.desktop.updates.compareVersions
 import io.openflux.desktop.updates.pickApk
 import io.openflux.desktop.updates.versionCodeOf
 import io.openflux.desktop.service.AppUpdate
+import io.openflux.desktop.service.InstallResult
 import io.openflux.desktop.updates.AssetProbe
 import io.openflux.desktop.updates.missingAssetMessage
 import io.openflux.desktop.service.UpdateCheck
@@ -39,6 +40,8 @@ import io.openflux.android.ActivityBridge
 import io.openflux.android.BuildConfig
 import io.openflux.desktop.service.PlatformKind
 import io.openflux.desktop.service.PlatformServices
+import io.openflux.desktop.updates.ApkFacts
+import io.openflux.desktop.updates.apkRefusal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -303,7 +306,7 @@ class AndroidPlatformServices(
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
     }
 
-    override suspend fun installUpdate(update: AppUpdate): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun installUpdate(update: AppUpdate): InstallResult = withContext(Dispatchers.IO) {
         val target = java.io.File(context.cacheDir, "update-${update.version}.apk")
         // Every release leaves its installer behind: the file is named after the
         // version, so nothing overwrites an old one and nothing removes it. Each
@@ -321,7 +324,7 @@ class AndroidPlatformServices(
         val ok = runCatching { download(update.downloadUrl, target, expected) }.getOrElse {
             Log.w(TAG, "update download failed", it)
             tell("Не удалось скачать обновление")
-            return@withContext false
+            return@withContext InstallResult.Refused(shown = true)
         }
         if (!ok) {
             // Not "the checksum did not match": download() returns false for a
@@ -330,7 +333,7 @@ class AndroidPlatformServices(
             // what is usually a full cache or a truncated download. The exact
             // reason is in Log.w; this line must only not lie.
             tell("Не удалось подготовить обновление")
-            return@withContext false
+            return@withContext InstallResult.Refused(shown = true)
         }
         withContext(Dispatchers.Main) {
             runCatching {
@@ -344,23 +347,81 @@ class AndroidPlatformServices(
                 // the very path the owner requires to work.
                 if (needsInstallPermission() && !requestInstallPermission()) {
                     tell("Разрешите установку из этого приложения в настройках и нажмите ещё раз")
-                    return@withContext false
+                    return@withContext InstallResult.Refused(shown = true)
+                }
+                // Before the hand-off, while we can still say something useful.
+                val refusal = apkRefusal(
+                    readApk(target),
+                    context.packageName,
+                    installedVersionCode,
+                    ownSigner,
+                )
+                if (refusal != null) {
+                    Log.w(TAG, "refusing to hand over the installer: $refusal")
+                    tell("$refusal. Обновление не установлено.")
+                    return@withContext InstallResult.Refused(shown = true)
                 }
                 context.startActivity(
                     Intent(Intent.ACTION_VIEW, uri)
                         .setDataAndType(uri, "application/vnd.android.package-archive")
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
-                true
+                InstallResult.HandedOff
             }.getOrElse {
                 Log.w(TAG, "cannot start the installer", it)
                 Toast.makeText(context, "Не удалось открыть установщик", Toast.LENGTH_LONG).show()
-                false
+                InstallResult.Refused(shown = true)
             }
         }
     }
 
-    /** Above API 26 this app still needs to be allowed to install packages. */
+    /** versionCode of what is running right now, or 0 when it cannot be read. */
+private val installedVersionCode: Long by lazy {
+    runCatching {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode
+        else @Suppress("DEPRECATION") (info.versionCode.toLong())
+    }.getOrDefault(0L)
+}
+
+private fun signerFingerprint(raw: Array<android.content.pm.Signature>): String {
+    val digest = java.security.MessageDigest.getInstance("SHA-256")
+    return raw.map {
+        digest.digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) }
+    }.sorted().joinToString(";")
+}
+
+/** Signer of the running app, so a differently signed release can be refused. */
+private val ownSigner: String? by lazy {
+    runCatching {
+        @Suppress("DEPRECATION")
+        val info = context.packageManager.getPackageInfo(
+            context.packageName,
+            android.content.pm.PackageManager.GET_SIGNATURES,
+        )
+        @Suppress("DEPRECATION")
+        signerFingerprint(info.signatures ?: return@runCatching null)
+    }.getOrNull()
+}
+
+private fun readApk(file: java.io.File): ApkFacts? = runCatching {
+    val pm = context.packageManager
+    @Suppress("DEPRECATION")
+    val info = pm.getPackageArchiveInfo(file.absolutePath, 0) ?: return null
+    val signatures = runCatching {
+        @Suppress("DEPRECATION")
+        val raw = info.signatures ?: return@runCatching null
+        signerFingerprint(raw)
+    }.getOrNull()
+    ApkFacts(
+        packageName = info.packageName.orEmpty(),
+        versionCode = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else
+            @Suppress("DEPRECATION") info.versionCode.toLong(),
+        signer = signatures,
+    )
+}.getOrNull()
+
+/** Above API 26 this app still needs to be allowed to install packages. */
     private fun needsInstallPermission(): Boolean =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !context.packageManager.canRequestPackageInstalls()

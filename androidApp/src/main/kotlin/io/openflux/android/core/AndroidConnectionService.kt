@@ -110,6 +110,15 @@ class AndroidConnectionService(
     /** A run waiting for its service to come up. */
     @Volatile private var pending: Run? = null
 
+    /**
+     * Guards the check-then-act pairs over [run] and [pending].
+     *
+     * @Volatile on its own does not make "is this still the current run?" and
+     * "make it not current" one step. The desktop's cleanup already learned
+     * this; without this monitor the same hole is here.
+     */
+    private val runLock = Any()
+
     /** The core's pending check shown now, and how the user left it. */
     @Volatile private var captchaUrl: String? = null
     @Volatile private var captchaSolved = false
@@ -151,6 +160,20 @@ class AndroidConnectionService(
             // Not just the message: an exception with no message is the norm
             // for several of these, and "Ошибка" tells the user nothing while
             // the class name at least identifies it in a bug report.
+            //
+            // The rollback too. beginGuarded publishes `run` and `pending`
+            // before it can still fail - startForegroundService throws
+            // ForegroundServiceStartNotAllowedException from the background
+            // start restrictions, which is exactly when a user presses connect
+            // from a notification - and a run that was never started stays
+            // installed as the current one. The next disconnect then halts a
+            // run that does not exist, and the next connect stops "the current
+            // run" first, so the profile the user just picked is replaced by
+            // the one they picked before it.
+            synchronized(runLock) {
+                if (run?.profile === profile) run = null
+                if (pending?.profile === profile) pending = null
+            }
             fail(profile, cause.message ?: "${cause.javaClass.simpleName} без описания")
         }
     }
@@ -211,8 +234,39 @@ class AndroidConnectionService(
             Kind.Exit -> Mobile.stopExit()
         }
         drainLogs(current)
-        if (run === current) run = null
-        if (pending === current) pending = null
+        // The same identity rule the desktop cleanup uses, and for the same
+        // reason. Mobile.stop* and drainLogs are blocking calls made after
+        // cancel(), so a halt issued for an old run can still be running when
+        // connect() has already installed the next one - and this function used
+        // to clear _socksAddress, _exitAddress, _exitShareLink and _traffic
+        // unconditionally. The user then saw "подключено" with no SOCKS
+        // address, and on Android the difference is worse than on the desktop:
+        // _exitShareLink is the QR code and the share link, so they vanished
+        // under a working exit node.
+        //
+        // The clearing is guarded by the same monitor as the identity test, for the
+        // same reason the desktop cleanup needed one. @Volatile makes each
+        // field's read and write visible but does nothing about a pair of them:
+        // between `run === current` and `run = null` another thread could
+        // install the next run and then have it nulled by this one. And the
+        // tempting `if (run === current) { run = null; ... }` is no better -
+        // the check is still a separate read from the write.
+        //
+        // Readers outside this monitor stay unsynchronized, as they already
+        // were; what is fixed here is the check-then-act between writers, which
+        // is the defect that actually had a reproduction.
+        val mine = synchronized(runLock) {
+            if (run === current) {
+                run = null
+                true
+            } else {
+                false
+            }
+        }
+        synchronized(runLock) {
+            if (pending === current) pending = null
+        }
+        if (!mine) return
         _socksAddress.value = null
         _exitAddress.value = ExitAddress.Unknown
         _exitShareLink.value = null

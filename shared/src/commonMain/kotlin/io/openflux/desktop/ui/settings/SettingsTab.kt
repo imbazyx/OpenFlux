@@ -52,6 +52,7 @@ import io.openflux.desktop.model.ThemeMode
 import io.openflux.desktop.model.isActive
 import io.openflux.desktop.service.AppContainer
 import io.openflux.desktop.service.AppUpdate
+import io.openflux.desktop.service.InstallResult
 import io.openflux.desktop.service.UpdateCheck
 import io.openflux.desktop.ui.components.LocalToaster
 import io.openflux.desktop.service.LocalAppContainer
@@ -643,8 +644,16 @@ private fun AboutSettings(model: SettingsScreenModel) {
                     // the app is the platform's own business: only the desktop
                     // needs it, because Windows Installer will not replace the
                     // running executable.
+                    // Every refused path on Android has already named its own cause - "grant the
+                    // permission and press again", "signed with a different key" - so a
+                    // blanket "Не удалось установить обновление" on top of that told
+                    // the user the whole thing had failed immediately after they had
+                    // been given the next action. Refused(shown) is what separates
+                    // the two; the desktop explains nothing and still gets its
+                    // message from here.
                     try {
-                        if (!platform.installUpdate(pending)) {
+                        val result = platform.installUpdate(pending)
+                        if (result is InstallResult.Refused && !result.shown) {
                             toaster.show("Не удалось установить обновление", Tone.Danger)
                         }
                     } finally {

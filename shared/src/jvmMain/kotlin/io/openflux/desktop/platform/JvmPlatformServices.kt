@@ -11,6 +11,7 @@ import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import io.openflux.desktop.service.AppUpdate
+import io.openflux.desktop.service.InstallResult
 import io.openflux.desktop.service.UpdateCheck
 import io.openflux.desktop.service.PlatformServices
 import io.openflux.desktop.web.BrowserLog
@@ -292,7 +293,7 @@ class JvmPlatformServices(
      * window. The screen used to call the installer and then sit there running,
      * so the update could never actually replace anything.
      */
-    override suspend fun installUpdate(update: AppUpdate): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun installUpdate(update: AppUpdate): InstallResult = withContext(Dispatchers.IO) {
         val target = File(System.getProperty("java.io.tmpdir"), "OpenFlux-${update.version}-setup.msi")
         // The manifest is indexed by the PUBLISHED asset name, not by whatever
         // this method happens to call the file on disk. They differ ("-setup"
@@ -301,7 +302,10 @@ class JvmPlatformServices(
         // because the "installing unverified" warning was only on Android.
         val published = "OpenFlux-${update.version}$WINDOWS_INSTALLER_SUFFIX"
         val downloaded = download(update.downloadUrl, target, publishedSha256(update.version, published), published)
-        if (!downloaded) return@withContext false
+        // shown = false throughout: this platform has no way to raise a toast,
+        // so the shared UI is what tells the user, and it needs to know that
+        // nothing has been said yet.
+        if (!downloaded) return@withContext InstallResult.Refused(shown = false)
 
         val started = runCatching {
             ProcessBuilder("msiexec", "/i", target.absolutePath)
@@ -309,7 +313,7 @@ class JvmPlatformServices(
                 .start()
             true
         }.getOrDefault(false)
-        if (!started) return@withContext false
+        if (!started) return@withContext InstallResult.Refused(shown = false)
 
         // Long enough for the installer window to come up on top of us, short
         // enough that the user does not read it as a hang. The shutdown hook
@@ -319,7 +323,7 @@ class JvmPlatformServices(
             Thread.sleep(1_500)
             Runtime.getRuntime().exit(0)
         }, "openflux-exit-for-update").apply { isDaemon = true }.start()
-        true
+        InstallResult.HandedOff
     }
 
     /**
