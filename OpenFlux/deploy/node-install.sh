@@ -587,11 +587,23 @@ EOF
             ufw allow "$PORT/tcp" comment "openflux-node $CHANNEL" >/dev/null 2>&1 \
                 || apply_fail firewall "не удалось открыть порт в ufw" ;;
         ufw-inactive)
-            # Same commands, same record. `ufw allow` persists to
-            # /etc/ufw/user.rules and exits 0 while ufw is disabled, so the rule
-            # is already in place for the day the admin runs `ufw enable` - which
-            # is the whole point: `none` left nothing, and that first enable then
-            # dropped this channel with no rule to re-add and no record to read.
+            # The FW_PREEXISTED probe is NOT optional here, exactly as in the
+            # ufw arm above, and `ufw status` lists rules while inactive just as
+            # it does when active - so the probe works identically. Without it
+            # rollback() runs `ufw delete allow $PORT/tcp` unconditionally and
+            # removes a rule this install never added: an admin's own dormant
+            # rule for a service that happened to be down. `ufw delete allow`
+            # matches the rule spec, not the comment we write, so the comment
+            # does not save it.
+            # `ufw status` CANNOT be probed here: with ufw disabled it prints only
+            # "Status: inactive" and no rule list at all - verified on ufw 0.36.
+            # So the probe below reads the persisted rules directly, which is
+            # where ufw keeps them across the enable/disable cycle and where an
+            # admin's own rule survives. `ufw delete allow` matches the tuple,
+            # not the comment we write, so without this rollback removes a rule
+            # this install never added.
+            grep -qE "^### tuple ### allow tcp $PORT[[:space:]]" /etc/ufw/user.rules 2>/dev/null \
+                && FW_PREEXISTED=1
             CREATED_FW=ufw
             ufw allow "$PORT/tcp" comment "openflux-node $CHANNEL" >/dev/null 2>&1 \
                 || apply_fail firewall "не удалось сохранить правило в ufw (брандмауэр выключен)" ;;

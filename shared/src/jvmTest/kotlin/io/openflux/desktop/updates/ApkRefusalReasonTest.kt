@@ -154,13 +154,35 @@ class ApkRefusalTest {
     }
 
     @Test
-    fun `the signer still outranks the version mismatch`() {
-        // Branch order is load-bearing: this version branch was placed above the
-        // signer check once and shadowed it.
+    fun `the signer outranks a low versionCode`() {
+        // Branch order is load-bearing, and the numbers are chosen so that it
+        // is the ONLY thing that can decide the answer.
+        //
+        // This test was written with 20301 against an installed 20300. 20301 <
+        // 20300 is false, so the versionCode branch did not fire and the signer
+        // won BY ARITHMETIC ACCIDENT. Swapping the two branches back would still
+        // have passed it - which is how a commit that moved only the comment,
+        // and left the code where it was, shipped green.
+        //
+        // 20299 < 20300 is true, so both branches match. Only the order decides
+        // which message comes back, and the signer is the one that names the
+        // remedy: uninstall. A low versionCode needs no action, the system just
+        // refuses it.
         val text = apkRefusal(
-            ApkFacts(pkg, 20301, "cc:dd", versionName = "2.3.1"),
+            ApkFacts(pkg, 20299, "cc:dd", versionName = "2.3.1"),
             pkg, 20300, own, "2.3.0", taggedVersion = "2.3.2",
         )!!
         assertEquals(true, text.contains("ключ"), text)
+    }
+
+    @Test
+    fun `a low versionCode is still named when the signer matches`() {
+        // The other half: after the swap, the versionCode branch must still be
+        // reachable, or the fix would have been "delete it".
+        val text = apkRefusal(
+            ApkFacts(pkg, 20299, own, versionName = "2.3.1"),
+            pkg, 20300, own, "2.3.0", taggedVersion = "2.3.2",
+        )!!
+        assertEquals(true, text.contains("versionCode"), text)
     }
 }

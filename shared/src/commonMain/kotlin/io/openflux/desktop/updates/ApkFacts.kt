@@ -49,17 +49,27 @@ data class ApkFacts(
  */
 fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSigner: String?, installedVersionName: String? = null, taggedVersion: String? = null): String? = when {
     facts == null -> "Скачанный файл не читается как приложение Android"
+    // Package is first and stays first: a file that is not even this app is
+    // the only refusal where nothing else about it is worth saying.
     facts.packageName != ownPackage ->
         "Скачано приложение ${facts.packageName}, а не $ownPackage"
-    // Kept BELOW the signer branch on purpose. It was above it, and shadowed it
-    // the same way the versionName branch did one commit earlier: an APK that
-    // was both mis-signed and carried a lower versionCode named the
-    // versionCode, sending the user after the wrong problem. Same defect, one
-    // branch higher than the one that was fixed.
-    facts.versionCode < installedCode ->
-        "В выпуске versionCode ${facts.versionCode}, он ниже установленного $installedCode — система откажется его ставить"
+    // Signer BEFORE versionCode. It was after it, and shadowed it the same way
+    // the versionName branch did: an APK that was both mis-signed and carried a
+    // lower versionCode named the versionCode, sending the user after the wrong
+    // problem. A release signed with another key cannot be installed at all and
+    // the only remedy is to uninstall, losing their settings; a low versionCode
+    // merely means the system will refuse, with no action needed.
+    //
+    // The first attempt to fix this moved only the COMMENT above this branch and
+    // left the code where it was, so the tree carried a comment asserting the
+    // opposite of what it did. The test that was supposed to pin the order used
+    // a versionCode that made the branch not fire at all, so it passed either
+    // way. Both are fixed here - the swap, and a test whose numbers make the
+    // order the only thing that can decide the answer.
     ownSigner != null && facts.signer != null && facts.signer != ownSigner ->
         "Выпуск подписан другим ключом, чем установленное приложение"
+    facts.versionCode < installedCode ->
+        "В выпуске versionCode ${facts.versionCode}, он ниже установленного $installedCode — система откажется его ставить"
     // Archive against the TAG, which is what the message claims. Comparing only
     // against the installed app misses the case this was written for: a user on
     // 2.3.0 offered tag v2.3.2 whose APK was built stale at 2.3.1 gets
