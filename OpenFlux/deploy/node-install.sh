@@ -662,8 +662,16 @@ cmd_remove() {
     # to stop kept running with none of them, and `remove` printed ok:true.
     # A live openflux-node with no configuration is a process nobody has a
     # handle on any more, not a removed channel.
+    # The message deliberately does NOT claim "юнит работает". `systemctl
+    # disable --now` also exits non-zero for a masked unit or one whose file
+    # vanished, and 2>&1 to /dev/null discards the reason, so the only
+    # honest statement here is that the stop failed and the operator must look.
+    # Claiming the unit is live would send them after a running process when the
+    # real state is a masked unit - and, since `fail` exits before the firewall
+    # record is read, the rule stays open too. Re-run and read the systemd
+    # error directly.
     systemctl disable --now "openflux-node@$CHANNEL" >/dev/null 2>&1 \
-        || fail remove "не удалось остановить openflux-node@$CHANNEL; юнит работает, а его конфигурация сейчас будет удалена"
+        || fail remove "не удалось остановить openflux-node@$CHANNEL; конфигурация и правило брандмауэра оставлены как есть, канал не удалён"
     # Look in CONF first, then in STATE, because the record moved there.
     #
     # Before this was corrected, the record was written to `$dir/firewall` while
@@ -793,8 +801,15 @@ cmd_upgrade() {
         # existing channel, and the unit template has one ExecStart. An operator
         # following that hint would re-point the global symlink by hand - taking
         # every healthy channel off the new core to fix one.
-        printf '{"ok":false,"core":"%s","restarted":%s,"failed":%s,"hint":"отката по каналу нет: каналы $failed остались на ядре %s; предыдущие ядра сохранены в %s - вернуть все каналы можно, переключив %s/openflux на openflux-node-v<прежняя> и перезапустив их"}\n' \
-            "$CORE_VERSION" "$(json_list "$@")" "$(json_list $failed)" "$CORE_VERSION" "$BIN_DIR" "$BIN_DIR"
+        # Honest about WHICH core each failed channel is on. Only the channel
+        # that restarted and then failed is on the new one; the ones skipped
+        # after it, and the ones that were not running, were never restarted and
+        # still hold the previous core in memory - while the global symlink has
+        # already moved. Saying they all "stayed on $CORE_VERSION" was true of
+        # strictly fewer channels than the old `break` covered, because the
+        # stopped-flag change puts more channels in this list.
+        printf '{"ok":false,"core":"%s","restarted":%s,"failed":%s,"hint":"отката по каналу нет: из перечисленных только канал, который перезапустился и не поднялся, остался на ядре %s; остальные не перезапускались и держат в памяти прежнее ядро, хотя %s/openflux уже указывает на новое. Вернуть все каналы можно, переключив %s/openflux на openflux-node-v<прежняя> и перезапустив их. Прежние ядра сохранены в %s"}\n' \
+            "$CORE_VERSION" "$(json_list "$@")" "$(json_list $failed)" "$CORE_VERSION" "$BIN_DIR" "$BIN_DIR" "$BIN_DIR"
         return 1
     fi
     # Older cores nothing points at any more - only once every channel is up.
