@@ -248,20 +248,40 @@ class AndroidPlatformServices(
 
         var newestTag = wanted.first()
         var newestProbes: List<AssetProbe> = emptyList()
+        // A ceiling for the whole walk, not per request. Each tag costs up to
+        // abis.size probes, five tags are walked, and a network that blackholes
+        // github.com answers nothing rather than refusing - so without this the
+        // button sat on "Проверяю…" and disabled for minutes with no message
+        // and no way out but navigating away. 45s is far above a real check
+        // (one feed fetch plus a few HEADs) and far below "the user gave up".
+        val deadline = System.currentTimeMillis() + CHECK_BUDGET_MS
         for (tag in wanted.take(MAX_RELEASES_TO_CHECK)) {
+            if (System.currentTimeMillis() > deadline) {
+                Log.w(TAG, "update check exceeded ${CHECK_BUDGET_MS}ms, stopping at $tag")
+                return@withContext UpdateCheck.Failed(
+                    missingAssetMessage(newestTag, newestProbes + AssetProbe.Unreachable("превышено время проверки")),
+                )
+            }
             val version = tag.removePrefix(TAG_PREFIX)
             val urlFor = { abi: String ->
                 "$releaseDownloadBase/$tag/OpenFluxAndroid-$version-androidApp-$abi-release.apk"
             }
-            // Probed lazily, stopping at the first hit. The old code evaluated
+            // Probed once, lazily, stopping at the first hit. The old code evaluated
             // every ABI before looking at any of them, which on an unreachable
             // host is four sequential timeouts behind a disabled button.
-            val hit = abis.firstOrNull { probe(urlFor(it)) is AssetProbe.Found }
-            if (hit != null) {
+            //
+            // The results are kept, because the message at the end needs to say
+            // WHY the newest release was skipped - 404 on every ABI, or a host
+            // that could not be reached. Re-probing to collect them issued five
+            // more HEAD requests per tag, on the one path that has been at
+            // pains to stay off GitHub's rate limit.
+            val probes = abis.map { probe(urlFor(it)) }
+            val hit = probes.indexOfFirst { it is AssetProbe.Found }
+            if (hit >= 0) {
                 return@withContext UpdateCheck.Available(
                     AppUpdate(
                         version = version,
-                        downloadUrl = urlFor(hit),
+                        downloadUrl = urlFor(abis[hit]),
                         versionCode = versionCodeOf(version),
                         newer = true,
                     ),
@@ -269,7 +289,7 @@ class AndroidPlatformServices(
             }
             // Keep walking: an older release may still carry a build this device
             // can install. Remember why the newest one failed for the message.
-            if (tag == newestTag) newestProbes = abis.map { probe(urlFor(it)) }
+            if (tag == newestTag) newestProbes = probes
         }
         UpdateCheck.Failed(missingAssetMessage(newestTag, newestProbes))
     }
@@ -349,13 +369,21 @@ class AndroidPlatformServices(
                     tell("Разрешите установку из этого приложения в настройках и нажмите ещё раз")
                     return@withContext InstallResult.Refused(shown = true)
                 }
-                // Before the hand-off, while we can still say something useful.
-                val refusal = apkRefusal(
-                    readApk(target),
-                    context.packageName,
-                    installedVersionCode,
-                    ownSigner,
-                )
+                // readApk and both lazy values are evaluated here, on the IO dispatcher this
+                // block already runs on. getPackageArchiveInfo is a synchronous
+                // binder into system_server that parses the whole archive -
+                // tens of megabytes - so doing it on Main stalls the UI for
+                // hundreds of milliseconds on the one path the owner cares
+                // about. Toast and startActivity are the only things that need
+                // Main, and both are below.
+                val refusal = withContext(Dispatchers.IO) {
+                    apkRefusal(
+                        readApk(target),
+                        context.packageName,
+                        installedVersionCode,
+                        ownSigner,
+                    )
+                }
                 if (refusal != null) {
                     Log.w(TAG, "refusing to hand over the installer: $refusal")
                     tell("$refusal. Обновление не установлено.")
@@ -406,8 +434,19 @@ private val ownSigner: String? by lazy {
 
 private fun readApk(file: java.io.File): ApkFacts? = runCatching {
     val pm = context.packageManager
+    // GET_SIGNATURES, not 0. PackageManagerService only collects the archive's
+    // certificates when one of the signature flags is set, and only fills
+    // PackageInfo.signatures under that same condition - so flags=0 returns a
+    // perfectly good PackageInfo whose `signatures` is always null. The first
+    // version of this passed 0, which made the whole signer comparison inert:
+    // a release built from another key produced signer=null on both sides, the
+    // guard in apkRefusal saw two nulls and passed it through, and the APK went
+    // to PackageInstaller to be refused in silence - exactly the case this
+    // check exists to name. The unit test that "proved" the unknown-signer
+    // case passed for that reason.
     @Suppress("DEPRECATION")
-    val info = pm.getPackageArchiveInfo(file.absolutePath, 0) ?: return null
+    val info = pm.getPackageArchiveInfo(file.absolutePath, android.content.pm.PackageManager.GET_SIGNATURES)
+        ?: return null
     val signatures = runCatching {
         @Suppress("DEPRECATION")
         val raw = info.signatures ?: return@runCatching null
@@ -612,6 +651,9 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
 
         /** How many older releases to try before giving up on a usable APK. */
         private const val MAX_RELEASES_TO_CHECK = 5
+
+/** Wall-clock ceiling for one whole check, all tags and all ABIs. */
+private const val CHECK_BUDGET_MS = 45_000L
 
         private val releaseDownloadBase = "https://github.com/$RELEASE_REPO/releases/download"
 

@@ -387,35 +387,65 @@ class CoreConnectionService(
         // says "connected" - and on the desktop it restored the Windows system
         // proxy in the middle of a working core.
         //
-        // The check and the clearing are inside ONE synchronized block, and the
-        // clearing inside a second one, because `if (synchronized { ... })` is
-        // an expression: the monitor is released as soon as the condition has
-        // been evaluated, and everything in the then-branch runs outside it. A
-        // run installed in that gap had its state wiped - including
-        // restoreSystemProxy(), which markConnected will not redo because of
-        // its own `if (current !is Connected)` gate, so the browser stayed
-        // offline until the next connect. That was the shape of the first
-        // version of this fix: the comment claimed an atomicity the code did
-        // not have.
+        // The check and the clearing are ONE step: the decision is snapshotted
+        // inside the monitor and the snapshot is what is tested afterwards.
         //
-        // restoreSystemProxy() and captchaBrowser.close() are held back to the
-        // second block rather than run under the monitor. Both are @Synchronized
-        // and both touch the Windows registry and a browser process; holding
-        // this monitor across them would be a second, much longer window.
-        synchronized(lock) {
-            if (this.run === run) this.run = null
+        // `if (synchronized(lock) { this.run === run }) { ... }` does NOT do
+        // that. It is an expression: the monitor is released as soon as the
+        // condition has been evaluated, and the whole then-branch runs outside
+        // it. That was the first version of this fix.
+        //
+        // The second version was worse and much harder to see. It nulled the
+        // field under the monitor and then re-derived the condition from the
+        // field:
+        //
+        //     synchronized(lock) { if (this.run === run) this.run = null }
+        //     if (synchronized(lock) { this.run !== run }) return
+        //
+        // `run` is non-null, so once the field has been nulled it is trivially
+        // `!== run`; and when the nulling did not happen, it was already a
+        // different run and also `!== run`. Both paths returned. Everything
+        // below - the SOCKS address, the traffic counters, the captcha state,
+        // pendingCaptcha, captchaBrowser.close() and restoreSystemProxy() - was
+        // unreachable on every input. A user who answered a Yandex captcha,
+        // disconnected, and came back found the captcha browser still on screen
+        // with no way to dismiss it, and pendingCaptcha still pointing at the
+        // previous core's check, so the next "open the check page" offered the
+        // new core the dead run's URL and cookies.
+        //
+        // One branch, one decision, taken where the state is still held.
+        //
+        // Both calls below are made with the monitor released, deliberately. Two reasons,
+        // and the first is a deadlock:
+        //
+        // restoreSystemProxy() is @Synchronized on `this`, and it is called here
+        // while holding `lock`. applySystemProxy() is @Synchronized on `this` and
+        // takes `lock`. That is AB-BA: one thread holding `lock` waiting for
+        // `this`, another holding `this` waiting for `lock`. Both run on
+        // Dispatchers.IO, so it can deadlock. (captchaBrowser.close() is not
+        // @Synchronized at all - an earlier version of this comment claimed it
+        // was, and used that false premise to justify holding `lock`.)
+        //
+        // The second is that both touch the Windows registry and a browser
+        // process and are far too slow to sit inside a monitor that the connect
+        // path also needs.
+        val mine = synchronized(lock) {
+            if (this.run === run) {
+                this.run = null
+                true
+            } else {
+                false
+            }
         }
-        if (synchronized(lock) { this.run !== run }) return
+        if (!mine) return
 
         _socksAddress.value = null
         _exitAddress.value = ExitAddress.Unknown
         _traffic.value = TrafficStats()
         _captcha.value = null
         pendingCaptcha = null
-        synchronized(lock) {
-            captchaBrowser.close()
-            restoreSystemProxy()
-        }
+        captchaBrowser.close()
+        restoreSystemProxy()
     }
 
     private fun killTree(process: Process) {
