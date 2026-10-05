@@ -24,7 +24,7 @@ Produces `ios-app/build/export/OpenFlux.ipa`, distribution-signed for the App St
 
 ## Upload to TestFlight
 1. Create the app record once: App Store Connect > My Apps > **+** > New App,
-   bundle id `com.p1neapplexpress-saharev.openflux`, platform iOS.
+   bundle id `com.imbazyx.openflux`, platform iOS.
 2. Upload the IPA (either option):
    ```bash
    # A) app-specific password (appleid.apple.com)

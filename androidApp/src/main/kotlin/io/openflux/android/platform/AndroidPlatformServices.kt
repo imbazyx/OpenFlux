@@ -394,9 +394,9 @@ class AndroidPlatformServices(
 
     // Not private: AppSelection.save() ticks the revision through [instance].
     companion object {
-        // This fork's own releases, not p1neappleXpress/OpenFluxAndroid: pointing
-        // at the original would offer that repository's releases to our users as
-        // if they were updates to this app. If this repository is renamed or
+        // This repository's own releases: pointing anywhere else would offer
+        // that repository's releases to our users as if they were updates to
+        // this app. If this repository is renamed or
         // moved, this is the one string to change.
         private const val RELEASE_REPO = "imbazyx/OpenFlux"
         private const val TAG_PREFIX = "v"

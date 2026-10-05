@@ -1,6 +1,6 @@
 name: OpenFlux
 options:
-  bundleIdPrefix: com.p1neapplexpress-saharev
+  bundleIdPrefix: com.imbazyx
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true
@@ -42,7 +42,7 @@ targets:
           - packet-tunnel-provider
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.p1neapplexpress-saharev.openflux
+        PRODUCT_BUNDLE_IDENTIFIER: com.imbazyx.openflux
         PRODUCT_NAME: OpenFlux
         INFOPLIST_KEY_CFBundleDisplayName: OpenFlux
         SWIFT_OBJC_BRIDGING_HEADER: OpenFlux/OpenFlux-Bridging-Header.h
@@ -88,7 +88,7 @@ targets:
           - packet-tunnel-provider
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.p1neapplexpress-saharev.openflux.tunnel
+        PRODUCT_BUNDLE_IDENTIFIER: com.imbazyx.openflux.tunnel
         PRODUCT_NAME: OpenFluxTunnel
         SWIFT_OBJC_BRIDGING_HEADER: OpenFluxTunnel/Tunnel-Bridging-Header.h
         SWIFT_VERSION: "5.0"
