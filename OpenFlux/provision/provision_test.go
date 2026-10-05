@@ -3,11 +3,14 @@ package provision
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPinnedScriptHash(t *testing.T) {
@@ -48,6 +51,54 @@ func TestPinnedCommitIsReachable(t *testing.T) {
 			"the pin points at a commit that vanished in a rewrite; "+
 			"point it at the commit that last changed deploy/node-install.sh",
 			PinnedCommit[:12], err, out)
+	}
+}
+
+// TestPinnedURLMatchesLayout is the check that would have caught the 404.
+//
+// Reachability and hash both passed while the URL was broken: the pinned
+// commit was on main, and the bytes at the corrected path hash to exactly
+// PinnedSHA256. What was wrong is the PATH - the core lives under OpenFlux/,
+// and asking for a top-level deploy/node-install.sh 404'd for every user, so
+// installing a node of one's own failed outright.
+//
+// Asserting against the real layout catches a moved or renamed file and needs
+// no network. A second test that fetches the URL would catch what this one
+// cannot - a repository that is private, renamed, or deleted - but it must
+// skip in CI, because a network test in the unit suite is a test that fails
+// when someone else's Wi-Fi hiccups.
+func TestPinnedURLMatchesLayout(t *testing.T) {
+	const want = "openflux/deploy/node-install.sh"
+	if got := strings.ToLower(PinnedPath); got != want {
+		t.Fatalf("PinnedPath is %q, but the script is at %q in this repository; "+
+			"GitHub serves raw paths from the repo root, so this is a 404 for every user",
+			got, want)
+	}
+	if !strings.HasSuffix(Pinned().URL, "/"+PinnedPath) {
+		t.Fatalf("Pinned().URL %q does not end with %q", Pinned().URL, "/"+PinnedPath)
+	}
+}
+
+func TestPinnedURLResolves(t *testing.T) {
+	if os.Getenv("OPENFLUX_NET") == "" {
+		t.Skip("OPENFLUX_NET=1 to check the pinned URL over the network")
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(Pinned().URL)
+	if err != nil {
+		t.Fatalf("fetching %s: %v", Pinned().URL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("%s returned %s: installing a node of one's own would fail for every user",
+			Pinned().URL, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ScriptHash(body); got != PinnedSHA256 {
+		t.Fatalf("the served script hashes %s, pinned %s", got, PinnedSHA256)
 	}
 }
 

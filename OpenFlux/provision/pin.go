@@ -6,8 +6,8 @@ package provision
 // changes, commit it, then point PinnedCommit at that commit.
 const (
 	PinnedRepo   = "imbazyx/OpenFlux"
-	PinnedCommit = "7879e91eea9d1ce3e7da24bf05e6c7cd1c0d5d87"
-	PinnedSHA256 = "022bc93273096e53538c148610163e379f6962564c838b9813aed7daa71fc469"
+	PinnedCommit = "5691f59c110696c9aa13f6449b2138da61bbd3a0"
+	PinnedSHA256 = "6f86e5d4d683277f0ac674cb01f4c1aee027f7dd9d617d08e27ff8b705fd17e2"
 )
 
 // PinnedCommit must stay reachable from main.
@@ -21,10 +21,24 @@ const (
 // That is the whole lesson: check the pin against `git merge-base
 // --is-ancestor <commit> main`, not only against the SHA-256.
 
+// PinnedPath is the script's location inside the repository.
+//
+// The OpenFlux/ prefix is not decoration. The pinned repository is this
+// project itself, and the Go core - the script included - lives in the
+// OpenFlux/ subdirectory. Asking for a top-level deploy/node-install.sh
+// returned 404 from GitHub for every user, on every channel, so "Своя нода"
+// failed outright with "сервер не смог скачать скрипт установки с GitHub".
+//
+// Reachability is not enough either: PinnedCommit was on main and the URL was
+// still 404. TestPinnedURLMatchesLayout is what would have caught it, because
+// it compares the requested path against where the file actually is in this
+// checkout.
+const PinnedPath = "OpenFlux/deploy/node-install.sh"
+
 // Pinned returns the script location for this build.
 func Pinned() Script {
 	return Script{
-		URL:    "https://raw.githubusercontent.com/" + PinnedRepo + "/" + PinnedCommit + "/deploy/node-install.sh",
+		URL:    "https://raw.githubusercontent.com/" + PinnedRepo + "/" + PinnedCommit + "/" + PinnedPath,
 		SHA256: PinnedSHA256,
 	}
 }
