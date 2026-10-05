@@ -74,6 +74,12 @@ class ApkRefusalTest {
         // Android returns no signatures for some archive reads. Not knowing is
         // not the same as it being wrong, and refusing every such release would
         // break the button for exactly the users who need it.
+        //
+        // This case is only meaningful because readApk now asks for
+        // GET_SIGNATURES. It used to pass flags=0, which makes
+        // PackageManagerService skip certificate collection entirely, so the
+        // signer was ALWAYS null on this path and this assertion held for every
+        // input - it was pinning the defect rather than the behaviour.
         assertNull(refuse(20302, null))
     }
 

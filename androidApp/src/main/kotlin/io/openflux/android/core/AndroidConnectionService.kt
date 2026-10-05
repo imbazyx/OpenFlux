@@ -199,15 +199,26 @@ class AndroidConnectionService(
         }
         bridge.requestNotifications()
         val next = Run(profile, current, kind)
-        run = next
+        // Under the monitor, like the reads in halt(). Writing `pending` outside
+        // it left this window: connect sets pending and calls
+        // startForegroundService, then releases `lifecycle` and returns; the
+        // system calls onServiceStarted only afterwards. A disconnect landing in
+        // between clears pending and run and calls finishService, and
+        // onServiceStarted then reads the `pending` it already captured and
+        // goes on to launch the core. The tunnel is up with no Run installed:
+        // the screen says "Отключено", the phone is routed, and a second
+        // disconnect does nothing because there is no run to stop.
+        val running = service
+        synchronized(runLock) {
+            run = next
+            if (running == null) pending = next
+        }
         _socksAddress.value = if (kind == Kind.Proxy) proxyAddress(current) else null
         _state.value = ConnectionState.Connecting(profile, current.mode, System.currentTimeMillis())
         log(LogLevel.Info, "Запуск ядра: ${profile.name} (${kind.label})")
-        val running = service
         if (running != null) {
             launch(next, running)
         } else {
-            pending = next
             ContextCompat.startForegroundService(context, Intent(context, CoreService::class.java))
         }
     }
@@ -302,11 +313,19 @@ class AndroidConnectionService(
 
     internal fun onServiceStarted(started: CoreService) {
         service = started
-        val next = pending
-        pending = null
+        // Read and cleared together. `val next = pending; pending = null` was
+        // two unsynchronized statements on the service's thread: a disconnect
+        // landing between them took the value away, and this method still went
+        // on to launch a core for a run that had just been cancelled - the
+        // tunnel up with nothing to stop it.
+        val next = synchronized(runLock) {
+            val p = pending
+            pending = null
+            p
+        }
         when {
             next != null -> launch(next, started)
-            run == null -> finishService() // started again by the system without a connection
+            synchronized(runLock) { run == null } -> finishService() // started again by the system without a connection
         }
     }
 

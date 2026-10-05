@@ -221,6 +221,10 @@ write_cookies() {
     # its own state directory (systemd only creates it when missing).
     mkdir -p "$STATE_ROOT" && chmod 0755 "$STATE_ROOT" || return 1
     mkdir -p "$cookies_dir" || return 1
+    # Only if this run is what brought it into existence. The sign-in written
+    # here is the one thing on the node there is no way to get back, and
+    # rollback deletes the directory when the install fails later.
+    [ "$STATE_PREEXISTED" = 0 ] && CREATED_STATE=1
     tmp="$cookies_dir/.cookies.json.new"
     if have base64; then
         printf '%s' "$COOKIES" | base64 -d > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
@@ -296,14 +300,31 @@ CREATED_USER=0; CREATED_UNIT=0; CREATED_BIN=0; CREATED_CONF=0; CREATED_FW=""; ST
 # Where $BIN_DIR/openflux pointed before this run touched it, so rollback can put
 # it back. Empty means there was no symlink, and rollback removes ours.
 PREV_LINK=""
+# What was already there before this run touched it. 1 = it existed. Rollback
+# removes nothing that was not created here.
+CONF_PREEXISTED=0; STATE_PREEXISTED=0; FW_PREEXISTED=0
+CREATED_STATE=0
 
 rollback() {
     [ "$STARTED" = 1 ] && systemctl disable --now "openflux-node@$CHANNEL" >/dev/null 2>&1
+    # Only a rule this run actually added. `ufw allow` on a port that is
+    # already allowed is a no-op that still returns 0, and `ufw delete allow`
+    # matches on the rule spec, not on the comment we wrote - so unconditionally
+    # deleting removed the admin's own dormant `ufw allow 8443/tcp` for a
+    # service that happened to be down. port_busy only rejects a LISTENING
+    # socket, so such a port was freely pickable.
     case "$CREATED_FW" in
-        ufw) ufw delete allow "$PORT/tcp" >/dev/null 2>&1 ;;
-        firewalld) firewall-cmd --permanent --remove-port="$PORT/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
+        ufw) [ "$FW_PREEXISTED" = 0 ] && ufw delete allow "$PORT/tcp" >/dev/null 2>&1 ;;
+        firewalld) [ "$FW_PREEXISTED" = 0 ] && firewall-cmd --permanent --remove-port="$PORT/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
     esac
-    [ "$CREATED_CONF" = 1 ] && rm -rf "${CONF_ROOT:?}/$CHANNEL" "${STATE_ROOT:?}/$CHANNEL"
+    # Two separate guards, because the two directories have different histories.
+    # $CONF_ROOT/$CHANNEL is checked for existence before it is created; the
+    # state directory never was, so a channel whose config was removed out of
+    # band kept its Yandex sign-in - the one thing there is no way to get back -
+    # and the next failed install deleted it. Nothing is removed that was not
+    # created by this run.
+    [ "$CREATED_CONF" = 1 ] && [ "$CONF_PREEXISTED" = 0 ] && rm -rf "${CONF_ROOT:?}/$CHANNEL"
+    [ "$CREATED_STATE" = 1 ] && rm -rf "${STATE_ROOT:?}/$CHANNEL"
     [ "$CREATED_UNIT" = 1 ] && rm -f "$UNIT_FILE" && systemctl daemon-reload >/dev/null 2>&1
     if [ "$CREATED_BIN" = 1 ]; then
         rm -f "$BIN_DIR/openflux-$CORE_VERSION"
@@ -427,6 +448,13 @@ cmd_apply() {
 
     mkdir -p "$CONF_ROOT" && chmod 0755 "$CONF_ROOT"
     dir="$CONF_ROOT/$CHANNEL"
+    # Recorded BEFORE the mkdir, because after it the answer is always the same.
+    # The same question is asked of the state directory: it is created on demand
+    # further down and may well have survived from an earlier install whose
+    # config was removed by hand, in which case it holds the only copy of the
+    # Yandex sign-in.
+    [ -e "$dir" ] && CONF_PREEXISTED=1
+    [ -e "$STATE_ROOT/$CHANNEL" ] && STATE_PREEXISTED=1
     mkdir "$dir" || apply_fail config "не удалось создать $dir"
     CREATED_CONF=1
     printf '%s\n' "$KEY" > "$dir/encryption-key"
@@ -472,10 +500,19 @@ EOF
 
     case "$(firewall_kind)" in
         ufw)
+            # Asked before the rule is added. `ufw allow` on a port that is
+            # already permitted is a no-op that still exits 0, and `ufw delete
+            # allow` matches on the rule spec rather than on the comment we
+            # write - so an admin's own dormant `ufw allow 8443/tcp` for a
+            # service that was down at the time was picked up by port_busy
+            # (which only rejects a LISTENING socket) and then deleted by
+            # rollback, taking a rule this run never added.
+            ufw status | grep -qE "^$PORT/tcp[[:space:]]" && FW_PREEXISTED=1
             ufw allow "$PORT/tcp" comment "openflux-node $CHANNEL" >/dev/null 2>&1 \
                 || apply_fail firewall "не удалось открыть порт в ufw"
             CREATED_FW=ufw ;;
         firewalld)
+            firewall-cmd --permanent --query-port="$PORT/tcp" >/dev/null 2>&1 && FW_PREEXISTED=1
             # CREATED_FW is set BEFORE the commands, not after. --permanent
             # --add-port writes the permanent zone straight away, so a failure
             # in the --reload that follows left the port open in the config,
