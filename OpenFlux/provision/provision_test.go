@@ -4,7 +4,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +17,37 @@ func TestPinnedScriptHash(t *testing.T) {
 	}
 	if got := ScriptHash(body); got != PinnedSHA256 {
 		t.Fatalf("deploy/node-install.sh changed: sha256 %s, pinned %s; commit it and update pin.go", got, PinnedSHA256)
+	}
+}
+
+// TestPinnedCommitIsReachable is the check TestPinnedScriptHash could not do.
+//
+// The hash test reads the file from the working tree, so it is happy whether
+// the pinned commit is part of the project's history or a stray object that
+// happens to be lying around locally. When the history was rewritten, the pin
+// kept naming a commit that no longer existed on any branch: the test still
+// passed, and the build would have asked GitHub for a URL that only worked
+// for as long as GitHub kept unreachable objects around.
+//
+// A pin is a promise to a machine that does not have this repository. It has
+// to name a commit a fresh clone can actually resolve.
+func TestPinnedCommitIsReachable(t *testing.T) {
+	if len(PinnedCommit) != 40 || strings.ContainsAny(PinnedCommit, "ghijklmnopqrstuvwxyzGHIJKLMNOPQRSTUVWXYZ+-.") {
+		t.Fatalf("PinnedCommit %q is not a full sha1", PinnedCommit)
+	}
+	// Ask git where the repository is rather than guessing: OpenFlux/ is a
+	// subdirectory of the checkout, not its root, and worktrees and submodules
+	// differ again. The first version of this test looked for ../.git, skipped
+	// itself, and reported as coverage while checking nothing.
+	if _, err := exec.Command("git", "rev-parse", "--git-dir").Output(); err != nil {
+		t.Skip("not a git checkout; cannot check reachability")
+	}
+	out, err := exec.Command("git", "merge-base", "--is-ancestor", PinnedCommit, "main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("PinnedCommit %s is not reachable from main: %v\n%s\n"+
+			"the pin points at a commit that vanished in a rewrite; "+
+			"point it at the commit that last changed deploy/node-install.sh",
+			PinnedCommit[:12], err, out)
 	}
 }
 
