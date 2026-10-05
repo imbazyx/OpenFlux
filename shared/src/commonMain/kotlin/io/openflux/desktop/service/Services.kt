@@ -229,8 +229,15 @@ sealed interface UpdateCheck {
      * The check worked, and [latestVersion] - which is what is running - is
      * the newest thing published. Carrying the version is what lets the screen
      * say "2.2.0" instead of only refusing to offer anything.
+     *
+     * [warning] is for a NEWER release that exists but could not be read. The
+     * check succeeded as far as the installed version, so this is not a
+     * failure - but without a field for it the screen said only "2.2.0 -
+     * последняя версия" while a later release was known to exist and to be
+     * broken. That sentence is false, and the reason landed only in the Логи
+     * tab, which the user is not looking at.
      */
-    data class UpToDate(val latestVersion: String) : UpdateCheck
+    data class UpToDate(val latestVersion: String, val warning: String? = null) : UpdateCheck
 
     /** A newer release exists and [update] says how to get it. */
     data class Available(val update: AppUpdate) : UpdateCheck
