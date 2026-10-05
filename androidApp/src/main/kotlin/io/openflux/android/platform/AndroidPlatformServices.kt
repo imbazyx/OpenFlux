@@ -282,7 +282,7 @@ class AndroidPlatformServices(
             // never did - `map` is eager - and saying so while a dead host costs
             // five sequential 18s timeouts is how the budget below came to
             // overshoot by 2x. probe() is bounded per request instead.
-            val probes = abis.map { probe(urlFor(it), deadline) }
+            val probes = abis.mapIndexed { i, abi -> probe(urlFor(abi), deadline, abis.size - i) }
             val hit = probes.indexOfFirst { it is AssetProbe.Found }
             if (hit >= 0) {
                 return@withContext UpdateCheck.Available(
@@ -297,6 +297,18 @@ class AndroidPlatformServices(
             // Keep walking: an older release may still carry a build this device
             // can install. Remember why the newest one failed for the message.
             if (tag == newestTag) newestProbes = probes
+        }
+        // The budget check at the top of the loop cannot catch a budget that ran
+        // out INSIDE the last tag, which is the normal case: one newer release,
+        // one iteration. The user was then told "нет связи с GitHub" or "APK
+        // для этого устройства не отдаётся" for a check that simply took too
+        // long - naming a cause that was never observed. Checked here, where
+        // the whole walk has actually run out.
+        if (System.currentTimeMillis() > deadline) {
+            Log.w(TAG, "update check exceeded ${CHECK_BUDGET_MS}ms after the final tag")
+            return@withContext UpdateCheck.Failed(
+                missingAssetMessage(newestTag, newestProbes + AssetProbe.Unreachable("превышено время проверки")),
+            )
         }
         UpdateCheck.Failed(missingAssetMessage(newestTag, newestProbes))
     }
@@ -401,7 +413,7 @@ class AndroidPlatformServices(
                         .setDataAndType(uri, "application/vnd.android.package-archive")
                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
-                InstallResult.HandedOff
+                InstallResult.HandedOff()
             }.getOrElse {
                 Log.w(TAG, "cannot start the installer", it)
                 Toast.makeText(context, "Не удалось открыть установщик", Toast.LENGTH_LONG).show()
@@ -596,7 +608,7 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
      * so a parser looking for one finds nothing and reports "no update".
      */
     /** What one HEAD request actually established. */
-    private fun probe(url: String, deadline: Long): AssetProbe = runCatching {
+    private fun probe(url: String, deadline: Long, probesLeft: Int = 1): AssetProbe = runCatching {
         val connection = URL(url).openConnection() as HttpURLConnection
         // Clamped to the whole-check budget. 8s connect + 10s read is 18s per
         // request and there are five ABIs per tag, so an unfixed pair could spend
@@ -604,7 +616,7 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
         // was only consulted between tags. On a link where the newest tag was
         // not built for this ABI that turned a findable update into "Failed".
         val now = System.currentTimeMillis()
-        val left = probeTimeout(now, deadline)
+        val left = probeTimeout(now, deadline, probesLeft)
         connection.connectTimeout = left
         connection.readTimeout = left
         connection.requestMethod = "HEAD"
@@ -680,13 +692,19 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
          * Returns at least 1ms: a socket that times out at zero is not a socket,
          * and HttpURLConnection reads 0 as "wait forever".
          */
-        internal fun probeTimeout(nowMs: Long, deadlineMs: Long): Int =
-            // Half of what is left, because the value is applied to BOTH the
-            // connect and the read phase of one socket, so handing each of them
-            // the whole remainder let a single request cost 2x the budget and put
-            // the worst case at ~49s against a 45s ceiling. The doc above says
-            // it bounds "one HEAD request" - this is what makes that true.
-            ((deadlineMs - nowMs) / 2).coerceIn(1L, 8000L).toInt()
+        internal fun probeTimeout(nowMs: Long, deadlineMs: Long, probesLeft: Int = 1): Int =
+            // Divided by the probes still to run, AND by two because the value is
+            // applied to connectTimeout as well as readTimeout.
+            //
+            // The division by two alone was not enough to make this a ceiling.
+            // With the budget fresh it returns the 8s cap, and an arm64 phone has
+            // three ABIs: 3 x (8s connect + 8s read) is 48 seconds against a 45
+            // second ceiling, before the up to 25s the release feed itself can
+            // spend. Dividing by what is actually left to do is what makes the
+            // deadline a deadline rather than a suggestion - and the deadline is
+            // only consulted between TAGS (:263), so with a single newer release
+            // - the normal case - nothing inside the loop was bounding it at all.
+            ((deadlineMs - nowMs) / probesLeft.coerceAtLeast(1) / 2).coerceIn(1L, 8000L).toInt()
 
         /**
          * Only these are app releases. The same feed also carries the core/node

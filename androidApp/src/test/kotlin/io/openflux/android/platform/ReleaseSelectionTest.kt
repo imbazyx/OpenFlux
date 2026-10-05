@@ -26,14 +26,14 @@ class ReleaseSelectionTest {
         val now = 1_000_000L
         val deadline = now + 45_000L
 
-        // Whole budget left: the normal case, unchanged from before.
+        // Whole budget left, nothing left to probe: half of 45s is 22.5s, above
+        // the 8s ceiling, so a fast link never notices the clamp.
         assertEquals(8_000, AndroidPlatformServices.probeTimeout(now, deadline))
 
-        // Nearly spent. Five ABIs per tag and five tags, at a fixed 8s connect
-        // plus 10s read, is 90 seconds inside ONE tag - the 45s ceiling was only
-        // consulted between tags, so the check ran to roughly 2x its budget and
-        // could report Failed for an update one more tag would have found.
-        assertEquals(3_000, AndroidPlatformServices.probeTimeout(now + 42_000, deadline))
+        // Nearly spent. Half of what is left, because the same value goes to
+        // connectTimeout AND readTimeout: handing each phase the whole remainder
+        // put the worst case at ~49s against a 45s ceiling.
+        assertEquals(1_500, AndroidPlatformServices.probeTimeout(now + 42_000, deadline))
 
         // At the deadline and past it. Zero is not a usable timeout:
         // HttpURLConnection reads 0 as "wait forever", the exact opposite.
@@ -42,26 +42,55 @@ class ReleaseSelectionTest {
     }
 
     @Test
+    fun `the whole walk of one tag fits the ceiling, not just a single request`() {
+        val now = 1_000_000L
+        val deadline = now + 45_000L
+
+        // The deadline is only consulted between TAGS, so with one newer release
+        // - the normal case - nothing inside the loop bounded it. An arm64 phone
+        // has three ABIs, and the old per-request clamp handed each of them the
+        // whole remainder when the budget was fresh: 3 x (8s + 8s) = 48s against
+        // a 45s ceiling, plus up to 25s already spent on the feed. That is two
+        // minutes on a disabled "Проверяю…" button.
+        val abis = 3
+        var spent = 0L
+        for (i in 0 until abis) {
+            spent += AndroidPlatformServices.probeTimeout(now + spent, deadline, abis - i).toLong() * 2
+        }
+        assertTrue(
+            spent <= 45_000L,
+            "$abis ABIs can spend ${spent}ms against a 45000ms ceiling",
+        )
+
+        // And with the feed already having spent 25 of them.
+        spent = 25_000L
+        for (i in 0 until abis) {
+            spent += AndroidPlatformServices.probeTimeout(now + spent, deadline, abis - i).toLong() * 2
+        }
+        assertTrue(
+            spent <= 45_000L,
+            "after a 25s feed, $abis ABIs reach ${spent}ms against a 45000ms ceiling",
+        )
+    }
+
+    @Test
     fun `the budget covers the request and not each of its two socket phases`() {
         val now = 1_000_000L
         val deadline = now + 45_000L
 
-        // The same value goes to connectTimeout AND readTimeout, so a request
-        // can spend it twice. Handing each phase the whole remainder put the
-        // worst case at ~49 seconds against a 45 second ceiling - which is the
-        // overshoot this was introduced to remove.
-        val withThirtySecondsLeft = AndroidPlatformServices.probeTimeout(now + 15_000, deadline)
-        assertTrue(
-            withThirtySecondsLeft * 2L <= 30_000L,
-            "two phases of ${withThirtySecondsLeft}ms exceed what was left",
-        )
-
-        // And the sum of every phase of every request still fits the budget.
-        val probes = 5 * 5 // five tags, five ABIs
-        assertTrue(
-            withThirtySecondsLeft.toLong() * probes <= 30_000L,
-            "the whole walk cannot fit in what was left",
-        )
+        // Whichever phase a request is in, BOTH of them together must fit in
+        // what is left. That is the property the deadline at the top of the tag
+        // loop relies on and could not see: it only ran between tags, so one tag
+        // of five ABIs could spend 90 seconds inside the budget it was meant to
+        // bound.
+        for (spent in longArrayOf(0, 5_000, 15_000, 25_000, 35_000, 44_000, 45_000)) {
+            val left = 45_000L - spent
+            val phase = AndroidPlatformServices.probeTimeout(now + spent, deadline).toLong()
+            assertTrue(
+                phase * 2L <= left || left <= 0L || phase == 1L,
+                "two phases of ${phase}ms exceed the ${left}ms left after ${spent}ms",
+            )
+        }
     }
 
     private fun entry(tag: String) =
