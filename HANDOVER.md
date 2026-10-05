@@ -351,7 +351,7 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 git rev-parse HEAD                      # the commit you are on
 git rev-list -n1 v2.3.1                 # 9e6b3a7
 git status --porcelain                  # empty
-grep appVersion gradle.properties       # 2.3.1
+grep appVersion gradle.properties       # 2.3.2
 scripts/wsl-audit.sh                    # AUDIT_OK
 ```
 
