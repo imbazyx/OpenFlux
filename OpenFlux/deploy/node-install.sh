@@ -629,12 +629,17 @@ EOF
             # record is what makes `remove` able to say it closed something.
             CREATED_FW=none ;;
     esac
-    # The record belongs in CONF, not in whatever `$dir` holds at this point:
-    # write_cookies() assigns `dir="$STATE_ROOT/$CHANNEL"` to the GLOBAL dir
-    # (the script uses no `local` anywhere), so on any install with cookies
-    # this line landed in the state directory while cmd_remove looks in
-    # CONF. The rule then survived the channel forever and the state dir that
-    # held the record was deleted with it - one leaked ufw/firewalld allow per
+    # The record belongs in CONF, not in whatever `$dir` holds at this point.
+    # PAST TENSE: `write_cookies()` used to assign `dir="$STATE_ROOT/$CHANNEL"`
+    # to the GLOBAL dir (this script uses no `local` anywhere), so on any
+    # install with cookies this line landed in the state directory while
+    # cmd_remove looked in CONF - and the rule survived the channel forever,
+    # with the only copy of the record deleted along with the state dir. The
+    # same global-d aliasing happened a second time further down, and
+    # write_cookies() now uses its own `cookies_dir` instead of touching `dir`.
+    # So the reason the path below is spelled out rather than reusing `$dir` is
+    # that `$dir` once moved; the reason it stays spelled out is that nothing
+    # here should depend on where `$dir` points.
     # install/remove cycle.
     #
     # And it is CHECKED. That file is the only record of the rule: `remove`
@@ -688,12 +693,14 @@ cmd_remove() {
     #
     # Before this was corrected, the record was written to `$dir/firewall` while
     # `dir` had already been reassigned by write_cookies() to the STATE
-    # directory. Every channel installed by that script WITH cookies - the
-    # ordinary case - kept its record in STATE, so remove looked in CONF, found
-    # nothing, left the ufw/firewalld rule open forever, and then deleted the
-    # channel directory including the only copy of the record. There is no
-    # migration anywhere else: nothing in the repo mentions those channels, so
-    # this fallback is the only thing that can close their rules.
+    # directory - PAST TENSE: write_cookies() now uses its own `cookies_dir`
+    # and never touches the global `dir`. Every channel installed by that script
+    # WITH cookies - the ordinary case - kept its record in STATE, so remove
+    # looked in CONF, found nothing, left the ufw/firewalld rule open forever,
+    # and then deleted the channel directory including the only copy of the
+    # record. There is no migration anywhere else: nothing in the repo mentions
+    # those channels, so this fallback is the only thing that can close their
+    # rules.
     fw_record=""
     if [ -f "$dir/firewall" ]; then
         fw_record="$dir/firewall"
