@@ -138,7 +138,7 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 			// failing to send once per packet therefore turns into a storm of
 			// logging that contends with the packets it is complaining about -
 			// the failure makes the tunnel slower.
-			utils.Packetf("[TUNNEL] trans.Send error: %v", err)
+			utils.Debugf("[TUNNEL] trans.Send error: %v", err)
 		}
 	}
 	t.tunnelEP = tunnelEP
@@ -257,16 +257,25 @@ func (t *TCPTunnel) handleExitUDP(r *udp.ForwarderRequest) bool {
 // maxExitTCPFlows bounds concurrent forwarded TCP connections on an exit node.
 // A peer can synthesise SYNs without opening anything: gVisor checks the
 // checksum, the SYN bit and that no SYN-ACK came back, all of which the packet
-// controls, and it does not bound live flows — the slot is released before the
-// dial, so an injected SYN gets a goroutine, an outbound socket held for up to
-// the dial timeout, and two 256 KiB copy buffers plus 16 MiB of socket buffers.
+// controls, and its forwarder does not bound live flows - the slot is released
+// before the dial, so an injected SYN gets a goroutine and a socket in
+// SYN_SENT for up to the dial timeout.
 //
-// 128 is sized from that budget rather than picked: 128 * ~16.5 MiB is about
-// 2 GB, and the host this runs on is a 1 GB VDS. The UDP side is capped at 256
-// * 64 KiB = 16 MiB, so 128 TCP flows is still eight times the memory of a
-// full UDP table, which is the right order for a workload where a handful of
-// long-lived connections carry the traffic.
-const maxExitTCPFlows = 128
+// The per-flow cost is about 1 MiB, not the 16 MiB a naive reading suggests:
+// the 16 MiB SetReadBuffer/SetWriteBuffer are a *request*, which Linux clamps
+// to net.core.rmem_max/wmem_max (208 KiB by default), and the two 256 KiB copy
+// buffers are only allocated once the dial has succeeded. So 1024 flows is
+// roughly 1 GB worst case, on a host with 1 GB, and an unfinished SYN costs
+// almost nothing.
+//
+// The number is also a usability floor, not only a memory one: a refusal is
+// r.Complete(true), which gVisor turns into an immediate RST, so the client sees
+// ECONNREFUSED rather than a queued connect. One desktop browser opens about
+// six connections per host per tab, and long-lived WebSocket, SSE, IMAP and
+// SSH connections hold their slot for their whole life, so a cap low enough to
+// be a limit is also a cap that refuses ordinary browsing. 1024 is where the
+// memory budget and that floor meet.
+const maxExitTCPFlows = 1024
 
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()

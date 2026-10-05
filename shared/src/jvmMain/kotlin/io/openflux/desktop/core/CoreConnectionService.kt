@@ -204,7 +204,13 @@ class CoreConnectionService(
                 val line = raw.trimEnd()
                 if (line.isEmpty()) continue
                 val level = levelOf(line)
-                log(level, line)
+                val shareLink = SHARE_LINK.find(line)?.value
+                if (shareLink != null) _exitShareLink.value = shareLink
+                // The share line carries the node's encryption key, and every
+                // line read here goes into the app's log pane. The core has to
+                // print it - that is where the app gets it from - but it must
+                // not be archived: [shareLink] is the value, kept for the UI.
+                log(level, if (shareLink != null) line.substringBefore(shareLink) + "<share link hidden>" else line)
                 friendlyProblem(line)?.let { run.lastProblem = it }
                 SHARE_LINK.find(line)?.let { _exitShareLink.value = it.value }
                 // Readiness, and it is announced differently per inbound. The

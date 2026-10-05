@@ -44,6 +44,7 @@ func TestLinuxRawUDPNAT(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer exit.Stop()
+	exit.allowAnyDest = true // the echo server is on this machine; the exit filter must refuse it
 	exit.backend.Recv(exit.handleFromInternet)
 	ports := make(chan uint16, 64)
 	echoDone := make(chan struct{})

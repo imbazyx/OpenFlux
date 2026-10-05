@@ -7,7 +7,6 @@ import (
 	"os"
 
 	"openflux/share"
-	"openflux/utils"
 )
 
 // shareConfig describes this exit to its clients for --share: the same
@@ -65,13 +64,13 @@ func printShare(c share.Config, skipped []string) {
 		log.Printf("--share: %v", err)
 		return
 	}
-	// The link IS the encryption key. It goes to stderr, which is where the QR
-	// is drawn and which is not a log sink: the desktop app captures the core's
-	// stderr into its log pane, and a service that redirects it writes the key
-	// to a file. Print it only when asked.
-	if utils.Sensitive() {
-		log.Printf("Share link for clients (contains the encryption key): %s", link)
-	}
+	// The link IS the encryption key, and it has to reach stdout/stderr: the
+	// desktop app launches the core with redirectErrorStream(true) and lifts the
+	// link out of the output with a regex (CoreConnectionService.kt:209).
+	// Gating it behind --sensitive breaks that, because the app passes --share
+	// without it. The place to keep it out of a log file is the app's log pane,
+	// not here.
+	log.Printf("Share link for clients (contains the encryption key): %s", link)
 	fmt.Fprint(os.Stderr, qr)
 }
 
