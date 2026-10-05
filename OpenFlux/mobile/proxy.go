@@ -138,8 +138,17 @@ func startProxyWith(build func() (transport.Transport, error), listenAddr, usern
 	})
 
 	if httpLn != nil {
+		// dialer, NOT tun. This line used to pass tun.DialTCP, so the
+		// split-routing built above was handed to the SOCKS5 server and to
+		// nothing else: every browser and the system WebView speak HTTP, so
+		// the bypass list worked for SOCKS5 clients and was completely inert
+		// for the traffic it was written for. Domains the user asked to reach
+		// directly went through the exit instead - the opposite of what the
+		// setting says, and a censorship-circumvention failure rather than a
+		// cosmetic one.
+		httpDialer := dialer
 		utils.SafeGo("mobile.httpProxyServe", func() {
-			if err := tunnel.ServeHTTPProxy(httpLn, tun.DialTCP); err != nil {
+			if err := tunnel.ServeHTTPProxy(httpLn, httpDialer.DialTCP); err != nil {
 				appendLog(fmt.Sprintf("[ERROR] HTTP-прокси остановлен: %v", err))
 			}
 		})

@@ -52,8 +52,36 @@ jobs:
           # Parts are bounded because versionCode is major*10000+minor*100+patch,
           # which collides for e.g. 1.100.0 and 2.0.0.
           if ! [[ "$v" =~ ^[0-9]{1,3}\.[0-9]{1,2}\.[0-9]{1,2}$ ]]; then echo "::error::version '$v' is not X.Y.Z"; exit 1; fi
+          # The tag must name the version this tree declares.
+          #
+          # Two readers, and nothing compared them. CI takes the version from
+          # the tag and overrides appVersion with -PappVersion; the Windows
+          # client is built by hand and takes it from gradle.properties. Tag
+          # v2.3.2 over a tree still saying 2.3.1 therefore publishes five APKs
+          # called 2.3.2 while the desktop artifact is named OpenFlux-2.3.1.msi
+          # - and every desktop user on 2.3.1 gets a 404 for OpenFlux-2.3.2.msi
+          # with no fallback, permanently unable to update.
+          declared=$(sed -n 's/^appVersion=//p' gradle.properties | tr -d ' \r')
+          if [ "$declared" != "$v" ]; then
+            echo "::error::тег говорит $v, а gradle.properties говорит $declared"
+            echo "::error::это одно число, объявленное один раз; разойтись они должны были в коммите, а не в релизе"
+            exit 1
+          fi
+          # And it must be above the last one published, or Android refuses the
+          # update (versionCode is not greater) while the app reports "up to
+          # date" because compareVersions sees no difference.
+          code=$(( ${v%%.*} * 10000 + $(echo "$v" | cut -d. -f2) * 100 + $(echo "$v" | cut -d. -f3) ))
+          prev=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -vE "^v$(echo "$v" | sed 's/[.[\*^$()+?{|]/\\&/g')$" | head -1 || true)
+          if [ -n "$prev" ]; then
+            p=${prev#v}
+            pcode=$(( ${p%%.*} * 10000 + $(echo "$p" | cut -d. -f2) * 100 + $(echo "$p" | cut -d. -f3) ))
+            if [ "$code" -le "$pcode" ]; then
+              echo "::error::versionCode $code не больше, чем у $prev ($pcode): Android не примет обновление"
+              exit 1
+            fi
+          fi
           echo "value=$v" >> "$GITHUB_OUTPUT"
-          echo "Version $v, core $(git -C OpenFlux rev-parse --short HEAD)"
+          echo "Version $v (versionCode $code, previous ${prev:-none}), core $(git -C OpenFlux rev-parse --short HEAD)"
 
       - uses: actions/setup-go@v5
         with:
@@ -128,6 +156,33 @@ jobs:
           find androidApp/build/outputs/apk/release -name '*.apk' -print0 | \
             xargs -0 -r -n1 "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose
 
+      # The pin, in the path that actually publishes.
+      #
+      # `apksigner verify` above checks that a signature is VALID, never WHO
+      # signed. `keytool -list` earlier proves the keystore blob opens with the
+      # configured password. Neither compares the fingerprint to anything, so a
+      # rotated or substituted ANDROID_KEYSTORE_BASE64 builds five perfectly
+      # self-consistent APKs signed by a certificate no installed copy has ever
+      # seen - every job green, every user's update permanently refused, and the
+      # only recovery is telling everyone to uninstall and lose their settings.
+      #
+      # The digest was already pinned in scripts/wsl-audit.sh, but that only ever
+      # looks at a WSL build's dist/, never at what CI publishes.
+      - name: Verify the signing certificate is the release one
+        run: |
+          PIN=60487280f6a493f6afd525d2727fa8b1772c217a24dd6ee148f90f3114a1f156
+          found=$(find androidApp/build/outputs/apk/release -name '*.apk' -print0 | \
+            xargs -0 -r -n1 "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs | \
+            grep -oE '[0-9a-f]{64}' | sort -u)
+          echo "сертификаты в сборке: $found"
+          if [ "$found" != "$PIN" ]; then
+            echo "::error::собран APK не тем ключом, чем подписан 2.3.1"
+            echo "::error::ожидался $PIN"
+            echo "::error::подобное делает невозможным обновление поверх установленного"
+            exit 1
+          fi
+          echo "сертификат совпадает: все обновления поверх установленных останутся возможны"
+
       - name: Collect
         run: |
           mkdir -p dist
@@ -148,7 +203,14 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tag="${GITHUB_REF#refs/tags/}"
           else tag="v${{ inputs.version }}"; fi
+          # --target, because gh otherwise creates the tag at the default
+          # branch HEAD. On the manual-dispatch path the SHA that was built and
+          # tested is not HEAD, so without this the published tag points at a
+          # commit nobody built - the exact tag/artifact divergence that cut
+          # 2.3.1. Asserted as well as passed: the flag is the fix, the check is
+          # what proves the flag was honoured.
           gh release create "$tag" dist/* \
+            --target "$GITHUB_SHA" \
             --title "OpenFluxAndroid $tag" \
             --generate-notes \
             --notes "APK универсальный или под архитектуру устройства. Ядро: \`$(git -C OpenFlux rev-parse --short HEAD)\`. Контрольные суммы — в \`SHA256SUMS.txt\`."

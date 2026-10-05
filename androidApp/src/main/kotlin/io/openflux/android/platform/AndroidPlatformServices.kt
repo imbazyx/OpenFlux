@@ -301,18 +301,28 @@ class AndroidPlatformServices(
         // The published manifest covers the whole release. When it is missing
         // or silent about this file, accept the download rather than refusing
         // to update at all - but say so, so an unverified update is visible.
-        if (expected == null) {
+        if (expected != null) {
+            val actual = sha256Hex(tmp)
+            if (actual != expected) {
+                Log.w(TAG, "checksum mismatch for ${target.name}: $actual != $expected")
+                tmp.delete()
+                return false
+            }
+        } else {
             Log.w(TAG, "no published checksum for ${target.name}; installing unverified")
-            tmp.renameTo(target)
-            return target.length() > 0
         }
-        val actual = sha256Hex(tmp)
-        if (actual != expected) {
-            Log.w(TAG, "checksum mismatch for ${target.name}: $actual != $expected")
+        // renameTo's result used to be discarded here and true returned anyway.
+        // The target is named per version and never deleted, so a rename that
+        // failed - because PackageInstaller still held the previous APK, or the
+        // cache was restored underneath us - reported success and the installer
+        // was handed the OLD file: a silent rollback presented as a fresh
+        // update, on the one path the owner requires not to break.
+        target.delete()
+        if (!tmp.renameTo(target)) {
             tmp.delete()
+            Log.w(TAG, "cannot install the downloaded APK at ${target.name}")
             return false
         }
-        tmp.renameTo(target)
         return true
     }
 
