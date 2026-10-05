@@ -16,6 +16,35 @@ H=${OF_CTRL_DIR:-$HOME/of-ctrl}
 # belongs in a committed script; the default keeps the payload out of the
 # audited tree without naming anyone's home directory.
 UNIV_DIR=${OF_CTRL_UNIV_DIR:-$HOME/of-ctrl-outside}
+
+# Refuse to delete anything that does not look like a scratch directory of this
+# script's own making.
+#
+# `${VAR:-default}` blocks an unset or empty variable and nothing else. It does
+# not block a value someone chose, so `OF_CTRL_DIR=/root sh negative-control.sh`
+# reached `rm -rf /root` with no prompt, on the line below, on a machine where
+# /root holds ofsign.env and the build environment. The comment two lines above
+# names /root as the location this script expects, so the value was already one
+# slip away from the default. Every later `rm -rf "$H"` inherits the same risk.
+#
+# GNU rm refuses a bare "/" on its own, so the realistic damage was a home or a
+# root directory rather than the filesystem - but "unlikely" is not a guard.
+require_scratch_dir() {
+    case "$1" in
+        */of-ctrl|*/of-ctrl-outside|*/of-ctrl-*) : ;;
+        *)
+            echo "ОТКАЗ: $1 не похож на каталог этого скрипта и не будет удалён" >&2
+            echo "Ожидается путь, оканчивающийся на of-ctrl или of-ctrl-outside." >&2
+            exit 1
+            ;;
+    esac
+    case "$1" in
+        /|/root|/home|"$HOME") echo "ОТКАЗ: $1 - это не временный каталог" >&2; exit 1 ;;
+    esac
+}
+require_scratch_dir "$UNIV_DIR"
+require_scratch_dir "$H"
+
 rm -rf "$UNIV_DIR"; mkdir -p "$UNIV_DIR"
 rm -rf "$H"; mkdir -p "$H"
 cp -r "$SRC/scripts" "$H/"

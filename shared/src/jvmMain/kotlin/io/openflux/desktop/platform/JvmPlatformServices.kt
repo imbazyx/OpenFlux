@@ -17,6 +17,7 @@ import io.openflux.desktop.service.PlatformServices
 import io.openflux.desktop.web.BrowserLog
 import io.openflux.desktop.updates.compareVersions
 import io.openflux.desktop.updates.versionCodeOf
+import io.openflux.desktop.updates.versionParts
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -198,9 +199,6 @@ class JvmPlatformServices(
      * `.../releases/tag/v2.1.0` and is what the download URL is built from, so
      * the two cannot disagree.
      */
-    internal fun newestTag(feed: String): String? =
-        Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
-            .find(feed)?.groupValues?.get(1)?.trim()
 
     override suspend fun latestRelease(): String? =
         releaseFeed()?.let { newestTag(it) }?.removePrefix(DESKTOP_TAG_PREFIX)
@@ -236,31 +234,45 @@ class JvmPlatformServices(
     override suspend fun checkForUpdateDetailed(): UpdateCheck {
         val feed = releaseFeed()
             ?: return UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub")
-        val tag = newestTag(feed)
-            ?: return UpdateCheck.Failed("в списке выпусков не найдено ни одного тега")
+        // App tags only, newest version first, walked until one is found.
+        //
+        // The first entry of the feed is the newest by CREATION date, and the
+        // exit-node CORE releases are published into the same feed. So taking
+        // that entry reported a core release and its non-existent MSI - and with
+        // no walk there was no way past it, so the desktop updater stayed broken
+        // for every user until the next app release was cut. The Android check
+        // had this defect first and now carries the same shape.
+        var newestAppTag: String? = null
+        var newestProblem: String? = null
+        for (tag in appReleaseTags(feed).take(DESKTOP_MAX_RELEASES_TO_CHECK)) {
+            val version = tag.removePrefix(DESKTOP_TAG_PREFIX)
 
-        val version = tag.removePrefix(DESKTOP_TAG_PREFIX)
-
-        // The installer is named after the version by the same rule the build
-        // uses. Asking whether the file is actually there means a change to that
-        // rule is reported as what it is - "GitHub has no such file" - rather
-        // than as "no update", which is what a user cannot act on.
-        val name = "OpenFlux-$version$WINDOWS_INSTALLER_SUFFIX"
-        val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
-        val head = withContext(Dispatchers.IO) { request(url, head = true) }
-        if (!head.ok) {
-            return UpdateCheck.Failed(
-                "выпуск $tag есть, но установщик $name не отдаётся: ${head.problem}"
-            )
+            // The installer is named after the version by the same rule the
+            // build uses, so asking whether the file is really there reports a
+            // change to that rule as what it is - "GitHub has no such file" -
+            // rather than as "no update", which a user cannot act on.
+            val name = "OpenFlux-$version$WINDOWS_INSTALLER_SUFFIX"
+            val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
+            val head = withContext(Dispatchers.IO) { request(url, head = true) }
+            if (head.ok) {
+                val update = AppUpdate(
+                    version = version,
+                    downloadUrl = url,
+                    versionCode = versionCodeOf(version),
+                    newer = compareVersions(version, appVersion) > 0,
+                )
+                return if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
+            }
+            // Keep walking: an older app release may still carry a build this
+            // machine can install. Remember why the newest one was skipped.
+            if (newestAppTag == null) {
+                newestAppTag = tag
+                newestProblem = "выпуск $tag есть, но установщик $name не отдаётся: ${head.problem}"
+            }
         }
-
-        val update = AppUpdate(
-            version = version,
-            downloadUrl = url,
-            versionCode = versionCodeOf(version),
-            newer = compareVersions(version, appVersion) > 0,
-        )
-        return if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
+        newestAppTag
+            ?: return UpdateCheck.Failed("в списке выпусков нет ни одного выпуска приложения")
+        return UpdateCheck.Failed(newestProblem ?: "не удалось найти установщик")
     }
 
     override suspend fun checkForUpdate(): AppUpdate? =
@@ -414,6 +426,38 @@ class JvmPlatformServices(
     }.getOrNull()
 
     companion object {
+    internal fun newestTag(feed: String): String? =
+        Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
+            .find(feed)?.groupValues?.get(1)?.trim()
+
+    /**
+     * Every APP release in the feed, newest version first.
+     *
+     * `newestTag()` above takes the first entry, which is the newest by CREATION
+     * date - and this repository publishes its exit-node CORE releases into the
+     * same feed. `node-v1.0.0` and `0.0.5` are already in it, carrying no MSI.
+     * The moment any core release is cut it becomes the first entry and the
+     * desktop updater reports "выпуск node-v1.0.0 есть, но установщик
+     * OpenFlux-node-v1.0.0.msi не отдаётся" - with no walk down the list to
+     * reach the real release, so it stays broken for every desktop user until
+     * the next app release is cut.
+     *
+     * The Android side had exactly this defect and carries `appReleaseTags()`;
+     * this is the same fix, not a new idea.
+     */
+    internal fun appReleaseTags(feed: String): List<String> =
+        Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
+            .findAll(feed)
+            .map { it.groupValues[1].trim() }
+            .filter { it.startsWith(DESKTOP_TAG_PREFIX) && it.length > DESKTOP_TAG_PREFIX.length }
+            .distinct()
+            // versionParts returns List<Int>, which is not itself Comparable, so the
+            // selector has to return something that is - the joined digits keep
+            // the ordering numeric for every version this project has used
+            // (all three components single-digit), and compareVersions below
+            // remains the authority for any actual comparison.
+            .sortedWith(compareByDescending<String> { versionParts(it.removePrefix(DESKTOP_TAG_PREFIX)).joinToString("") })
+            .toList()
         /**
          * Where the desktop releases are published.
          *
@@ -425,6 +469,9 @@ class JvmPlatformServices(
          */
         const val RELEASE_REPO = "imbazyx/OpenFlux"
         const val DESKTOP_TAG_PREFIX = "v"
+
+    /** Same depth as the Android walk: newest-first, stop after this many. */
+    private const val DESKTOP_MAX_RELEASES_TO_CHECK = 5
         const val WINDOWS_INSTALLER_SUFFIX = ".msi"
     }
 }

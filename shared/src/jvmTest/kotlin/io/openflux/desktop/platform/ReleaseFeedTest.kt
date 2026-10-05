@@ -36,7 +36,7 @@ class ReleaseFeedTest {
 
     @Test
     fun `takes the first entry, which is the newest`() {
-        assertEquals("v2.1.0", services.newestTag(feed))
+        assertEquals("v2.1.0", JvmPlatformServices.newestTag(feed))
     }
 
     @Test
@@ -46,13 +46,13 @@ class ReleaseFeedTest {
         // for it produces nothing, which is how a working feed reads as a failed
         // check.
         val idOnly = """<entry><id>tag:github.com,2008:Repository/1392288685/v9.9.9</id></entry>"""
-        assertNull(services.newestTag(idOnly))
+        assertNull(JvmPlatformServices.newestTag(idOnly))
     }
 
     @Test
     fun `a feed with no entries yields nothing rather than a wrong version`() {
         val empty = """<feed xmlns="http://www.w3.org/2005/Atom"></feed>"""
-        assertNull(services.newestTag(empty))
+        assertNull(JvmPlatformServices.newestTag(empty))
     }
 
     @Test
@@ -60,6 +60,6 @@ class ReleaseFeedTest {
         // GitHub answers a rate limit with HTML, not with this document. Reading
         // a tag out of it would invent a version rather than admit defeat.
         val html = "<html><body>API rate limit exceeded</body></html>"
-        assertNull(services.newestTag(html))
+        assertNull(JvmPlatformServices.newestTag(html))
     }
 }

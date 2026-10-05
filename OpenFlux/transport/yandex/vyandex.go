@@ -581,7 +581,25 @@ func newRelayClient(auth *atomic.Pointer[volgaAuth], cfg VolgaConfig, stats *Vol
 func (r *relayClient) Start() {
 	for i := 0; i < r.workers; i++ {
 		r.wg.Add(1)
-		go r.worker(i)
+		// utils.SafeGo, like every other spawn in the transports: yandex.go:118
+		// and :262, boards.go:164 and :554-558, vyandex.go:1467, tunnel.go's
+		// three. This one was bare, and it is the only bare one.
+		//
+		// The consequence is not a lost worker. On an exit node a panic in a
+		// goroutine with no recover takes down the whole process, systemd
+		// Restart=always bounces it, and every user on that node loses the
+		// tunnel at once. utils/logging.go calls this exact case a bug - "a node
+		// runs without --debug, so this line used to disappear exactly where it
+		// mattered" - and treats a missing recover as a defect rather than a
+		// choice.
+		//
+		// worker() runs sendBatch, which holds the only two unchecked pool type
+		// assertions in the transport tree (the *bytes.Buffer gets below). Today
+		// only *bytes.Buffer is ever Put back, so no remote input reaches them -
+		// but that is a property of today.
+		utils.SafeGo("volga-relay-worker", func() {
+			r.worker(i)
+		})
 	}
 	utils.Debugf("[VOLGA] relay pool started: %d workers, batch=%d timeout=%v",
 		r.workers, r.config.BatchSize, r.config.BatchTimeout)
