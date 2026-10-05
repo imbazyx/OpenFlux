@@ -142,22 +142,28 @@ project needs is inside this directory.
 | | |
 |---|---|
 | Branch | `main`, in step with `origin/main` |
-| Tag `v2.3.1` | `f73b98c` — the last published tag |
+| Tag `v2.3.1` | `9e6b3a7` — the last published tag. This file used to say `f73b98c`; that hash is not the tag, and nothing in the tree explains where it came from. |
 | Tag `v2.3.2` | **not cut yet.** `gradle.properties` declares 2.3.2 and `dist/` is built, but until the tag exists the in-app update check correctly reports "2.3.1 · последняя версия" and the button finds nothing. Cutting it is what actually publishes 2.3.2. |
 | Author | every commit is `imbazyx`; `.git/hooks/pre-push` refuses any push URL without it |
 | Latest release | `OpenFlux 2.3.1`, 8 assets |
 | Exit nodes | six, all `active` (`exit`, `-2`, `-3`, `-4`, `-6`, `-7`) |
 
 **The tag is behind HEAD, and the shipped core is no longer the HEAD core.**
-`v2.3.1` points at `f73b98c`; commit `a0613b8` changed `OpenFlux/main.go` after
-it — the banner and the `--no-packets` flag. Documentation-only commits do not
-move this property, but a source commit does, so the released 2.3.1 artifacts
-contain the *older* core and must not be described as matching HEAD. The
-property to verify is `git diff --stat v2.3.1..HEAD` naming no build input.
+`v2.3.1` points at `9e6b3a7`. The diff since then is not one commit: it is
+**63 files under `OpenFlux/` and `shared/`** — the core, the tunnel, the
+transport and the shared UI — and roughly 5 700 added lines. The released
+2.3.1 artifacts therefore contain a substantially older core and must not be
+described as matching HEAD.
+
+This text used to say the diff "names no build input", with the property to
+verify being that it was empty. It has not been empty for a long time, and a
+reader who trusted it would have concluded no rebuild was needed. The check is
+real; the claim about its result was false.
 
 ```bash
-git rev-list -n1 v2.3.1          # must equal the commit in the release notes
+git rev-list -n1 v2.3.1          # 9e6b3a7 as of this writing
 git diff --stat v2.3.1..HEAD     # any OpenFlux/ or shared/ hit means a rebuild
+                                  # today: 63 such files
 ```
 
 ---
@@ -343,7 +349,7 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 
 ```bash
 git rev-parse HEAD                      # the commit you are on
-git rev-list -n1 v2.3.1                 # f73b98c, unchanged by any commit since
+git rev-list -n1 v2.3.1                 # 9e6b3a7
 git status --porcelain                  # empty
 grep appVersion gradle.properties       # 2.3.1
 scripts/wsl-audit.sh                    # AUDIT_OK

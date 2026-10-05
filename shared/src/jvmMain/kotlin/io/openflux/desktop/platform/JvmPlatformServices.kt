@@ -40,6 +40,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Duration
 import javax.imageio.ImageIO
+import javax.swing.JOptionPane
 
 class JvmPlatformServices(
     override val appVersion: String,
@@ -397,6 +398,45 @@ class JvmPlatformServices(
         // so the shared UI is what tells the user, and it needs to know that
         // nothing has been said yet.
         if (!downloaded) return@withContext InstallResult.Refused(shown = false)
+
+        // Ask BEFORE msiexec, not before the download and not after. Asking
+        // after a 118MB transfer is the worst moment to ask; asking before the
+        // download is a question about something that has not happened yet.
+        //
+        // The toast used for this lived about 1.5 seconds - the exit below is
+        // scheduled 1.5s out and a toast self-dismisses at 3.2s - so the one
+        // sentence explaining that the installer was NOT hash-checked was gone
+        // before it could be read. A modal cannot be dismissed by time, and the
+        // process cannot exit until it is answered.
+        //
+        // java.desktop is present in the jlink image (verified in the built
+        // runtime: java.base, java.datatransfer, java.xml, java.prefs,
+        // java.desktop, java.logging, java.security.sasl, java.naming,
+        // java.transaction.xa, java.sql, jdk.crypto.ec), and pickFile in this
+        // same class already raises a modal AWT dialog on Dispatchers.Main.
+        val answer = withContext(Dispatchers.Main) {
+            JOptionPane.showConfirmDialog(
+                null,
+                if (expected == null) {
+                    "Установщик OpenFlux ${update.version} будет запущен от имени " +
+                        "администратора.\n\nКонтрольной суммы для него в манифесте " +
+                        "выпуска нет, поэтому проверить файл нечем."
+                } else {
+                    "Установщик OpenFlux ${update.version} будет запущен от имени " +
+                        "администратора.\n\nКонтрольная сумма сверена и совпала."
+                },
+                "Обновление OpenFlux",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.QUESTION_MESSAGE,
+            )
+        }
+        // "No" has to actually stop things. This returns before ProcessBuilder
+        // and before the exit thread exists, so declining neither installs nor
+        // closes the app. `shown = true`: the user was told, right here.
+        if (answer != JOptionPane.YES_OPTION) {
+            target.delete()
+            return@withContext InstallResult.Refused(shown = true)
+        }
 
         val started = runCatching {
             ProcessBuilder("msiexec", "/i", target.absolutePath)
