@@ -71,6 +71,16 @@ func (s *Server) Listen() error {
 	return nil
 }
 
+// acceptLoop sleeps a little between unexpected accept errors.
+//
+// Go's internal/poll already retries EINTR, ECONNABORTED and EAGAIN, so
+// anything arriving here is a real one: EMFILE, ENFILE, ENOBUFS, ENFILE. At
+// the descriptor limit Accept returns immediately, every time, so a bare
+// continue is a tight loop - and one Debugf per iteration floods the log at
+// exactly the moment the process is already out of descriptors. Bounded by the
+// 0600 mode on the socket, so this is robustness, not an attack path.
+const acceptErrorBackoff = 50 * time.Millisecond
+
 func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.listener.Accept()
@@ -82,6 +92,7 @@ func (s *Server) acceptLoop() {
 				return
 			}
 			utils.Debugf("[IPC] accept: %v", err)
+			time.Sleep(acceptErrorBackoff)
 			continue
 		}
 		s.mu.Lock()

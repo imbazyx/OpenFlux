@@ -204,7 +204,9 @@ func (b *BatchedTransport) flushLoop() {
 	//
 	// They are packet-tracking lines, not one-off operational events, which is
 	// exactly what Packetf gates, and the mobile bridge already calls
-	// SetPackets(false). The CLI keeps them under -ddd.
+	// SetPackets(false). On the CLI Packetf opens at LevelPackets - plain -d -
+	// so these six lines fire per batch under -dd as well, and it is
+	// --no-packets that silences them. That is why the flag exists.
 	utils.Debugf("[BATCH] flushLoop: started")
 	for b.running.Load() {
 		var first []byte
