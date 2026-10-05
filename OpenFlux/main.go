@@ -202,13 +202,10 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--node-wizard" {
 		os.Exit(runNodeWizard(os.Stdin, os.Stdout))
 	}
-	// Both names, on purpose. The tunnel, the transports and the negotiation
-	// protocol are p1neappleXpress's work and the GPL asks that its notice
-	// travels with the code; this fork is maintained by imbazyx. Replacing the
-	// original name instead of adding to it would be a claim of authorship over
-	// someone else's code, which is a different thing from saying who keeps it
-	// going.
-	fmt.Print("OpenFlux core by p1neappleXpress · fork by imbazyx — github.com/imbazyx/OpenFlux\n")
+	// The banner names only this repository. Upstream authorship is recorded
+	// where GPL requires it - LICENSE, NOTICE, COPYRIGHT and the README credits
+	// - not in a string every user of the app sees in their logs.
+	fmt.Print("OpenFlux — github.com/imbazyx/OpenFlux\n")
 
 	role := flag.String("role", roleClient, "client | exit | bench-send | bench-sink")
 	inbound := flag.String("inbound", "", "tun | socks5 (client only; default: tun on macOS, socks5 elsewhere)")
@@ -267,6 +264,8 @@ func main() {
 	benchCompressible := flag.Bool("bench-compressible", false, "Benchmark: use compressible payload instead of random")
 
 	debug := flag.Int("debug", 0, "Debug level: 1 packets (-d), 2 operational logs (-dd), 3 hexdumps (-ddd)")
+	noPackets := flag.Bool("no-packets", false, "Turn off per-packet logging, keeping operational logs at --debug 2 and above. "+
+		"An exit node carrying traffic writes hundreds of lines a second; this is what makes its reconnects and auth failures visible at all")
 	sensitive := flag.Bool("sensitive", false, "Also log key material and, with -ddd, plaintext frames (cookie jars, tokens)")
 	sensitiveAlias := flag.Bool("sensetive", false, "Alias for --sensitive")
 
@@ -376,6 +375,10 @@ LOGGING
   -dd, --debug=2               Plus operational logs: sessions, carriers,
                                handshakes, crypto, control, errors.
   -ddd, --debug=3              Plus hexdumps of packets and ciphertext.
+      --no-packets             Drop per-packet lines, keep the operational
+                               ones. What an exit node carrying traffic needs:
+                               at --debug=2 alone it writes hundreds of lines
+                               a second and nothing else.
       --sensitive              Also log key material and, with -ddd, the
                                plaintext frames (control messages carry
                                cookie jars and tokens). Off by default.
@@ -570,6 +573,9 @@ DEPRECATED (removed in v2)
 	}
 
 	utils.SetLevel(*debug)
+	if *noPackets {
+		utils.SetPackets(false)
+	}
 	if *sensitive || *sensitiveAlias {
 		utils.SetSensitive(true)
 	}
