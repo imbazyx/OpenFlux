@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -170,7 +171,7 @@ func (s *SOCKS5Server) handleConnection(clientConn net.Conn) {
 	// panic to this connection.
 	defer func() {
 		if r := recover(); r != nil {
-			utils.Debugf("[SOCKS5] Recovered from panic in handler: %v", r)
+			utils.Infof("[SOCKS5] Recovered from panic in handler: %v\n%s", r, debug.Stack())
 		}
 	}()
 	defer clientConn.Close()
