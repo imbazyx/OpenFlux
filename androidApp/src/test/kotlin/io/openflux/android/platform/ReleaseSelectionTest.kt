@@ -21,6 +21,26 @@ import kotlin.test.assertTrue
  */
 class ReleaseSelectionTest {
 
+    @Test
+    fun `a probe cannot outlive the check's own budget`() {
+        val now = 1_000_000L
+        val deadline = now + 45_000L
+
+        // Whole budget left: the normal case, unchanged from before.
+        assertEquals(8_000, AndroidPlatformServices.probeTimeout(now, deadline))
+
+        // Nearly spent. Five ABIs per tag and five tags, at a fixed 8s connect
+        // plus 10s read, is 90 seconds inside ONE tag - the 45s ceiling was only
+        // consulted between tags, so the check ran to roughly 2x its budget and
+        // could report Failed for an update one more tag would have found.
+        assertEquals(3_000, AndroidPlatformServices.probeTimeout(now + 42_000, deadline))
+
+        // At the deadline and past it. Zero is not a usable timeout:
+        // HttpURLConnection reads 0 as "wait forever", the exact opposite.
+        assertEquals(1, AndroidPlatformServices.probeTimeout(now + 45_000, deadline))
+        assertEquals(1, AndroidPlatformServices.probeTimeout(now + 600_000, deadline))
+    }
+
     private fun entry(tag: String) =
         """  <entry>
     <id>tag:github.com,2008:Repository/12345/$tag</id>

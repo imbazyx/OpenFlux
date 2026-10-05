@@ -210,6 +210,11 @@ class AndroidPlatformServices(
      * so this is where the limit is actually reached.
      */
     override suspend fun checkForUpdateDetailed(): UpdateCheck = withContext(Dispatchers.IO) {
+        // Started BEFORE the feed fetch, not after. githubText allows 10s connect
+        // plus 15s read, so up to 25s elapsed before the clock did - and the
+        // ceiling is the thing that stops the button sitting on "Проверяю…",
+        // so it has to bound the whole call.
+        val deadline = System.currentTimeMillis() + CHECK_BUDGET_MS
         val feed = releaseFeed()
             ?: return@withContext UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub")
 
@@ -254,7 +259,6 @@ class AndroidPlatformServices(
         // button sat on "Проверяю…" and disabled for minutes with no message
         // and no way out but navigating away. 45s is far above a real check
         // (one feed fetch plus a few HEADs) and far below "the user gave up".
-        val deadline = System.currentTimeMillis() + CHECK_BUDGET_MS
         for (tag in wanted.take(MAX_RELEASES_TO_CHECK)) {
             if (System.currentTimeMillis() > deadline) {
                 Log.w(TAG, "update check exceeded ${CHECK_BUDGET_MS}ms, stopping at $tag")
@@ -266,16 +270,19 @@ class AndroidPlatformServices(
             val urlFor = { abi: String ->
                 "$releaseDownloadBase/$tag/OpenFluxAndroid-$version-androidApp-$abi-release.apk"
             }
-            // Probed once, lazily, stopping at the first hit. The old code evaluated
-            // every ABI before looking at any of them, which on an unreachable
-            // host is four sequential timeouts behind a disabled button.
+            // One request per ABI, all five issued, results kept.
             //
-            // The results are kept, because the message at the end needs to say
-            // WHY the newest release was skipped - 404 on every ABI, or a host
-            // that could not be reached. Re-probing to collect them issued five
-            // more HEAD requests per tag, on the one path that has been at
-            // pains to stay off GitHub's rate limit.
-            val probes = abis.map { probe(urlFor(it)) }
+            // They are kept because the message at the end needs to say WHY the
+            // newest release was skipped - 404 on every ABI, or a host that
+            // could not be reached. Re-probing to collect them issued five more
+            // HEAD requests per tag, on the one path that has been at pains to
+            // stay off GitHub's rate limit.
+            //
+            // The comment above used to claim this stops at the first hit. It
+            // never did - `map` is eager - and saying so while a dead host costs
+            // five sequential 18s timeouts is how the budget below came to
+            // overshoot by 2x. probe() is bounded per request instead.
+            val probes = abis.map { probe(urlFor(it), deadline) }
             val hit = probes.indexOfFirst { it is AssetProbe.Found }
             if (hit >= 0) {
                 return@withContext UpdateCheck.Available(
@@ -446,7 +453,18 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
     // case passed for that reason.
     @Suppress("DEPRECATION")
     val info = pm.getPackageArchiveInfo(file.absolutePath, android.content.pm.PackageManager.GET_SIGNATURES)
-        ?: return null
+    // Logged, not swallowed. A null here means the archive could not be parsed
+    // as an Android package AT ALL, and the refusal below blames the file for
+    // it. Those are not the same failure: an APK built with a v2/v3 signing
+    // scheme only, or a split the platform parser declines, produces exactly
+    // this, and the result is that every user on that ABI is permanently
+    // blocked from updating, told their download is corrupt when it is not.
+    // There is no way to test this without a device, so the one thing that can
+    // still be done is leave the reason where a bug report can find it.
+    if (info == null) {
+        Log.w(TAG, "getPackageArchiveInfo returned null for ${file.name} (${file.length()} bytes)")
+        return null
+    }
     val signatures = runCatching {
         @Suppress("DEPRECATION")
         val raw = info.signatures ?: return@runCatching null
@@ -578,10 +596,17 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
      * so a parser looking for one finds nothing and reports "no update".
      */
     /** What one HEAD request actually established. */
-    private fun probe(url: String): AssetProbe = runCatching {
+    private fun probe(url: String, deadline: Long): AssetProbe = runCatching {
         val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 8000
-        connection.readTimeout = 10000
+        // Clamped to the whole-check budget. 8s connect + 10s read is 18s per
+        // request and there are five ABIs per tag, so an unfixed pair could spend
+        // 90 seconds on a single tag - twice CHECK_BUDGET_MS - and the ceiling
+        // was only consulted between tags. On a link where the newest tag was
+        // not built for this ABI that turned a findable update into "Failed".
+        val now = System.currentTimeMillis()
+        val left = probeTimeout(now, deadline)
+        connection.connectTimeout = left
+        connection.readTimeout = left
         connection.requestMethod = "HEAD"
         connection.setRequestProperty("User-Agent", "OpenFlux-Android")
         val code = connection.responseCode
@@ -641,6 +666,22 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
         // moved, this is the one string to change.
         private const val RELEASE_REPO = "imbazyx/OpenFlux"
         private const val TAG_PREFIX = "v"
+
+        /**
+         * How long one HEAD request may take, given the check's own deadline.
+         *
+         * Pure on purpose: it is the piece that was wrong, and it cannot be
+         * reached by a test that would have to mock PackageManager and the
+         * network. The budget was consulted only between tags, so five ABIs at a
+         * fixed 8s connect plus 10s read could spend 90 seconds inside ONE tag -
+         * twice the 45s ceiling that exists to stop the button sitting on
+         * "Проверяю…" - while the next tag carried an installable APK.
+         *
+         * Returns at least 1ms: a socket that times out at zero is not a socket,
+         * and HttpURLConnection reads 0 as "wait forever".
+         */
+        internal fun probeTimeout(nowMs: Long, deadlineMs: Long): Int =
+            (deadlineMs - nowMs).coerceIn(1L, 8000L).toInt()
 
         /**
          * Only these are app releases. The same feed also carries the core/node
