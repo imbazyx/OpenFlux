@@ -53,13 +53,41 @@ func lanIPv4(t *testing.T) net.IP {
 		}
 		addrs, _ := iface.Addrs()
 		for _, a := range addrs {
-			if ip, _, err := net.ParseCIDR(a.String()); err == nil && ip.To4() != nil && !ip.IsLinkLocalUnicast() {
+			ip, _, err := net.ParseCIDR(a.String())
+			if err != nil || ip.To4() == nil || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			// Having an address is not the same as being able to reach it.
+			// These tests bind a server to this address and then dial it from
+			// inside the tunnel, so an address that exists but does not carry
+			// traffic - a virtual adapter, a container bridge, an interface
+			// that answers on loopback only - produced a failure that looked
+			// like a product bug. On a build VM that reads
+			// "connect tcp 192.168.178.222:34595: connection refused", which
+			// is a fact about the machine, not about the exit node.
+			if reachable(ip) {
 				return ip.To4()
 			}
 		}
 	}
-	t.Skip("no non-loopback IPv4 interface")
+	t.Skip("нет не-loopback IPv4, через который можно достучаться до себя; тест требует работающего L3-пути")
 	return nil
+}
+
+// reachable reports whether this host can open a TCP connection to ip on a
+// port it just bound there.
+func reachable(ip net.IP) bool {
+	ln, err := net.Listen("tcp4", net.JoinHostPort(ip.String(), "0"))
+	if err != nil {
+		return false
+	}
+	defer ln.Close()
+	conn, err := net.DialTimeout("tcp4", ln.Addr().String(), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func waitUntil(t *testing.T, what string, cond func() bool) {
@@ -77,6 +105,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 // pending check with a proxy, the page loads through the tunnel and the
 // exit, and the cookies land on the exit's transport.
 func TestExitCaptchaSolvedThroughTunnel(t *testing.T) {
+	requireLANStack(t)
 	web := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "captcha page")
 	}))
