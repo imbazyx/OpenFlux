@@ -37,13 +37,21 @@ hand-off. Note that reading the archive's certificates needs
 collection and `PackageInfo.signatures` is always null, which made the whole
 comparison inert while a test still passed.
 
-**A rotation during the VPN consent reported a granted permission as refused.**
-`registerForActivityResult` keeps its launcher in the `ActivityResultRegistry`,
-which outlives the activity and replays a pending result to the recreated one.
-`ActivityBridge.detach()` was clearing its slots anyway, so a rotation made
-`prepareVpn` return false and the screen said "Android не разрешил OpenFlux
-включить VPN" — then dropped the granted answer. It now keeps the slots when
-`isChangingConfigurations` is true.
+**A granted VPN consent could be reported as refused.** `registerForActivityResult`
+keeps its launcher in the `ActivityResultRegistry`, which outlives the activity
+and replays a pending result to the recreated one. `ActivityBridge.detach()`
+was clearing its slots anyway, so a pending consent was completed with `null`
+and the granted answer, arriving later, found nothing to complete. It now keeps
+the slots when `isChangingConfigurations` is true.
+
+Scope, and the first version of this note was wrong about it: `AndroidManifest`
+declares `configChanges` for `orientation`, `screenSize`, `screenLayout`,
+`smallestScreenSize`, `keyboardHidden`, `uiMode` and `density`, so **a rotation
+never destroys this activity and never reaches `detach` at all**. What is
+actually recreated is a configuration change outside that list — locale,
+`fontScale`, keyboard or navigation mode, `colorMode`, and OEM additions. The
+flag is right for those; rotation was the wrong example, and a commit message
+claimed otherwise.
 
 Still open on this path, and deliberately so: whether the installer actually
 finished is not observable (`TODO.local.md` predicts HyperOS will refuse an APK

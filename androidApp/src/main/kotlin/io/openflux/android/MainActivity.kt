@@ -82,11 +82,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        // isChangingConfigurations, not a guess: a rotation or a multi-window
-        // resize destroys and recreates this activity within the same second,
-        // and the recreated one's launchers are the ones that will deliver the
-        // pending result. Releasing the waiters here would tell the user their
-        // VPN consent was refused moments before they granted it.
+        // isChangingConfigurations, not a guess: when the activity IS recreated
+        // the registry behind registerForActivityResult replays the pending
+        // result to the new launchers, so releasing the waiters here would tell
+        // the user their VPN consent was refused. Note the manifest declares
+        // configChanges for orientation and screen size, so a rotation does not
+        // arrive here at all - this covers locale, fontScale and the rest.
         app.bridge.detach(this, isChangingConfigurations)
         super.onDestroy()
     }

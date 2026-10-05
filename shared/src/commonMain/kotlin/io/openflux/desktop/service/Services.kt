@@ -28,6 +28,25 @@ interface ProfileRepository {
 
 interface SettingsRepository {
     val settings: StateFlow<AppSettings>
+
+    /**
+     * True when a change is not durably on disk.
+     *
+     * `update` applies changes in memory and absorbs a failed write, so nothing
+     * throws and nothing is announced at the call site. A caller that must know
+     * whether a change survived the process reads this.
+     *
+     * It has to exist as a property rather than being inferred from an
+     * exception: the only thing that distinguishes a persisted proxy record from
+     * an in-memory one that will vanish at exit is this flag, and taking the
+     * Windows system proxy over without a durable record leaves the machine
+     * pointed at a dead port with nothing to put back.
+     */
+    val unsaved: Boolean get() = false
+
+    /** Why, for the log. Empty when [unsaved] is false. */
+    val writeFailureHint: String get() = ""
+
     fun update(transform: (AppSettings) -> AppSettings)
 }
 

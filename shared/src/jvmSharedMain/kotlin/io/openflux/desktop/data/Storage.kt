@@ -192,7 +192,21 @@ class FileSettingsRepository(dir: File, defaults: AppSettings = AppSettings()) :
     private val state: MutableStateFlow<AppSettings> = MutableStateFlow(
         when (val read = store.readOver(defaults)) {
             is JsonFile.Read.Ok ->
-                read.value.sane().let { loaded -> loaded.migrated().also { m -> if (m != loaded) store.write(m) } }
+                read.value.sane().let { loaded ->
+                    loaded.migrated().also { m ->
+                        // Guarded for the same reason update() is: this runs in
+                        // the constructor, and a throwing write here escapes into
+                        // AppFactory / OpenFluxApplication, so a full disk or a
+                        // read-only settings.json meant the app could not start
+                        // at all. The migration simply takes effect next launch.
+                        if (m != loaded) {
+                            runCatching { store.write(m) }.onFailure {
+                                writeFailure = "Не удалось сохранить миграцию настроек: " +
+                                    (it.message ?: it.javaClass.simpleName)
+                            }
+                        }
+                    }
+                }
             is JsonFile.Read.Unreadable -> {
                 unreadable = "Сохранённые настройки не читаются (${read.message}). Файл сохранён как settings.json.bad и не перезаписан."
                 defaults.sane().migrated()
@@ -203,6 +217,20 @@ class FileSettingsRepository(dir: File, defaults: AppSettings = AppSettings()) :
         },
     )
     override val settings: StateFlow<AppSettings> = state.asStateFlow()
+
+    /**
+     * True while a change exists only in memory.
+     *
+     * Covers the locked case as well as a refused write. While `locked` nothing
+     * is ever written, so reporting "saved" for the whole of that session would
+     * be a false all-clear - and the caller this exists for is the one that
+     * must decide whether to take the Windows system proxy over without a
+     * durable record.
+     */
+    override val unsaved: Boolean get() = locked || writeFailure != null
+
+    override val writeFailureHint: String
+        get() = writeFailure ?: unreadable ?: ""
 
     @Synchronized
     override fun update(transform: (AppSettings) -> AppSettings) {
