@@ -55,3 +55,6 @@ cookies-*.json
 known_hosts.old
 secrets/
 **/secrets/
+
+# временный клон для проверки теста пинa
+.tagcheck
