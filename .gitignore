@@ -28,3 +28,30 @@ OPERATIONS.local.md
 # a key that signs your updates is worse than no key at all.
 TODO.local.md
 /reserve/
+
+# Credential-shaped files, whatever they are called. /reserve/ above is
+# root-anchored, so it protects exactly one folder; without these a keystore or
+# a .env dropped anywhere else in the tree is one `git add -A` from being
+# committed, and a key in the history is extractable by anyone who clones and
+# cannot be revoked. Verified with `git check-ignore` rather than assumed.
+*.jks
+*.p12
+*.pfx
+*.keystore
+*.pem
+*.key
+*.p8
+id_rsa*
+id_ed25519*
+id_ecdsa*
+.env
+.env.*
+!.env.example
+*secrets*.txt
+release-secrets.txt
+ofsign.env
+cookies-*.json
+*.cookie-jar*
+known_hosts.old
+secrets/
+**/secrets/
