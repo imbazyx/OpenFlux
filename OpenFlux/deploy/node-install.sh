@@ -372,8 +372,16 @@ install_core() {
             CORE_ERROR="SHA-256 скачанного ядра не совпал, установка остановлена"
             return 1
         fi
+        # CREATED_BIN means "this run brought the file into existence", not
+        # "this run downloaded something". The branch above is entered when the
+        # file is present but has lost its executable bit or fails its hash, so
+        # mv -f here OVERWRITES a core that was already installed and set
+        # CREATED_BIN=1 regardless. A later failure then deleted that core in
+        # rollback() and re-pointed PREV_LINK - captured as its name - at the
+        # file just deleted, leaving a dangling link that bricked every channel
+        # already using it. The one thing the comment below says this prevents.
+        [ -e "$core" ] || CREATED_BIN=1
         chmod 0755 "$tmp_core" && mv -f "$tmp_core" "$core"
-        CREATED_BIN=1
     fi
     # Recorded before the link moves, and only the first time: apply may call
     # install_core again while rolling a forward step back, and the target that
@@ -508,9 +516,17 @@ EOF
             # (which only rejects a LISTENING socket) and then deleted by
             # rollback, taking a rule this run never added.
             ufw status | grep -qE "^$PORT/tcp[[:space:]]" && FW_PREEXISTED=1
+            # Set BEFORE, for the reason the firewalld branch below spells out,
+            # and it applies here too. ufw persists the rule to user.rules FIRST
+            # and only then applies it to the live chains, so a failing ufw-init
+            # returned non-zero with the rule already written. rollback()
+            # switches on CREATED_FW, so a flag set after the command matched
+            # nothing, cleaned up nothing, and the failed install reported a
+            # clean failure with the port open in the config - opening again at
+            # the next reload or reboot.
+            CREATED_FW=ufw
             ufw allow "$PORT/tcp" comment "openflux-node $CHANNEL" >/dev/null 2>&1 \
-                || apply_fail firewall "не удалось открыть порт в ufw"
-            CREATED_FW=ufw ;;
+                || apply_fail firewall "не удалось открыть порт в ufw" ;;
         firewalld)
             firewall-cmd --permanent --query-port="$PORT/tcp" >/dev/null 2>&1 && FW_PREEXISTED=1
             # CREATED_FW is set BEFORE the commands, not after. --permanent
@@ -532,9 +548,15 @@ EOF
     # install/remove cycle.
     [ -n "$CREATED_FW" ] && printf '%s %s\n' "$CREATED_FW" "$PORT" > "$CONF_ROOT/$CHANNEL/firewall"
 
+    # STARTED before the command, not after: `systemctl enable --now` runs both
+    # jobs and returns non-zero if EITHER failed. Enable failing while start
+    # succeeded used to reach rollback with STARTED unset, which does not stop
+    # or disable the unit - and the very next lines delete the unit file anyway,
+    # leaving a running node with no unit and a dangling
+    # multi-user.target.wants/openflux-node@<channel>.service symlink.
+    STARTED=1
     systemctl enable --now "openflux-node@$CHANNEL" >/dev/null 2>&1 \
         || apply_fail start "не удалось запустить openflux-node@$CHANNEL"
-    STARTED=1
     sleep 4
     if ! systemctl is-active --quiet "openflux-node@$CHANNEL"; then
         logs=$(journalctl -u "openflux-node@$CHANNEL" -n 8 -o cat --no-pager 2>/dev/null | tail -n 8)
@@ -595,29 +617,41 @@ cmd_upgrade() {
     set --
     failed=""
     for ch in $(list_channels); do
-        if systemctl is-active --quiet "openflux-node@$ch"; then
-            systemctl restart "openflux-node@$ch" 2>/dev/null \
-                || { failed="$failed $ch"; continue; }
-            # systemctl restart returns as soon as the job is done, which for a
-            # core that dies on startup is a success followed by "failed" a
-            # moment later. So the channel is polled, not assumed. Without this
-            # the loop below reported every channel as restarted and the prune
-            # then deleted the old core that was the only working one.
-            ok=0
-            i=0
-            while [ "$i" -lt 20 ]; do
-                if systemctl is-active --quiet "openflux-node@$ch"; then ok=1; break; fi
-                # Stop early if it has already given up rather than waiting out
-                # the full four seconds on a unit that is clearly not coming.
-                systemctl is-failed --quiet "openflux-node@$ch" && break
-                sleep 0.2
-                i=$((i + 1))
-            done
-            if [ "$ok" = 1 ]; then
-                set -- "$@" "$ch"
-            else
-                failed="$failed $ch"
-            fi
+        # A channel that is NOT running counts as failed. It used to be skipped
+        # by this guard entirely, so it appeared in neither `restarted` nor
+        # `failed`, did not block the prune, and produced no hint line: a node
+        # whose services were stopped upgraded to ok:true with restarted:[] and
+        # every old core deleted. Nothing had checked that the new core works on
+        # a channel that is down.
+        if ! systemctl is-active --quiet "openflux-node@$ch"; then
+            failed="$failed $ch"
+            continue
+        fi
+        systemctl restart "openflux-node@$ch" 2>/dev/null \
+            || { failed="$failed $ch"; continue; }
+        # systemctl restart returns as soon as the job is done, which for a
+        # core that dies on startup is a success followed by "failed" a moment
+        # later. So the channel is polled, not assumed. Without this
+        # the loop below reported every channel as restarted and the prune
+        # then deleted the old core that was the only working one.
+        ok=0
+        i=0
+        while [ "$i" -lt 20 ]; do
+            # One settle interval before the first look. The unit is Type=simple,
+            # so it reports active the moment exec succeeds and the loop above
+            # used to break at i=0 - passing exactly the case this exists for,
+            # a core that dies just after systemd saw it start.
+            sleep 0.2
+            if systemctl is-active --quiet "openflux-node@$ch"; then ok=1; break; fi
+            # Stop early if it has already given up rather than waiting out
+            # the full four seconds on a unit that is clearly not coming.
+            systemctl is-failed --quiet "openflux-node@$ch" && break
+            i=$((i + 1))
+        done
+        if [ "$ok" = 1 ]; then
+            set -- "$@" "$ch"
+        else
+            failed="$failed $ch"
         fi
     done
     if [ -n "$failed" ]; then

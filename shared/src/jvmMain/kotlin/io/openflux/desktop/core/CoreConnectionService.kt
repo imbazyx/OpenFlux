@@ -488,12 +488,24 @@ class CoreConnectionService(
  * throw this replaced.
  */
 private fun persist(block: (AppSettings) -> AppSettings): Boolean {
-    val failure = runCatching { settings.update(block) }.exceptionOrNull()
-    if (failure != null) {
-        log(LogLevel.Error, "Не удалось сохранить настройки: ${failure.message ?: failure.javaClass.simpleName}")
-        return false
+    // Asks the repository whether the change stuck, rather than waiting for an
+    // exception.
+    //
+    // It used to do the opposite, and that made the guard below dead code:
+    // `update` absorbs a failed write so the app cannot be killed by an
+    // unwritable file, which also means it never throws - so a try/catch here
+    // always took the success path. The takeover it was written to prevent
+    // happened exactly when it must not, and the machine was left pointing at
+    // a dead port with the original proxy settings on no medium at all.
+    runCatching { settings.update(block) }.onFailure {
+        log(LogLevel.Error, "Не удалось сохранить настройки: ${it.message ?: it.javaClass.simpleName}")
     }
-    return true
+    if (!settings.unsaved) return true
+    log(
+        LogLevel.Error,
+        settings.writeFailureHint ?: "Настройки не сохранены на диск",
+    )
+    return false
 }
 
 /** Points Windows at the core while a client is connected and the setting is on. */

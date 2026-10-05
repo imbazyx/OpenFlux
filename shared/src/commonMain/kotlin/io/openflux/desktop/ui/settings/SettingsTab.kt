@@ -76,6 +76,7 @@ import io.openflux.desktop.ui.components.SwitchRow
 import io.openflux.desktop.ui.components.Tone
 import io.openflux.desktop.ui.components.appClickable
 import io.openflux.desktop.ui.theme.AppTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.Dispatchers
@@ -691,15 +692,14 @@ private fun AboutSettings(model: SettingsScreenModel) {
                         if (result is InstallResult.Refused && !result.shown) {
                             toaster.show("Не удалось установить обновление", Tone.Danger)
                         }
+                    } catch (cause: CancellationException) {
+                        // collectWorkIfIdle() cancels on dispose. Swallowing this
+                        // as an ordinary error showed "Ошибка обновления:
+                        // StandaloneCoroutine was cancelled" to a user who was
+                        // simply leaving the screen, and completed the coroutine
+                        // normally instead of cancelled.
+                        throw cause
                     } catch (cause: Throwable) {
-                        // No catch at all used to be here, only finally, on a
-                        // SupervisorJob scope with no CoroutineExceptionHandler.
-                        // Anything a PlatformServices threw therefore reached the
-                        // platform default handler and killed the process - from
-                        // the settings screen, on a button the user pressed. Both
-                        // implementations wrap themselves today, but InstallResult
-                        // exists precisely because that is not something the
-                        // caller should have to take on trust.
                         toaster.show(
                             "Ошибка обновления: ${cause.message ?: cause.javaClass.simpleName}",
                             Tone.Danger,
@@ -722,6 +722,18 @@ private fun AboutSettings(model: SettingsScreenModel) {
                 model.work.launch {
                     try {
                         model.apply(platform.checkForUpdateDetailed())
+                    } catch (cause: CancellationException) {
+                        throw cause
+                    } catch (cause: Throwable) {
+                        // The install branch below got this and the check branch
+                        // did not, on a SupervisorJob scope with no
+                        // CoroutineExceptionHandler. model.apply is finally what
+                        // turns a thrown check into a message instead of a dead
+                        // process, and only for the one button that has it.
+                        toaster.show(
+                            "Ошибка проверки обновлений: ${cause.message ?: cause.javaClass.simpleName}",
+                            Tone.Danger,
+                        )
                     } finally {
                         model.checkingRelease = false
                     }

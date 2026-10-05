@@ -34,8 +34,8 @@ class ActivityBridge {
     /**
      * The activity is going away.
      *
-     * [recreating] is true for a configuration change - a rotation, or a
-     * multi-window resize - and the two cases are not the same.
+     * [recreating] is true for a configuration change the activity did not
+     * declare, and the two cases are not the same.
      *
      * A destroyed activity's launchers are NOT gone. registerForActivityResult
      * keeps its launcher in the ActivityResultRegistry, which outlives the
@@ -43,13 +43,19 @@ class ActivityBridge {
      * recreated one. That is the entire reason to use it instead of
      * startActivityForResult.
      *
-     * Completing the slots here anyway threw that away. On a rotation during
-     * the VPN consent: onDestroy cleared the slot and completed it with null,
-     * so prepareVpn returned false and the screen said "Android не разрешил
-     * OpenFlux включить VPN" - while the user was looking at the consent dialog
-     * and about to grant it. The granted answer then arrived, found a null slot
-     * and was dropped. A permission the user gave was reported as refused, and
-     * on the path the owner requires to work.
+     * Completing the slots regardless threw that away: the user grants the
+     * consent, prepareVpn has already returned false and told them Android
+     * refused, and the granted answer arrives to find a null slot.
+     *
+     * Scope, and this correction matters more than the fix: AndroidManifest
+     * declares configChanges for orientation, screenSize, screenLayout,
+     * smallestScreenSize, keyboardHidden, uiMode and density, so a rotation and
+     * a multi-window resize do NOT destroy this activity and never reach here.
+     * An earlier version of this comment claimed a rotation did, and an earlier
+     * commit was written on that basis. What actually recreates the activity is
+     * a configuration change outside that list - a locale change, fontScale,
+     * keyboard or navigation mode, colorMode, and OEM additions. Those are the
+     * cases this handles.
      *
      * When the activity is really finishing, nothing will answer and the
      * waiters must be released or the caller's coroutine parks forever holding
