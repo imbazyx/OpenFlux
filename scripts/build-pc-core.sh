@@ -11,6 +11,22 @@ VER="$OUT/openflux-core.version"
 
 export PATH="$PATH:/usr/local/go/bin"
 
+# Refuse a dirty tree, the way build-exit-core.sh does.
+#
+# The stamp below is written as a bare `git rev-parse --short HEAD`, so a build
+# from a modified checkout stamped itself with a commit it was not built from,
+# and nothing downstream could tell. That is how 2.3.1 shipped a PC client
+# whose bundled core was two commits behind the source with a stamp that said
+# otherwise: on this machine the stamp read 6bb4624 while HEAD was ce0a278.
+# build-android-core.sh marks a dirty core with `--dirty`; this one could not,
+# because it never looked.
+DIRTY="$(git -C "$ROOT" status --porcelain --untracked-files=no)"
+if [ -n "$DIRTY" ]; then
+  echo "!! рабочее дерево изменено: штамп версии соврал бы" >&2
+  echo "$DIRTY" | head -5 >&2
+  exit 1
+fi
+
 mkdir -p "$OUT"
 cd "$ROOT/OpenFlux"
 
@@ -67,7 +83,14 @@ fetch_wintun
 
 # The desktop app shows this next to its own version; without it the field
 # would read "встроенное" for a core that is plainly a specific build.
+# Written only after the tree check above, and re-read back to prove the file
+# on disk is the one this run produced.
 git -C "$ROOT" rev-parse --short HEAD > "$VER"
+if go version -m "$OUT/openflux-windows-amd64.exe" 2>/dev/null | grep -q 'vcs.modified=true'; then
+  echo "!! в .exe vcs.modified=true: дерево было грязным на момент сборки" >&2
+  exit 1
+fi
 echo "== версия ядра: $(cat "$VER") =="
+go version -m "$OUT/openflux-windows-amd64.exe" | grep -E 'vcs\.(revision|modified)' || true
 echo "== содержимое $OUT =="
 ls -la "$OUT"
