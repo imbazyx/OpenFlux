@@ -19,6 +19,8 @@ import io.openflux.desktop.updates.compareVersions
 import io.openflux.desktop.updates.pickApk
 import io.openflux.desktop.updates.versionCodeOf
 import io.openflux.desktop.service.AppUpdate
+import io.openflux.desktop.updates.AssetProbe
+import io.openflux.desktop.updates.missingAssetMessage
 import io.openflux.desktop.service.UpdateCheck
 import io.openflux.android.core.AppSelection
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -211,12 +213,15 @@ class AndroidPlatformServices(
         // device prefers, must still be installable - otherwise a phone whose
         // first supported ABI has no split simply can never update.
         val candidates = android.os.Build.SUPPORTED_ABIS.filter { it in KNOWN_ABIS } + "universal"
-        val found = candidates.firstNotNullOfOrNull { abi ->
+        val probes = candidates.map { abi ->
             val name = "OpenFluxAndroid-$version-androidApp-$abi-release.apk"
             val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
-            if (exists(url)) url else null
+            probe(url) to url
         }
-            ?: return@withContext UpdateCheck.Failed("выпуск $tag есть, но APK для этого устройства не отдаётся")
+        val found = probes.firstOrNull { (p, _) -> p is AssetProbe.Found }?.second
+        if (found == null) {
+            return@withContext UpdateCheck.Failed(missingAssetMessage(tag, probes.map { it.first }))
+        }
 
         val update = AppUpdate(
             version = version,
@@ -426,7 +431,8 @@ class AndroidPlatformServices(
             .find(feed)?.groupValues?.get(1)?.trim()
 
     /** True when the URL resolves, so a download is not offered before it exists. */
-    private fun exists(url: String): Boolean = runCatching {
+    /** What one HEAD request actually established. */
+    private fun probe(url: String): AssetProbe = runCatching {
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.connectTimeout = 8000
         connection.readTimeout = 10000
@@ -434,8 +440,8 @@ class AndroidPlatformServices(
         connection.setRequestProperty("User-Agent", "OpenFlux-Android")
         val code = connection.responseCode
         connection.disconnect()
-        code in 200..399
-    }.getOrDefault(false)
+        if (code in 200..399) AssetProbe.Found else AssetProbe.Unexpected(code)
+    }.getOrElse { AssetProbe.Unreachable(it.javaClass.simpleName + ": " + (it.message ?: "без подробностей")) }
 
     private fun sha256Hex(file: java.io.File): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256")

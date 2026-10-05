@@ -134,6 +134,28 @@ class AndroidConnectionService(
     }
 
     private suspend fun begin(profile: Profile) {
+        // Everything below touches the VpnService bridge, the notification
+        // channel and ProcessBuilder-equivalents, and none of it is guarded.
+        // The scope has a SupervisorJob, which stops a failure from cancelling
+        // siblings but does nothing about the exception itself: it reaches the
+        // default handler and the app dies. That happened after run = next and
+        // _state = Connecting were already set, so the user got a crash on top
+        // of a screen that still said "connecting".
+        //
+        // The two early returns below leave begin through the lambda, which is
+        // what they already meant, so nothing changes for the paths that handle
+        // their own failure.
+        runCatching {
+            beginGuarded(profile)
+        }.onFailure { cause ->
+            // Not just the message: an exception with no message is the norm
+            // for several of these, and "Ошибка" tells the user nothing while
+            // the class name at least identifies it in a bug report.
+            fail(profile, cause.message ?: "${cause.javaClass.simpleName} без описания")
+        }
+    }
+
+    private suspend fun beginGuarded(profile: Profile) {
         val current = settings.settings.value
         _exitShareLink.value = null
         _exitAddress.value = ExitAddress.Unknown
