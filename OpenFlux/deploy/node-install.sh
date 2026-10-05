@@ -415,7 +415,7 @@ install_core() {
 }
 
 write_unit() {
-    cat > "$UNIT_FILE" <<EOF
+    cat > "$UNIT_FILE" <<EOF || return 1
 $MARKER
 [Unit]
 Description=OpenFlux node channel %i
@@ -443,7 +443,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 0644 "$UNIT_FILE"
+    chmod 0644 "$UNIT_FILE" || return 1
 }
 
 cmd_apply() {

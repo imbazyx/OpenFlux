@@ -112,4 +112,24 @@ class DesktopReleaseSelectionTest {
             JvmPlatformServices.appReleaseTags(wide),
         )
     }
+
+    @Test
+    fun `a pre-release tag is not an app release`() {
+        // "Starts with v and is longer than v" also accepts v2.4.0-rc1, and
+        // versionParts drops the suffix, so such a tag sorted ABOVE v2.3.2, took
+        // the first walk slot, failed its probe, and the user was told "выпуск
+        // v2.4.0-rc1 есть, но установщик OpenFlux-2.4.0.msi не отдаётся" about
+        // a tag this project publishes no assets for. Android's filter is a
+        // regex with a test; the desktop's was a prefix check and had neither.
+        val withRc = """
+            <feed>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v2.4.0-rc1"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v2.3.2"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v2.3"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/node-v1.0.0"/></entry>
+            </feed>
+        """.trimIndent()
+
+        assertEquals(listOf("v2.3.2"), JvmPlatformServices.appReleaseTags(withRc))
+    }
 }
