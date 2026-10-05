@@ -18,6 +18,11 @@ import (
 	"openflux/utils"
 )
 
+// maxTransports bounds how many carriers one session may hold. A peer that
+// knows the session secret can request transports without limit, and each one
+// costs goroutines, sockets and a room join.
+const maxTransports = 16
+
 // Factory builds a raw transport from a control.TransportConfig.
 // main.go provides the concrete implementation because it is the only place
 // that knows about every transport package (yandex, mailru, direct, ...).
@@ -118,6 +123,13 @@ func (m *Manager) Add(name, typ string, raw transport.Transport, priority int, p
 		})
 	}
 	return nil
+}
+
+// Count reports how many transports are attached.
+func (m *Manager) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.entries)
 }
 
 // Remove detaches a transport from the Session and stops it.
@@ -429,6 +441,18 @@ func (m *Manager) SetControlCallback(cb func(sub control.Subtype, payload []byte
 func (m *Manager) startTransport(cfg *control.TransportConfig) error {
 	if cfg == nil || cfg.Name == "" {
 		return errors.New("manager: empty config")
+	}
+	if len(cfg.Name) > 64 {
+		return fmt.Errorf("manager: transport name too long (%d)", len(cfg.Name))
+	}
+	// Every map, goroutine and socket below is created per transport and
+	// nothing else is bounded: a peer that holds the session secret can send
+	// TransportStart as fast as it likes, and each accepted one joins a room,
+	// starts goroutines and opens connections. The rest of this codebase caps
+	// what a peer can make it hold - conntrack 65536, UDP NAT 256, the dedupe
+	// table a fixed 64 - so this is the last uncapped one.
+	if m.Count() >= maxTransports {
+		return fmt.Errorf("manager: over the %d transport limit", maxTransports)
 	}
 	raw, err := m.factory(cfg)
 	if err != nil {

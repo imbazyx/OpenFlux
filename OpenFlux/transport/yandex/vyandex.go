@@ -84,12 +84,29 @@ func DefaultVolgaConfig() VolgaConfig {
 
 const volgaUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0"
 
-// maxWSMessageBytes caps one WebSocket message on every carrier in this package.
-// A tunnel frame is at most 1 MiB (transport/framing.go), so a few megabytes
-// leaves generous headroom for a batched read while still refusing the
-// unbounded message a participant in a public document can build out of
-// continuation frames.
-const maxWSMessageBytes = 4 << 20
+// maxDocWSMessageBytes caps one WebSocket message on the carriers in this
+// package that send a single packet per message. A tunnel frame is at most
+// 1 MiB (transport/framing.go) and base64 expands it by 4/3, so 4 MiB has
+// room for the largest legitimate message several times over while still
+// refusing the unbounded message a participant in a public document can build
+// out of continuation frames.
+const maxDocWSMessageBytes = 4 << 20
+
+// maxWSMessageBytes caps one WebSocket message on the volga relay, derived from
+// its own batching rather than written down as a constant.
+//
+// This carrier does not put one packet in a message: a relay batch is flushed
+// AFTER the packet that crossed the ceiling, so a batch reaches
+// BatchMaxBytes-1+MaxPayloadBytes bytes raw, base64 and a JSON envelope expand
+// it by 4/3 on top. A constant copied from the carriers that do send one
+// packet per message would be silently below that, and the failure is not a
+// visible error - ReadMessage fails, connect() returns, and the session
+// reconnects forever with nextReconnectDelay never resetting, which is a tunnel
+// that is up and carries nothing. Deriving it means raising the batch ceiling
+// cannot reintroduce that.
+func (w *wsListener) maxWSMessageBytes() int64 {
+	return int64(w.config.BatchMaxBytes+w.config.MaxPayloadBytes)*4/3 + (64 << 10)
+}
 
 var reClientConfig = regexp.MustCompile(`<script[^>]*id="client-config"[^>]*>(.*?)</script>`)
 
@@ -190,7 +207,7 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 
 		resp, err := session.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("GET %s: %w", currentURL, err)
+			return nil, fmt.Errorf("GET %s: %w", safeVolgaURL(currentURL), err)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -206,7 +223,7 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 			loc := resp.Header.Get("Location")
 			if loc == "" {
-				return nil, fmt.Errorf("redirect without Location from %s", currentURL)
+				return nil, fmt.Errorf("redirect without Location from %s", safeVolgaURL(currentURL))
 			}
 
 			// Second-tier captcha (SmartCaptcha): cannot be solved with PoW.
@@ -237,23 +254,29 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 			continue
 		}
 
-		return nil, fmt.Errorf("unexpected status %d at %s", resp.StatusCode, currentURL)
+		return nil, fmt.Errorf("unexpected status %d at %s", resp.StatusCode, safeVolgaURL(currentURL))
 	}
 
 	if finalBody == nil {
-		return nil, fmt.Errorf("too many redirects from %s", docURL)
+		return nil, fmt.Errorf("too many redirects from %s", safeVolgaURL(docURL))
 	}
 
 	utils.Debugf("[VOLGA] final URL: %s", safeVolgaURL(finalURL))
 
 	m := reClientConfig.FindSubmatch(finalBody)
 	if len(m) < 2 {
-		preview := string(finalBody)
-		if len(preview) > 3000 {
-			preview = preview[:3000]
+		// The body is the document's client-config bootstrap: access_token,
+		// request-path and sign all live in it. Gated on --sensitive like every
+		// other raw dump, and capped, because this is the one line here that
+		// printed the whole credential at plain debug level.
+		if utils.Sensitive() {
+			preview := string(finalBody)
+			if len(preview) > 3000 {
+				preview = preview[:3000]
+			}
+			utils.Debugf("[VOLGA] HTML preview: %s", preview)
 		}
-		utils.Debugf("[VOLGA] HTML preview: %s", preview)
-		return nil, fmt.Errorf("client-config not found in %s", finalURL)
+		return nil, fmt.Errorf("client-config not found in %s", safeVolgaURL(finalURL))
 	}
 
 	var cfg map[string]interface{}
@@ -960,7 +983,7 @@ func (w *wsListener) connect() error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
-	conn.SetReadLimit(maxWSMessageBytes)
+	conn.SetReadLimit(w.maxWSMessageBytes())
 	defer conn.Close()
 	w.connMu.Lock()
 	w.conn = conn

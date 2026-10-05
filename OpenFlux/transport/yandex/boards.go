@@ -151,8 +151,13 @@ func (t *BoardsTransport) Start() error {
 	if err != nil {
 		return fmt.Errorf("boards auth: %w", err)
 	}
-	utils.Debugf("[BOARDS] auth OK: hash=%s name=%q userHash=%s dashboard=%q wsHost=%s",
-		info.hash, info.name, info.userHash, info.dashboard, info.wsHost)
+	// The whiteboard hash is the room's address - it is what a client dials to
+	// join - and the user hash identifies the account. Digests are enough to see
+	// which room this is; the values themselves are credentials.
+	utils.Debugf("[BOARDS] auth OK: hash=%s name=%q userHash=%s dashboard=%s wsHost=%s",
+		utils.Sha256Hex([]byte(info.hash))[:12], info.name,
+		utils.Sha256Hex([]byte(info.userHash))[:12],
+		safeVolgaURL(info.dashboard), info.wsHost)
 
 	t.closeOnce = sync.Once{}
 	t.done = make(chan struct{})
@@ -523,7 +528,7 @@ func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
 		}
 		return fmt.Errorf("dial %s (http %d): %w", wsURL, status, err)
 	}
-	conn.SetReadLimit(maxWSMessageBytes)
+	conn.SetReadLimit(maxDocWSMessageBytes)
 	utils.Debugf("[BOARDS] WS connected: %s", info.wsHost)
 
 	participant := info.userHash

@@ -37,6 +37,18 @@ const mailruUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWe
 // participant can build out of continuation frames.
 const maxWSMessageBytes = 4 << 20
 
+// safeMailruWSURL keeps only the scheme and host. The document's WebSocket URL
+// carries the doc key in its path, and the doc key is the room's address:
+// anyone holding it can join. Printing the whole URL is the same leak as
+// printing the key.
+func safeMailruWSURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "<invalid URL>"
+	}
+	return u.Scheme + "://" + u.Host + "/…"
+}
+
 var cursorPayloadRe = regexp.MustCompile(`"cursor":"[^;]+;([^"]+)"`)
 
 type MailruDocsInfo struct {
@@ -231,7 +243,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		headers.Set("User-Agent", mailruUserAgent)
 		headers.Set("Origin", "https://docs.datacloudmail.ru")
 
-		utils.Debugf("[M-DOCS] WebSocket dial %s", info.WsURL)
+		utils.Debugf("[M-DOCS] WebSocket dial %s", safeMailruWSURL(info.WsURL))
 		conn, resp, err := dialer.Dial(info.WsURL, headers)
 		if err != nil {
 			status := 0

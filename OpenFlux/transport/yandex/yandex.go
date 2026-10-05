@@ -223,7 +223,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		headers.Set("Cookie", info.CookieStr)
 		headers.Set("Host", info.Host)
 
-		utils.Debugf("[YDOCS] WebSocket dial %s", info.WsURL)
+		utils.Debugf("[YDOCS] WebSocket dial %s", safeVolgaURL(info.WsURL))
 		conn, resp, err := dialer.Dial(info.WsURL, headers)
 		if err != nil {
 			status := 0
@@ -237,7 +237,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		// A tunnel frame is at most 1 MiB; cap the message so a hostile
 		// participant in the document cannot build an unbounded one out of
 		// continuation frames.
-		conn.SetReadLimit(maxWSMessageBytes)
+		conn.SetReadLimit(maxDocWSMessageBytes)
 		utils.Debugf("[YDOCS] WebSocket connected to %s", info.Host)
 
 		writeQueue := make(chan []byte, t.GetConfig().MaxQueueSize)
