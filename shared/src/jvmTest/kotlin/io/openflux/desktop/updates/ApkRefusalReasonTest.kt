@@ -126,4 +126,41 @@ class ApkRefusalTest {
         assertNull(apkRefusal(ApkFacts(pkg, 20302, own), pkg, 20301, own, "2.3.1"))
         assertNull(apkRefusal(ApkFacts(pkg, 20302, own, "2.3.2"), pkg, 20301, own, null))
     }
+
+    @Test
+    fun `a stale archive is caught against the tag, not only against the installed app`() {
+        // The gap the installed-app comparison misses. User on 2.3.0, tag
+        // v2.3.2, but the APK in that release was built from a stale
+        // gradle.properties and says 2.3.1. Against the INSTALLED app that is
+        // newer (+1), so nothing refused: the system saw 20301 > 20300, installed
+        // it, the app then reported 2.3.1, tag v2.3.2 was still newer, and the
+        // button offered v2.3.2 again - the same ~40MB for ever. Only comparing
+        // the archive to the tag it was published under sees the divergence.
+        val stale = ApkFacts(pkg, 20301, own, versionName = "2.3.1")
+
+        val text = apkRefusal(stale, pkg, 20300, own, "2.3.0", taggedVersion = "2.3.2")
+        assertNotNull(text, "APK 2.3.1 published under tag 2.3.2 must be refused for a user on 2.3.0")
+        assertEquals(true, text!!.contains("2.3.2"), text)
+    }
+
+    @Test
+    fun `an archive that matches the tag is not refused`() {
+        assertNull(
+            apkRefusal(
+                ApkFacts(pkg, 20302, own, versionName = "2.3.2"),
+                pkg, 20300, own, "2.3.0", taggedVersion = "2.3.2",
+            ),
+        )
+    }
+
+    @Test
+    fun `the signer still outranks the version mismatch`() {
+        // Branch order is load-bearing: this version branch was placed above the
+        // signer check once and shadowed it.
+        val text = apkRefusal(
+            ApkFacts(pkg, 20301, "cc:dd", versionName = "2.3.1"),
+            pkg, 20300, own, "2.3.0", taggedVersion = "2.3.2",
+        )!!
+        assertEquals(true, text.contains("ключ"), text)
+    }
 }

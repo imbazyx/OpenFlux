@@ -117,8 +117,20 @@ sha256_of() {
 }
 
 firewall_kind() {
+    # `ufw-inactive` is its own value, and BOTH the plan case and the apply case
+    # handle it. Adding the value without the two arms would be worse than the
+    # bug: an unhandled `case` value falls through silently and
+    # `[ -n "$CREATED_FW" ]` would then be false, so no record is written -
+    # which is exactly the leaked-rule defect the record write was fixed for.
     if have ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then echo ufw
     elif have firewall-cmd && firewall-cmd --state >/dev/null 2>&1; then echo firewalld
+    # ufw is installed but not enabled. `ufw allow` still persists to
+    # /etc/ufw/user.rules and exits 0 while inactive, so running it now means a
+    # later `ufw enable` cannot lock this channel out. Reporting this as "none"
+    # instead - which is what happened - wrote no rule and no record, and the
+    # first ordinary `ufw enable` on a fresh Debian box then dropped the node's
+    # direct transport with nothing in $CONF_ROOT/$CHANNEL to diagnose it with.
+    elif have ufw; then echo ufw-inactive
     else echo none
     fi
 }
@@ -292,6 +304,8 @@ cmd_plan() {
         # so without this the plan lists the direct transport and never mentions
         # that nothing will be filtering it.
         none) set -- "$@" "Брандмауэр не активен: $PORT/tcp будет доступен из сети без ограничений" ;;
+        ufw-inactive)
+            set -- "$@" "ufw установлен, но выключен: правило для $PORT/tcp будет сохранено и сработает при 'ufw enable'" ;;
     esac
 
     # shellcheck disable=SC2046
@@ -572,6 +586,15 @@ EOF
             CREATED_FW=ufw
             ufw allow "$PORT/tcp" comment "openflux-node $CHANNEL" >/dev/null 2>&1 \
                 || apply_fail firewall "не удалось открыть порт в ufw" ;;
+        ufw-inactive)
+            # Same commands, same record. `ufw allow` persists to
+            # /etc/ufw/user.rules and exits 0 while ufw is disabled, so the rule
+            # is already in place for the day the admin runs `ufw enable` - which
+            # is the whole point: `none` left nothing, and that first enable then
+            # dropped this channel with no rule to re-add and no record to read.
+            CREATED_FW=ufw
+            ufw allow "$PORT/tcp" comment "openflux-node $CHANNEL" >/dev/null 2>&1 \
+                || apply_fail firewall "не удалось сохранить правило в ufw (брандмауэр выключен)" ;;
         firewalld)
             firewall-cmd --permanent --query-port="$PORT/tcp" >/dev/null 2>&1 && FW_PREEXISTED=1
             # CREATED_FW is set BEFORE the commands, not after. --permanent

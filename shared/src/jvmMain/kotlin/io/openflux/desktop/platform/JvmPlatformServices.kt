@@ -426,12 +426,42 @@ class JvmPlatformServices(
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "OpenFlux-Desktop")
             }
-            val bytes = try {
-                connection.inputStream.readBytes()
+            // The status code was never looked at here, unlike request() in the
+            // same file. A captive portal or a corporate proxy answering 200
+            // with an HTML login page produced a file of non-zero length, which
+            // passed `target.length() > 0` and was handed to msiexec - and the
+            // app's own message pointed at the checksum, while the real fault was
+            // the network.
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                part.delete()
+                BrowserLog.problem("GitHub ответил кодом $status на $publishedName — скачано не то, что нужно")
+                return false
+            }
+            // Streamed to the .part file with the digest updated as it goes, rather
+            // than read into one ByteArray first. The MSI is 118 MB and
+            // readBytes grows by doubling, so the peak was several hundred MB
+            // on a heap that is a quarter of physical RAM - and the array was
+            // then held again while being written out. On a small laptop that
+            // is an OOM inside runCatching, which reported exactly what a
+            // corrupt download reports, with the cause nowhere. The Android
+            // twin already streams.
+            val digest = MessageDigest.getInstance("SHA-256")
+            try {
+                connection.inputStream.use { input ->
+                    part.outputStream().use { out ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            digest.update(buffer, 0, read)
+                            out.write(buffer, 0, read)
+                        }
+                    }
+                }
             } finally {
                 connection.disconnect()
             }
-            part.writeBytes(bytes)
             if (expected == null) {
                 // Never silent. Android logs exactly this before installing an
                 // APK with no manifest line; on Windows it is not a rare
@@ -444,8 +474,7 @@ class JvmPlatformServices(
                         "устанавливается без проверки"
                 )
             } else {
-                val actual = MessageDigest.getInstance("SHA-256")
-                    .digest(bytes).joinToString("") { "%02x".format(it) }
+                val actual = digest.digest().joinToString("") { "%02x".format(it) }
                 if (actual != expected) {
                     part.delete()
                     BrowserLog.problem("Контрольная сумма $publishedName не совпала")

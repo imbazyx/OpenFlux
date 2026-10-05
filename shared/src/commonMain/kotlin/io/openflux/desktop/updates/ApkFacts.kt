@@ -47,7 +47,7 @@ data class ApkFacts(
  * for in downloads. The legitimate upgrade passes: 2.3.2 is strictly newer than
  * 2.3.1 whatever the versionCode pair happens to be.
  */
-fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSigner: String?, installedVersionName: String? = null): String? = when {
+fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSigner: String?, installedVersionName: String? = null, taggedVersion: String? = null): String? = when {
     facts == null -> "Скачанный файл не читается как приложение Android"
     facts.packageName != ownPackage ->
         "Скачано приложение ${facts.packageName}, а не $ownPackage"
@@ -62,9 +62,24 @@ fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSig
         // mis-signed produced "тег выпуска не совпадает с содержимым APK" and
         // never mentioned the key, sending the user after the wrong problem.
         "Выпуск подписан другим ключом, чем установленное приложение"
+    // Archive against the TAG, which is what the message claims. Comparing only
+    // against the installed app misses the case this was written for: a user on
+    // 2.3.0 offered tag v2.3.2 whose APK was built stale at 2.3.1 gets
+    // compareVersions("2.3.1","2.3.0") = +1, so nothing refuses. The system
+    // sees 20301 > 20300 and installs it, the app then reports 2.3.1, the tag
+    // v2.3.2 is still newer, and the button offers it again - the same 40MB for
+    // ever. Only comparing the archive to the tag it was published under sees
+    // the divergence at all.
+    //
+    // AFTER the signer branch, and deliberately: this exact branch was placed
+    // above that check once and shadowed it, sending users after the wrong
+    // problem when a release was both mis-tagged and mis-signed.
+    facts.versionName != null && taggedVersion != null &&
+        compareVersions(facts.versionName, taggedVersion) != 0 ->
+        "Выпуск $taggedVersion собран из APK версии ${facts.versionName} — тег выпуска не совпадает с содержимым APK"
     facts.versionName != null && installedVersionName != null &&
         compareVersions(facts.versionName, installedVersionName) <= 0 ->
         "Выпуск собран из APK версии ${facts.versionName}, а установлена ${installedVersionName} — " +
-            "обновление ничего не изменит; тег выпуска не совпадает с содержимым APK"
+            "обновление ничего не изменит"
     else -> null
 }
