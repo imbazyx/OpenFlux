@@ -151,7 +151,8 @@ project needs is inside this directory.
 **The tag is behind HEAD, and the shipped core is no longer the HEAD core.**
 `v2.3.1` points at `9e6b3a7`. The diff since then is not one commit: it is
 **63 files under `OpenFlux/` and `shared/`** — the core, the tunnel, the
-transport and the shared UI — and roughly 5 700 added lines. The released
+transport and the shared UI — 3 528 insertions and 235 deletions in that subset
+alone, and 86 files / 5 819 insertions across the whole tree. The released
 2.3.1 artifacts therefore contain a substantially older core and must not be
 described as matching HEAD.
 
@@ -163,7 +164,8 @@ real; the claim about its result was false.
 ```bash
 git rev-list -n1 v2.3.1          # 9e6b3a7 as of this writing
 git diff --stat v2.3.1..HEAD     # any OpenFlux/ or shared/ hit means a rebuild
-                                  # today: 63 such files
+                                  # 63 such files as of 2026-10-06; re-run it,
+                                  # do not trust this line later
 ```
 
 ---
