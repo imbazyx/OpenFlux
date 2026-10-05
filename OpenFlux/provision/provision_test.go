@@ -45,6 +45,22 @@ func TestPinnedCommitIsReachable(t *testing.T) {
 	if _, err := exec.Command("git", "rev-parse", "--git-dir").Output(); err != nil {
 		t.Skip("not a git checkout; cannot check reachability")
 	}
+	// Reachability is only decidable where the history is present. Measured on
+	// `git clone --depth 1`: merge-base exits 128 with "Not a valid object
+	// name", which this test would report as a broken pin and turn CI red on a
+	// pin that is fine. actions/checkout@v4 defaults to depth 1.
+	//
+	// The test is whether the pinned commit is PRESENT, not whether the
+	// repository claims to be shallow: this working copy answers
+	// --is-shallow-repository with true - it was cloned with --depth 1 once -
+	// while carrying the full history, so a shallow-flag check would skip the
+	// test exactly where it is most useful.
+	if _, err := exec.Command("git", "rev-parse", "--verify", "main").Output(); err != nil {
+		t.Skip("no main branch in this checkout; reachability is not decidable")
+	}
+	if _, err := exec.Command("git", "cat-file", "-e", PinnedCommit+"^{commit}").Output(); err != nil {
+		t.Skip("pinned commit is not in this clone; reachability is not decidable here")
+	}
 	out, err := exec.Command("git", "merge-base", "--is-ancestor", PinnedCommit, "main").CombinedOutput()
 	if err != nil {
 		t.Fatalf("PinnedCommit %s is not reachable from main: %v\n%s\n"+
