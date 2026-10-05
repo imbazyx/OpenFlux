@@ -13,6 +13,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import io.openflux.desktop.service.AppUpdate
 import io.openflux.desktop.service.UpdateCheck
 import io.openflux.desktop.service.PlatformServices
+import io.openflux.desktop.web.BrowserLog
 import io.openflux.desktop.updates.compareVersions
 import io.openflux.desktop.updates.versionCodeOf
 import kotlinx.coroutines.Dispatchers
@@ -299,7 +300,7 @@ class JvmPlatformServices(
         // null, and every MSI was installed with no hash check at all - silently,
         // because the "installing unverified" warning was only on Android.
         val published = "OpenFlux-${update.version}$WINDOWS_INSTALLER_SUFFIX"
-        val downloaded = download(update.downloadUrl, target, publishedSha256(update.version, published))
+        val downloaded = download(update.downloadUrl, target, publishedSha256(update.version, published), published)
         if (!downloaded) return@withContext false
 
         val started = runCatching {
@@ -326,8 +327,12 @@ class JvmPlatformServices(
      * release publishes a checksum for this exact file. A missing manifest
      * entry is a warning, not a refusal: refusing would mean a release whose
      * manifest forgot the MSI could never be installed from in the app.
+     *
+     * [publishedName] is what the release calls the asset, which is not
+     * [target]'s name - it is in the log line for the unverifiable case, and
+     * that line is the only trace of it.
      */
-    private fun download(url: String, target: File, expected: String?): Boolean {
+    private fun download(url: String, target: File, expected: String?, publishedName: String): Boolean {
         val part = File(target.parentFile, target.name + ".part")
         return runCatching {
             val connection = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
@@ -343,15 +348,38 @@ class JvmPlatformServices(
                 connection.disconnect()
             }
             part.writeBytes(bytes)
-            if (expected != null) {
+            if (expected == null) {
+                // Never silent. Android logs exactly this before installing an
+                // APK with no manifest line; on Windows it is not a rare
+                // fallback but the only path that ever runs, because
+                // release.yml has no desktop job and SHA256SUMS.txt therefore
+                // contains no MSI line at all. Without this line an unverified
+                // installer is indistinguishable from a verified one.
+                BrowserLog.problem(
+                    "В выпуске нет контрольной суммы для $publishedName; " +
+                        "устанавливается без проверки"
+                )
+            } else {
                 val actual = MessageDigest.getInstance("SHA-256")
                     .digest(bytes).joinToString("") { "%02x".format(it) }
                 if (actual != expected) {
                     part.delete()
+                    BrowserLog.problem("Контрольная сумма $publishedName не совпала")
                     return false
                 }
             }
-            part.renameTo(target)
+            // renameTo's result used to be discarded and the function reported
+            // success from target.length(). The target name is fixed per version
+            // and never deleted, so a stale file from an earlier attempt -
+            // held open by a just-started msiexec or a scanner - made a failed
+            // rename look like a success, and msiexec was handed a file this
+            // round never downloaded.
+            target.delete()
+            if (!part.renameTo(target)) {
+                part.delete()
+                BrowserLog.problem("Не удалось сохранить загруженный установщик: $publishedName")
+                return false
+            }
             target.length() > 0
         }.getOrDefault(false)
     }

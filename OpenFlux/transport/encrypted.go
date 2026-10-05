@@ -33,9 +33,19 @@ var encryptedMagic = [3]byte{'O', 'F', 'X'}
 //
 // Each direction (client->exit, exit->client) uses its own derived key, so a
 // compromise of one direction's traffic does not help decrypt the other.
-// Every packet also carries a random nonce and is checked against a bounded
-// replay window, so a captured packet cannot be replayed back at either
-// peer.
+// Every packet also carries a random nonce, and a nonce is accepted only once.
+//
+// What that does and does not buy, stated plainly because the old wording here
+// promised more than the code did: the anti-replay state is a FIFO of the last
+// maxSeenNonces nonces, not a sequence window. A frame captured on the path
+// stops being rejected once maxSeenNonces further packets have been accepted
+// in that direction - GCM itself does not notice, because the AAD is only the
+// five-byte header and carries nothing monotonic. So an on-path attacker can
+// replay an old frame, not forever but after a bounded amount of traffic.
+//
+// Closing that needs a counter in the authenticated data, which is a change to
+// the wire format and therefore needs both peers upgraded at once. It was not
+// done here for that reason. What is here bounds the damage instead.
 type EncryptedTransport struct {
 	Transport
 	sendAEAD      cipher.AEAD
@@ -172,8 +182,15 @@ func (e *EncryptedTransport) Send(data []byte) error {
 	packet = append(packet, nonce...)
 	packet = e.sendAEAD.Seal(packet, nonce, data, header)
 
-	utils.Packetf("[CRYPTO] Send #%d dir=%d plaintext=%d ciphertext=%d nonce=%s",
-		e.sendOK.Load()+1, e.sendDirection, len(data), len(packet), hex.EncodeToString(nonce))
+	// PacketsEnabled first, on purpose: utils.Packetf's own contract says a hot
+	// path must test it, because Go evaluates the arguments before the call.
+	// hex.EncodeToString on the nonce is a per-packet allocation on a phone,
+	// where mobile calls SetPackets(false) unconditionally - so without this
+	// guard every packet on every device hex-encoded 12 bytes and wrote nothing.
+	if utils.PacketsEnabled() {
+		utils.Packetf("[CRYPTO] Send #%d dir=%d plaintext=%d ciphertext=%d nonce=%s",
+			e.sendOK.Load()+1, e.sendDirection, len(data), len(packet), hex.EncodeToString(nonce))
+	}
 	// Plaintext frames can carry control messages with cookie jars, so
 	// they are dumped only with --sensitive; ciphertext is what the
 	// carrier sees anyway.
@@ -229,8 +246,10 @@ func (e *EncryptedTransport) Receive(callback func([]byte)) {
 		}
 		nonceEnd := encryptedHeader + e.receiveAEAD.NonceSize()
 		nonce := packet[encryptedHeader:nonceEnd]
-		utils.Packetf("[CRYPTO] Recv #%d dir=%d nonce=%s cipherLen=%d -> decrypting",
-			e.recvOK.Load()+e.recvFail.Load()+1, header[4], hex.EncodeToString(nonce), len(packet)-nonceEnd)
+		if utils.PacketsEnabled() {
+			utils.Packetf("[CRYPTO] Recv #%d dir=%d nonce=%s cipherLen=%d -> decrypting",
+				e.recvOK.Load()+e.recvFail.Load()+1, header[4], hex.EncodeToString(nonce), len(packet)-nonceEnd)
+		}
 		plaintext, err := e.receiveAEAD.Open(nil, nonce, packet[nonceEnd:], header)
 		if err != nil {
 			e.recvFail.Add(1)
@@ -248,8 +267,10 @@ func (e *EncryptedTransport) Receive(callback func([]byte)) {
 			return
 		}
 		e.recvOK.Add(1)
-		utils.Packetf("[CRYPTO] Recv DECRYPT OK #%d dir=%d plaintext=%d bytes nonce=%s",
-			e.recvOK.Load(), header[4], len(plaintext), hex.EncodeToString(nonce))
+		if utils.PacketsEnabled() {
+			utils.Packetf("[CRYPTO] Recv DECRYPT OK #%d dir=%d plaintext=%d bytes nonce=%s",
+				e.recvOK.Load(), header[4], len(plaintext), hex.EncodeToString(nonce))
+		}
 		if utils.IsVerbose() && utils.Sensitive() {
 			utils.Debugf("[CRYPTO] Recv plaintext hexdump:\n%s", hex.Dump(plaintext))
 		}

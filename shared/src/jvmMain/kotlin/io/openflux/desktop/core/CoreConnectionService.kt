@@ -107,8 +107,21 @@ class CoreConnectionService(
         // without Internet; put the saved values back on the next start.
         BrowserLog.listener = { text, problem -> log(if (problem) LogLevel.Warning else LogLevel.Info, text) }
         settings.settings.value.savedSystemProxy?.let { saved ->
-            if (isWindows) runCatching { WindowsSystemProxy.restore(saved) }
-            settings.update { it.copy(savedSystemProxy = null) }
+            if (isWindows) {
+                // Same rule as restoreSystemProxy: a failed restore keeps its
+                // record, so this is retried on the next launch instead of
+                // being forgotten - and the failure is written down, because
+                // the user cannot otherwise tell a restored proxy from a broken
+                // one.
+                runCatching { WindowsSystemProxy.restore(saved) }
+                    .onSuccess { log(LogLevel.Info, "Системный прокси Windows восстановлен при запуске") }
+                    .onFailure {
+                        log(LogLevel.Error, "Не удалось вернуть системный прокси при запуске: ${it.message}")
+                    }
+                    .onSuccess { settings.update { it.copy(savedSystemProxy = null) } }
+            } else {
+                settings.update { it.copy(savedSystemProxy = null) }
+            }
         }
         scope.launch {
             settings.settings.distinctUntilChangedBy { it.systemProxy }.collect { applySystemProxy() }
@@ -378,9 +391,21 @@ class CoreConnectionService(
     @Synchronized
     private fun restoreSystemProxy() {
         val saved = settings.settings.value.savedSystemProxy ?: return
-        runCatching { WindowsSystemProxy.restore(saved) }
+        // The record is cleared ONLY when the restore actually worked.
+        //
+        // It used to be cleared unconditionally, one line below the
+        // runCatching, and the restore is not atomic: WindowsSystemProxy.set
+        // throws on the first failing `reg add`, so a timeout or a locked-down
+        // policy leaves ProxyServer/ProxyEnable half-written and Windows still
+        // pointing at 127.0.0.1. Erasing the one copy of the original settings
+        // in that state is unrecoverable - the startup recovery finds nothing
+        // to put back and the browser is offline with no record of why.
+        // Keeping a failed restore means the next launch tries again.
+        val ok = runCatching { WindowsSystemProxy.restore(saved) }
             .onSuccess { log(LogLevel.Info, "Системный прокси Windows восстановлен") }
-        settings.update { it.copy(savedSystemProxy = null) }
+            .onFailure { log(LogLevel.Error, "Не удалось вернуть системный прокси: ${it.message}") }
+            .isSuccess
+        if (ok) settings.update { it.copy(savedSystemProxy = null) }
     }
 
     // ---- exit address ----
@@ -572,11 +597,25 @@ class CoreBinary {
     /** Unpacking happens once; a second connect must not redo 15 MB of I/O. */
     private val once = java.util.concurrent.atomic.AtomicReference<File?>()
 
-    private fun bundledCandidates(): List<File> = listOfNotNull(
-        System.getProperty("compose.application.resources.dir")?.let { File(it, fileName) },
-        File(System.getProperty("user.dir"), "resources/$resourceDir/$fileName"),
-        File(System.getProperty("user.dir"), "desktopApp/resources/$resourceDir/$fileName"),
-    )
+    private fun bundledCandidates(): List<File> {
+        val explicit = System.getProperty("compose.application.resources.dir")
+        if (explicit != null) return listOf(File(explicit, fileName))
+
+        // The two user.dir entries are development fallbacks and are consulted
+        // ONLY from a source checkout. They used to be in the same list as the
+        // packaged path, at a HIGHER precedence than the jar: user.dir is
+        // whatever folder the exe was launched from, the ZIP is unzipped into
+        // Downloads, and anything able to write one file there -
+        // `resources\windows\openflux-windows-amd64.exe` - got executed with
+        // the user's privileges, unverified, before fromJar() was even
+        // consulted. The jar path at least checks the size.
+        val tree = File(System.getProperty("user.dir") ?: return emptyList())
+        if (!File(tree, "gradlew").isFile) return emptyList()
+        return listOf(
+            File(tree, "resources/$resourceDir/$fileName"),
+            File(tree, "desktopApp/resources/$resourceDir/$fileName"),
+        )
+    }
 
     /**
      * The core that shipped inside the app, unpacked on first use.
