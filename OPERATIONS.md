@@ -181,9 +181,25 @@ curl -fsSL "<asset-url>?cb=$(date +%s%N)" -o file
 sha256sum file                # compare against SHA256SUMS.txt
 ```
 
-`SHA256SUMS.txt` covers all seven files: the two Windows artifacts and the five
-APKs, Windows first, then Android alphabetically. Verify the manifest against
-the files on disk *before* uploading, not after.
+`SHA256SUMS.txt` covers the five APKs and nothing else. `wsl-build.sh` and
+`release.yml` both run `sha256sum *.apk`, and `release.yml` has only an Android
+job, so **no Windows artifact ever gets a line** - the two Windows files are
+uploaded by hand after the fact and are not in the manifest. This text used to
+claim seven files, Windows first. That was never true, and the desktop updater
+is built on the gap: `publishedSha256` finds no MSI line, installs the installer
+without checking it, and now says so in the log.
+
+Adding the line by hand is not enough on its own - `wsl-build.sh` empties
+`dist/` and the workflow truncates the manifest with `>`, so anything not
+present when that runs is gone. The real fix is a desktop job in `release.yml`
+that builds the MSI, stages it in `dist/` before line 136, and is covered by
+the same manifest. Until that exists, check the Windows artifacts by hand:
+
+```
+sha256sum OpenFluxPC/dist/OpenFlux-<version>.msi
+```
+
+Verify the manifest against the files on disk *before* uploading, not after.
 
 ### Confirming the Android core is really current
 
