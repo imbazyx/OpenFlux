@@ -31,8 +31,8 @@ vulnerability in it should say which branch and commit it was seen in.
 
 ## Signing
 
-Release APKs are signed with a private key that is **not** in this
-repository. The build reads it from the environment:
+Release APKs are signed with a private key that is **not** in this repository
+and never has been. The build reads it from the environment:
 
 | Variable | Meaning |
 |---|---|
