@@ -73,18 +73,22 @@ foreach ($f in $files) {
 
 $after = @(Get-Content $manifest)
 if ($after.Count -ne 7) { throw "expected 7 lines after appending, found $($after.Count)" }
-# Parentheses on BOTH sides, and that is the whole fix. `-join` is a binary
-# operator that binds TIGHTER than the comparison `-ne`, so the line as first
-# written parsed as `(X -join "`n" -ne $apkLines) -join "`n"` - it never compared
-# the two sets at all, it produced a non-empty string, and `if(<non-empty>)` is
-# true. So the guard threw "the APK lines changed" on a PERFECT manifest, after
-# the local copy was already mutated and before `gh release upload` ran - leaving
-# the release with the 5-line manifest, which is exactly the failure this check
-# exists to catch and which looks identical to never having run the script.
+# Parentheses on BOTH sides, and that is the whole fix. WITHOUT them the
+# expression evaluates to the STRING "True" (type System.String) for two
+# IDENTICAL arrays, and `if(<non-empty string>)` is true - so the guard threw
+# "the APK lines changed" on a PERFECT manifest, after the local copy was already
+# mutated and before `gh release upload` ran. The release kept the 5-line
+# manifest: exactly the failure this check exists to catch, and indistinguishable
+# from never having run the script.
 #
-# Verified by execution on pwsh 7.6.4 and Windows PowerShell 5.1:
-#   ($a -join "`n") -ne ($b -join "`n")  ->  False for identical arrays
-#   ($a -join "`n" -ne $b -join "`n")    ->  True  for identical arrays
+# Measured, not reasoned: identical arrays gave True unparenthesised and False
+# parenthesised, on pwsh 7.6.4 and Windows PowerShell 5.1 alike.
+#
+# The exact reparsing is NOT claimed here. A first attempt to explain this
+# comment asserted that the line grouped as `(X -join "`n" -ne $apkLines) -join
+# "`n"`", and the PowerShell AST does not agree. The observable behaviour above
+# is verified; the mechanism is not, and guessing it in a comment is what caused
+# a reader to consider "simplifying" these parentheses away.
 if (((($after | Where-Object { $_ -match 'OpenFluxAndroid-' }) -join "`n")) -ne
     (($apkLines) -join "`n")) {
     throw "the APK lines changed - something rewrote CI's manifest"
