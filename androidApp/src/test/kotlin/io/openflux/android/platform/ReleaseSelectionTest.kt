@@ -41,6 +41,29 @@ class ReleaseSelectionTest {
         assertEquals(1, AndroidPlatformServices.probeTimeout(now + 600_000, deadline))
     }
 
+    @Test
+    fun `the budget covers the request and not each of its two socket phases`() {
+        val now = 1_000_000L
+        val deadline = now + 45_000L
+
+        // The same value goes to connectTimeout AND readTimeout, so a request
+        // can spend it twice. Handing each phase the whole remainder put the
+        // worst case at ~49 seconds against a 45 second ceiling - which is the
+        // overshoot this was introduced to remove.
+        val withThirtySecondsLeft = AndroidPlatformServices.probeTimeout(now + 15_000, deadline)
+        assertTrue(
+            withThirtySecondsLeft * 2L <= 30_000L,
+            "two phases of ${withThirtySecondsLeft}ms exceed what was left",
+        )
+
+        // And the sum of every phase of every request still fits the budget.
+        val probes = 5 * 5 // five tags, five ABIs
+        assertTrue(
+            withThirtySecondsLeft.toLong() * probes <= 30_000L,
+            "the whole walk cannot fit in what was left",
+        )
+    }
+
     private fun entry(tag: String) =
         """  <entry>
     <id>tag:github.com,2008:Repository/12345/$tag</id>

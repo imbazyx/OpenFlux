@@ -681,7 +681,12 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
          * and HttpURLConnection reads 0 as "wait forever".
          */
         internal fun probeTimeout(nowMs: Long, deadlineMs: Long): Int =
-            (deadlineMs - nowMs).coerceIn(1L, 8000L).toInt()
+            // Half of what is left, because the value is applied to BOTH the
+            // connect and the read phase of one socket, so handing each of them
+            // the whole remainder let a single request cost 2x the budget and put
+            // the worst case at ~49s against a 45s ceiling. The doc above says
+            // it bounds "one HEAD request" - this is what makes that true.
+            ((deadlineMs - nowMs) / 2).coerceIn(1L, 8000L).toInt()
 
         /**
          * Only these are app releases. The same feed also carries the core/node

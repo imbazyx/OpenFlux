@@ -130,15 +130,24 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 		t.packetCount.Add(1)
 		network.LogPacket("TUNNEL", toPeer, data)
 		if err := trans.Send(data); err != nil {
-			// Packetf, not Debugf, for the same reason the batching layer's
-			// per-batch lines are: mobile.Start() turns debug logging on for
-			// the whole session, every Debugf goes to os.Stderr (ERROR
-			// priority in logcat) and to the app's log sink, and that sink
-			// takes the same mutex the packet path uses. A degraded tunnel
-			// failing to send once per packet therefore turns into a storm of
-			// logging that contends with the packets it is complaining about -
-			// the failure makes the tunnel slower.
-			utils.Packetf("[TUNNEL] trans.Send error: %v", err)
+			// Debugf, not Packetf, and the comment here used to insist on the
+			// opposite while calling Debugf - a note that argued for the change
+			// already made.
+			//
+			// Its reasoning was that mobile.Start() turns debug logging on for
+			// the whole session, so an error line per packet becomes a storm on
+			// os.Stderr, which contends with the packets it complains about.
+			// True, and Packetf makes the storm WORSE on the platform the
+			// comment names: mobile/exit.go, mobile/mobile.go and
+			// mobile/proxy.go all call utils.SetPackets(false) at startup, so
+			// every Packetf there is muted, while Debugf is at level 2 and that
+			// is exactly what those clients enable. Changing Debugf to Packetf
+			// therefore silenced the error on Android and made it appear on the
+			// node CLI at -d. Both backwards.
+			//
+			// utils.SafeGo and friends treat an error on a hot path the same
+			// way: keep it, let the log layer's rate limiting absorb it.
+			utils.Debugf("[TUNNEL] trans.Send error: %v", err)
 		}
 	}
 	t.tunnelEP = tunnelEP
