@@ -574,7 +574,14 @@ EOF
             # service that was down at the time was picked up by port_busy
             # (which only rejects a LISTENING socket) and then deleted by
             # rollback, taking a rule this run never added.
-            ufw status | grep -qE "^$PORT/tcp[[:space:]]" && FW_PREEXISTED=1
+            # "ALLOW IN" is required, not optional. `^$PORT/tcp[[:space:]]` on its own
+            # also matches `8443/tcp DENY IN`, `REJECT IN` and `LIMIT IN`, so a
+            # port the administrator had deliberately CLOSED set
+            # FW_PREEXISTED=1 - meaning "an opening rule already existed" - and
+            # rollback then skipped the delete, leaving the ALLOW this run added
+            # open forever. The unsafe direction, on the one flag whose whole
+            # purpose is to decide what may be removed.
+            ufw status | grep -qE "^$PORT/tcp[[:space:]]ALLOW IN" && FW_PREEXISTED=1
             # Set BEFORE, for the reason the firewalld branch below spells out,
             # and it applies here too. ufw persists the rule to user.rules FIRST
             # and only then applies it to the live chains, so a failing ufw-init
@@ -602,7 +609,17 @@ EOF
             # admin's own rule survives. `ufw delete allow` matches the tuple,
             # not the comment we write, so without this rollback removes a rule
             # this install never added.
-            grep -qE "^### tuple ### allow tcp $PORT[[:space:]]" /etc/ufw/user.rules 2>/dev/null \
+            # The trailing field is required to be `0.0.0.0/0` on the SOURCE
+            # side, not just "allow tcp $PORT". An admin's LAN-only rule -
+            # `ufw allow from 10.0.0.0/8 to any port 8443 proto tcp` - is
+            # persisted as `allow tcp 8443 10.0.0.0/8 any 0.0.0.0/0`, which
+            # matches the looser pattern and set FW_PREEXISTED=1. The script's
+            # own unrestricted `ufw allow 8443/tcp` was then never removed on
+            # rollback, so a failed install left the port open to the whole
+            # internet where it had been LAN-only. That is the same class of
+            # leak this whole flag exists to prevent, and it survives either
+            # ordering of the chain.
+            grep -qE "^### tuple ### allow tcp $PORT[[:space:]]0\.0\.0\.0/0" /etc/ufw/user.rules 2>/dev/null \
                 && FW_PREEXISTED=1
             CREATED_FW=ufw
             ufw allow "$PORT/tcp" comment "openflux-node $CHANNEL" >/dev/null 2>&1 \

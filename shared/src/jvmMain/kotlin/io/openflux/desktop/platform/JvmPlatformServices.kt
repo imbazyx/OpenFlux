@@ -314,9 +314,18 @@ class JvmPlatformServices(
                 // failure already computed and thrown away.
                 //
                 // The older tag is genuinely installable, so it is still
-                // returned - refusing would hide a working update. The warning
-                // rides along in both branches, so "последняя версия" is never
-                // printed unqualified while a newer release is known broken.
+                // returned - refusing would hide a working update.
+                //
+                // The warning reaches the screen on the UpToDate path only.
+                // `UpdateCheck.Available` carries no warning field, so on the
+                // installable path it goes to the log and nowhere else - this
+                // comment previously claimed it "rides along in both
+                // branches", which was not true. The screen is not lying in
+                // that case: the button says plainly which version it will
+                // install, and that version does exist. What the user is not
+                // told is that a newer one is there and broken. Adding the
+                // field to Available is the fix if that is ever wanted; until
+                // then the claim here is the honest one.
                 val warning =
                     newestProblem.takeIf { newestAppTag != null && newestAppTag != tag }
                 if (warning != null) {
