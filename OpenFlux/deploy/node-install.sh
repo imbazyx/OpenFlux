@@ -556,13 +556,42 @@ cmd_upgrade() {
     [ -n "$arch" ] || fail upgrade "архитектура $(uname -m) не поддерживается"
     install_core "$arch" || fail upgrade "$CORE_ERROR"
     set --
+    failed=""
     for ch in $(list_channels); do
         if systemctl is-active --quiet "openflux-node@$ch"; then
-            systemctl restart "openflux-node@$ch" || fail upgrade "не удалось перезапустить openflux-node@$ch"
-            set -- "$@" "$ch"
+            systemctl restart "openflux-node@$ch" 2>/dev/null \
+                || { failed="$failed $ch"; continue; }
+            # systemctl restart returns as soon as the job is done, which for a
+            # core that dies on startup is a success followed by "failed" a
+            # moment later. So the channel is polled, not assumed. Without this
+            # the loop below reported every channel as restarted and the prune
+            # then deleted the old core that was the only working one.
+            ok=0
+            i=0
+            while [ "$i" -lt 20 ]; do
+                if systemctl is-active --quiet "openflux-node@$ch"; then ok=1; break; fi
+                # Stop early if it has already given up rather than waiting out
+                # the full four seconds on a unit that is clearly not coming.
+                systemctl is-failed --quiet "openflux-node@$ch" && break
+                sleep 0.2
+                i=$((i + 1))
+            done
+            if [ "$ok" = 1 ]; then
+                set -- "$@" "$ch"
+            else
+                failed="$failed $ch"
+            fi
         fi
     done
-    # Older cores nothing points at any more.
+    if [ -n "$failed" ]; then
+        # The old cores stay exactly where they are. A failed upgrade must leave
+        # the server able to start, and it can: the symlink still points at a
+        # core that is present.
+        printf '{"ok":false,"core":"%s","restarted":%s,"failed":%s,"hint":"старые ядра сохранены; откатите канал на предыдущем ядре"}\n' \
+            "$CORE_VERSION" "$(json_list "$@")" "$(json_list $failed)"
+        return 1
+    fi
+    # Older cores nothing points at any more - only once every channel is up.
     for old in "$BIN_DIR"/openflux-node-v*; do
         [ "$old" = "$BIN_DIR/openflux-$CORE_VERSION" ] || rm -f "$old"
     done
