@@ -293,6 +293,9 @@ cmd_plan() {
 
 # Rollback state for apply: what this run created.
 CREATED_USER=0; CREATED_UNIT=0; CREATED_BIN=0; CREATED_CONF=0; CREATED_FW=""; STARTED=0
+# Where $BIN_DIR/openflux pointed before this run touched it, so rollback can put
+# it back. Empty means there was no symlink, and rollback removes ours.
+PREV_LINK=""
 
 rollback() {
     [ "$STARTED" = 1 ] && systemctl disable --now "openflux-node@$CHANNEL" >/dev/null 2>&1
@@ -302,7 +305,19 @@ rollback() {
     esac
     [ "$CREATED_CONF" = 1 ] && rm -rf "${CONF_ROOT:?}/$CHANNEL" "${STATE_ROOT:?}/$CHANNEL"
     [ "$CREATED_UNIT" = 1 ] && rm -f "$UNIT_FILE" && systemctl daemon-reload >/dev/null 2>&1
-    [ "$CREATED_BIN" = 1 ] && rm -f "$BIN_DIR/openflux-$CORE_VERSION"
+    if [ "$CREATED_BIN" = 1 ]; then
+        rm -f "$BIN_DIR/openflux-$CORE_VERSION"
+        # The symlink, not just the file it named. Every unit this installer
+        # wrote runs ExecStart=$BIN_DIR/openflux, so deleting the core we
+        # pointed it at and leaving the link pointing there bricks every
+        # channel that was already installed - rollback made things worse than
+        # not having run at all.
+        if [ -n "$PREV_LINK" ]; then
+            ln -sfn "$PREV_LINK" "$BIN_DIR/openflux"
+        else
+            rm -f "$BIN_DIR/openflux"
+        fi
+    fi
     [ "$CREATED_USER" = 1 ] && userdel "$NODE_USER" >/dev/null 2>&1
 }
 
@@ -339,6 +354,10 @@ install_core() {
         chmod 0755 "$tmp_core" && mv -f "$tmp_core" "$core"
         CREATED_BIN=1
     fi
+    # Recorded before the link moves, and only the first time: apply may call
+    # install_core again while rolling a forward step back, and the target that
+    # must be restored is the one from before the run started.
+    [ -n "$PREV_LINK" ] || PREV_LINK=$(readlink "$BIN_DIR/openflux" 2>/dev/null || true)
     ln -sfn "openflux-$CORE_VERSION" "$BIN_DIR/openflux"
 }
 
@@ -431,10 +450,16 @@ Listen = 0.0.0.0:$PORT
 EOF
     printf '%s
 ' "$PORT" > "$dir/port"
-    chown -R "root:$NODE_USER" "$dir"
-    chmod 0751 "$dir"
-    chmod 0640 "$dir/encryption-key" "$dir/node.conf"
-    chmod 0644 "$dir/port"
+    # Checked, because unchecked they are silent and the answer is still
+    # ok:true. A chown that fails leaves node.conf root:root 0640, the node
+    # user is not in group root, and the node cannot read its own
+    # configuration - a bricked node reported as a successful install. This was
+    # observed: chown printed "invalid group" and the script answered
+    # {"ok":true,"channel":"t1"} in the same run.
+    chown -R "root:$NODE_USER" "$dir" || apply_fail perms "не удалось передать конфигурацию пользователю $NODE_USER: группа не найдена или прав нет"
+    chmod 0751 "$dir" || apply_fail perms "не удалось выставить права на каталог конфигурации"
+    chmod 0640 "$dir/encryption-key" "$dir/node.conf" || apply_fail perms "не удалось закрыть ключ и конфигурацию"
+    chmod 0644 "$dir/port" || apply_fail perms "не удалось выставить права на файл порта"
     if [ -n "$COOKIES" ]; then
         write_cookies || apply_fail cookies "не удалось сохранить вход в Яндекс на сервере"
     fi

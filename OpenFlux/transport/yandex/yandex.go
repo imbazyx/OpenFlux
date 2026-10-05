@@ -12,6 +12,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -173,7 +174,7 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 		t.reconnecting.Release()
 		defer func() {
 			if r := recover(); r != nil {
-				utils.Debugf("[PANIC] recovered in yandex.connect: %v", r)
+				utils.Infof("[PANIC] recovered in yandex.connect: %v\n%s", r, debug.Stack())
 			}
 		}()
 		t.Mu.Lock()

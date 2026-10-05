@@ -375,8 +375,9 @@ class CoreConnectionService(
         run.ipc?.close()
         // Files first, then the folders that held them.
         run.files.sortedBy { it.isDirectory }.forEach { it.delete() }
-        // The shared state is only cleared if this run is still the current
-        // one. `run` itself was guarded by identity and nothing else was:
+        // The shared state is only cleared if this run is still the current one.
+        //
+        // `run` itself was guarded by identity and nothing else was:
         // awaitExit calls cleanup() before checking run.stopping, and
         // process.waitFor() is a blocking call that coroutine cancellation does
         // not interrupt, so a stale awaitExit from the previous core can reach
@@ -385,16 +386,36 @@ class CoreConnectionService(
         // configured port and shows a wrong or empty address while the screen
         // says "connected" - and on the desktop it restored the Windows system
         // proxy in the middle of a working core.
-        if (synchronized(lock) { this.run === run }) {
-            _socksAddress.value = null
-            _exitAddress.value = ExitAddress.Unknown
-            _traffic.value = TrafficStats()
-            _captcha.value = null
-            pendingCaptcha = null
+        //
+        // The check and the clearing are inside ONE synchronized block, and the
+        // clearing inside a second one, because `if (synchronized { ... })` is
+        // an expression: the monitor is released as soon as the condition has
+        // been evaluated, and everything in the then-branch runs outside it. A
+        // run installed in that gap had its state wiped - including
+        // restoreSystemProxy(), which markConnected will not redo because of
+        // its own `if (current !is Connected)` gate, so the browser stayed
+        // offline until the next connect. That was the shape of the first
+        // version of this fix: the comment claimed an atomicity the code did
+        // not have.
+        //
+        // restoreSystemProxy() and captchaBrowser.close() are held back to the
+        // second block rather than run under the monitor. Both are @Synchronized
+        // and both touch the Windows registry and a browser process; holding
+        // this monitor across them would be a second, much longer window.
+        synchronized(lock) {
+            if (this.run === run) this.run = null
+        }
+        if (synchronized(lock) { this.run !== run }) return
+
+        _socksAddress.value = null
+        _exitAddress.value = ExitAddress.Unknown
+        _traffic.value = TrafficStats()
+        _captcha.value = null
+        pendingCaptcha = null
+        synchronized(lock) {
             captchaBrowser.close()
             restoreSystemProxy()
         }
-        synchronized(lock) { if (this.run === run) this.run = null }
     }
 
     private fun killTree(process: Process) {

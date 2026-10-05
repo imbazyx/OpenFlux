@@ -55,16 +55,29 @@ class MissingAssetMessageTest {
     }
 
     @Test
-    fun `a 403 from the CDN is not a missing build`() {
+    fun `a 403 is not reported as the release withholding the APK`() {
+        // A 403 or 429 from the CDN says something about the way we asked, not
+        // about what the release contains. The old code answered "не отдаётся"
+        // for it, and a test then pinned that wrong sentence in place.
         val text = missingAssetMessage("v2.3.2", listOf(AssetProbe.Unexpected(403), AssetProbe.Unexpected(403)))
-        assertTrue(text.contains("не отдаётся"), text)
+        assertTrue(!text.contains("не отдаётся"), "must not blame the release: $text")
+        assertTrue(text.contains("403"), "the user should see the status: $text")
+        assertTrue(text.contains("Попробуйте позже"), "and be told to retry: $text")
     }
 
     @Test
-    fun `an empty probe list does not claim there was no network`() {
-        // Nothing was asked, so nothing failed. Blaming the connection would
-        // be asserting something nobody observed.
+    fun `an empty probe list claims nothing at all`() {
+        // Nothing was asked, so nothing failed. Either version of the story
+        // would be asserting something nobody observed.
         val text = missingAssetMessage("v2.3.2", emptyList())
+        assertTrue(!text.contains("не отдаётся"), text)
+        assertTrue(!text.contains("GitHub"), text)
+    }
+
+    @Test
+    fun `only a definite 404 across every ABI blames the release`() {
+        val text = missingAssetMessage("v2.3.2", listOf(AssetProbe.Absent, AssetProbe.Absent))
         assertTrue(text.contains("не отдаётся"), text)
+        assertTrue(!text.contains("GitHub"), "must not blame the network: $text")
     }
 }

@@ -182,7 +182,14 @@ class AndroidPlatformServices(
     override fun now(): Long = System.currentTimeMillis()
 
     override suspend fun latestRelease(): String? = withContext(Dispatchers.IO) {
-        releaseFeed()?.let { newestTag(it) }?.removePrefix(TAG_PREFIX)
+        // Highest version in the feed, not the first entry: the feed is ordered
+        // by creation date, and this repository publishes core/node releases
+        // into it too. "node-v1.0.0" is not something to show as the app's
+        // version to a user.
+        releaseFeed()
+            ?.let { appReleaseTags(it) }
+            ?.firstOrNull()
+            ?.removePrefix(TAG_PREFIX)
     }
 
     /**
@@ -202,34 +209,66 @@ class AndroidPlatformServices(
     override suspend fun checkForUpdateDetailed(): UpdateCheck = withContext(Dispatchers.IO) {
         val feed = releaseFeed()
             ?: return@withContext UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub")
-        val tag = newestTag(feed)
-            ?: return@withContext UpdateCheck.Failed("в списке выпусков не найдено ни одного тега")
 
-        val version = tag.removePrefix(TAG_PREFIX)
+        // Every release tag in the feed, not the first one.
+        //
+        // The first entry is the newest by CREATION date, not by version - the
+        // live feed carries v1.2.1 above v2.0.0. Worse, this repository also
+        // publishes core/node releases into the same feed, and node-v1.0.0 and
+        // 0.0.5 are already there with no APKs among their assets. The moment
+        // one is cut it becomes the first entry, every ABI probe comes back
+        // 404, and a user on 2.3.1 pressing the update button is told the
+        // release has nothing for their phone - while the real 2.3.2 sits
+        // further down the list, never examined. That silently breaks the
+        // button for every user at once, on the one path the owner asked to
+        // keep working.
+        val appTags = appReleaseTags(feed)
+        if (appTags.isEmpty()) {
+            return@withContext UpdateCheck.Failed(
+                "в списке выпусков нет ни одного выпуска приложения ($TAG_PREFIX<версия>)",
+            )
+        }
+
+        // Descending by version, so once one is not newer than what is
+        // installed the rest of the list cannot be either.
+        val wanted = appTags.filter { compareVersions(it.removePrefix(TAG_PREFIX), BuildConfig.VERSION_NAME) > 0 }
+        if (wanted.isEmpty()) {
+            return@withContext UpdateCheck.UpToDate(appTags.first().removePrefix(TAG_PREFIX))
+        }
 
         // Every ABI this device can run, best first, then the universal build.
-        // The universal APK is the fallback the old check had through pickApk:
-        // a release that published only it, or only a narrower ABI than this
-        // device prefers, must still be installable - otherwise a phone whose
-        // first supported ABI has no split simply can never update.
-        val candidates = android.os.Build.SUPPORTED_ABIS.filter { it in KNOWN_ABIS } + "universal"
-        val probes = candidates.map { abi ->
-            val name = "OpenFluxAndroid-$version-androidApp-$abi-release.apk"
-            val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
-            probe(url) to url
-        }
-        val found = probes.firstOrNull { (p, _) -> p is AssetProbe.Found }?.second
-        if (found == null) {
-            return@withContext UpdateCheck.Failed(missingAssetMessage(tag, probes.map { it.first }))
-        }
+        // The universal APK is the fallback the old check had through pickApk: a
+        // release that published only it, or only a narrower ABI than this
+        // device prefers, must still be installable, or a phone whose first
+        // supported ABI has no split could never update at all.
+        val abis = android.os.Build.SUPPORTED_ABIS.filter { it in KNOWN_ABIS } + "universal"
 
-        val update = AppUpdate(
-            version = version,
-            downloadUrl = found,
-            versionCode = versionCodeOf(version),
-            newer = compareVersions(version, BuildConfig.VERSION_NAME) > 0,
-        )
-        if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
+        var newestTag = wanted.first()
+        var newestProbes: List<AssetProbe> = emptyList()
+        for (tag in wanted.take(MAX_RELEASES_TO_CHECK)) {
+            val version = tag.removePrefix(TAG_PREFIX)
+            val urlFor = { abi: String ->
+                "$releaseDownloadBase/$tag/OpenFluxAndroid-$version-androidApp-$abi-release.apk"
+            }
+            // Probed lazily, stopping at the first hit. The old code evaluated
+            // every ABI before looking at any of them, which on an unreachable
+            // host is four sequential timeouts behind a disabled button.
+            val hit = abis.firstOrNull { probe(urlFor(it)) is AssetProbe.Found }
+            if (hit != null) {
+                return@withContext UpdateCheck.Available(
+                    AppUpdate(
+                        version = version,
+                        downloadUrl = urlFor(hit),
+                        versionCode = versionCodeOf(version),
+                        newer = true,
+                    ),
+                )
+            }
+            // Keep walking: an older release may still carry a build this device
+            // can install. Remember why the newest one failed for the message.
+            if (tag == newestTag) newestProbes = abis.map { probe(urlFor(it)) }
+        }
+        UpdateCheck.Failed(missingAssetMessage(newestTag, newestProbes))
     }
 
     override suspend fun checkForUpdate(): AppUpdate? =
@@ -266,6 +305,18 @@ class AndroidPlatformServices(
 
     override suspend fun installUpdate(update: AppUpdate): Boolean = withContext(Dispatchers.IO) {
         val target = java.io.File(context.cacheDir, "update-${update.version}.apk")
+        // Every release leaves its installer behind: the file is named after the
+        // version, so nothing overwrites an old one and nothing removes it. Each
+        // is tens of megabytes, in cacheDir, where a user who updates every few
+        // months accumulates a hundred of them and Android only clears that
+        // directory when the device is already short of space. Everything except
+        // the file about to be written goes now, which is the only moment it is
+        // safe - an earlier one may still be being read by an installer the user
+        // has not answered yet.
+        context.cacheDir.listFiles { f -> f.name.startsWith("update-") && f.name != target.name }
+            ?.forEach { stale ->
+                if (!stale.delete()) Log.w(TAG, "could not remove the stale installer ${stale.name}")
+            }
         val expected = publishedSha256(update.version)
         val ok = runCatching { download(update.downloadUrl, target, expected) }.getOrElse {
             Log.w(TAG, "update download failed", it)
@@ -426,11 +477,6 @@ class AndroidPlatformServices(
      * `tag:github.com,2008:Repository/<id>/v2.2.0` and carries no releases path,
      * so a parser looking for one finds nothing and reports "no update".
      */
-    internal fun newestTag(feed: String): String? =
-        Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
-            .find(feed)?.groupValues?.get(1)?.trim()
-
-    /** True when the URL resolves, so a download is not offered before it exists. */
     /** What one HEAD request actually established. */
     private fun probe(url: String): AssetProbe = runCatching {
         val connection = URL(url).openConnection() as HttpURLConnection
@@ -440,7 +486,14 @@ class AndroidPlatformServices(
         connection.setRequestProperty("User-Agent", "OpenFlux-Android")
         val code = connection.responseCode
         connection.disconnect()
-        if (code in 200..399) AssetProbe.Found else AssetProbe.Unexpected(code)
+        when {
+            code in 200..399 -> AssetProbe.Found
+            // A definite no, as distinct from a status we cannot read a meaning
+            // out of. Everything else lands in Unexpected, which the message
+            // refuses to interpret rather than inventing a cause.
+            code == 404 -> AssetProbe.Absent
+            else -> AssetProbe.Unexpected(code)
+        }
     }.getOrElse { AssetProbe.Unreachable(it.javaClass.simpleName + ": " + (it.message ?: "без подробностей")) }
 
     private fun sha256Hex(file: java.io.File): String {
@@ -488,6 +541,42 @@ class AndroidPlatformServices(
         // moved, this is the one string to change.
         private const val RELEASE_REPO = "imbazyx/OpenFlux"
         private const val TAG_PREFIX = "v"
+
+        /**
+         * Only these are app releases. The same feed also carries the core/node
+         * releases this repository publishes - `node-v1.0.0` and `0.0.5` are
+         * already in it - and those have no APKs at all.
+         */
+        private val APP_VERSION_TAG = Regex("^" + TAG_PREFIX + """\d+\.\d+\.\d+$""")
+
+        /** How many older releases to try before giving up on a usable APK. */
+        private const val MAX_RELEASES_TO_CHECK = 5
+
+        private val releaseDownloadBase = "https://github.com/$RELEASE_REPO/releases/download"
+
+        /**
+         * Every release tag in the feed, in document order, e.g. "v2.3.2".
+         *
+         * From each entry's link, not its id: the Atom id is
+         * `tag:github.com,2008:Repository/<id>/v2.2.0` and carries no releases
+         * path, so a parser looking for one finds nothing and reports "no
+         * update".
+         *
+         * All of them, and deliberately unsorted here - the caller sorts by
+         * version, because the feed's own order is creation date.
+         */
+        internal fun releaseTags(feed: String): List<String> =
+            Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
+                .findAll(feed)
+                .map { it.groupValues[1].trim() }
+                .distinct()
+                .toList()
+
+        /** The app releases in [feed], highest version first. */
+        internal fun appReleaseTags(feed: String): List<String> =
+            releaseTags(feed)
+                .filter { APP_VERSION_TAG.matches(it) }
+                .sortedByDescending { versionCodeOf(it.removePrefix(TAG_PREFIX)) }
         private const val MAX_QR_IMAGE = 2048
         private const val TAG = "OpenFluxUpdates"
         private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif", "webp")
