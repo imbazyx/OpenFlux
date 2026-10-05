@@ -276,6 +276,22 @@ class JvmPlatformServices(
                     versionCode = versionCodeOf(version),
                     newer = compareVersions(version, appVersion) > 0,
                 )
+                // A success on a LATER tag must not paper over a failure on the newest
+                // one. v2.3.2's MSI exists but its HEAD got a transient 502
+                // from the CDN; the walk continued, v2.3.1 answered, and the
+                // screen drew "2.3.1 - последняя версия" - telling the user
+                // they are current while a newer release sits there with its
+                // failure already computed and thrown away.
+                //
+                // The older tag is genuinely installable, so it is still
+                // returned - refusing would hide a working update. But the
+                // newer failure is written where the user will actually see it,
+                // because the UpToDate branch has nowhere to carry it.
+                if (newestAppTag != null && newestAppTag != tag && newestProblem != null) {
+                    val newestName = "OpenFlux-" + newestAppTag.removePrefix(DESKTOP_TAG_PREFIX) +
+                        WINDOWS_INSTALLER_SUFFIX
+                    BrowserLog.problem("выпуск $newestAppTag есть, но установщик $newestName не отдаётся: $newestProblem")
+                }
                 return if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
             }
             // Keep walking: an older app release may still carry a build this
