@@ -246,17 +246,20 @@ class AndroidPlatformServices(
      * ever shown: the APK replaces the tunnel's own binary, and a truncated
      * download must not become a silent update.
      */
+    // Every Toast goes through the Main dispatcher, including the two
+    // failure ones in installUpdate and the unverified-update notice in
+    // download: both run on Dispatchers.IO, and Toast binds its Handler to the
+    // calling thread, so raising it there is at best posting to the wrong
+    // looper and at worst throwing on an API 26-30 device - which would turn
+    // "download failed" into a crash. A member rather than a local, because
+    // download() is a separate method and could not see a local one.
+    private fun tell(message: String) = CoroutineScope(Dispatchers.Main).launch {
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+
     override suspend fun installUpdate(update: AppUpdate): Boolean = withContext(Dispatchers.IO) {
         val target = java.io.File(context.cacheDir, "update-${update.version}.apk")
         val expected = publishedSha256(update.version)
-        // Every Toast goes through the Main dispatcher, including the two
-        // failure ones below: this whole function is on Dispatchers.IO, and
-        // Toast binds its Handler to the calling thread, so raising it here is
-        // at best posting to the wrong looper and at worst throwing on an
-        // API 26-30 device - which would turn "download failed" into a crash.
-        fun tell(message: String) = CoroutineScope(Dispatchers.Main).launch {
-            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-        }
         val ok = runCatching { download(update.downloadUrl, target, expected) }.getOrElse {
             Log.w(TAG, "update download failed", it)
             tell("Не удалось скачать обновление")
@@ -309,7 +312,12 @@ class AndroidPlatformServices(
                 return false
             }
         } else {
+            // Also to the user, not only to logcat. The desktop twin says this
+            // through BrowserLog, which lands on its Logs screen; a phone user
+            // with no adb attached was being told nothing, which is the
+            // opposite of what the comment above this branch promises.
             Log.w(TAG, "no published checksum for ${target.name}; installing unverified")
+            tell("Обновление ставится без проверки подписи")
         }
         // renameTo's result used to be discarded here and true returned anyway.
         // The target is named per version and never deleted, so a rename that
@@ -321,6 +329,16 @@ class AndroidPlatformServices(
         if (!tmp.renameTo(target)) {
             tmp.delete()
             Log.w(TAG, "cannot install the downloaded APK at ${target.name}")
+            return false
+        }
+        // Kept from the desktop twin, which never lost it. On the unverified
+        // path there is no checksum to catch a truncated download, so a server
+        // answering 200 with an empty body reached PackageInstaller as a 0-byte
+        // file and failed there with an opaque "not a valid archive" instead of
+        // the app's own message.
+        if (target.length() == 0L) {
+            Log.w(TAG, "the downloaded APK at ${target.name} is empty; not installing")
+            target.delete()
             return false
         }
         return true
