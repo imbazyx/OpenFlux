@@ -401,17 +401,36 @@ class AndroidPlatformServices(
                 // nothing had happened - with nothing on screen saying they
                 // must press it a second time. It happens once per user, on
                 // the very path the owner requires to work.
-                if (needsInstallPermission() && !requestInstallPermission()) {
+                if (needsInstallPermission() && requestInstallPermission()) {
+                    // requestInstallPermission() returns TRUE when it managed to
+                    // OPEN the Settings page, not when the permission was
+                    // granted. The `!` that used to be here meant this branch
+                    // fired only when opening Settings had thrown - so the
+                    // ordinary case, permission missing and Settings opened
+                    // fine, evaluated false and fell straight through to the
+                    // startActivity below, while Settings was in the
+                    // foreground.
+                    //
+                    // On API 29+ that second startActivity is a background
+                    // activity launch: it is dropped without an exception. So
+                    // the function returned HandedOff, SettingsTab shows nothing
+                    // at all for HandedOff, and the user got a button that
+                    // flashed and did nothing, with no message - on the FIRST
+                    // update of every Android 10+ user, silently. The comment
+                    // above described exactly the failure this was meant to
+                    // prevent, and the code reproduced it.
                     tell("Разрешите установку из этого приложения в настройках и нажмите ещё раз")
                     return@withContext InstallResult.Refused(shown = true)
                 }
-                // readApk and both lazy values are evaluated here, on the IO dispatcher this
-                // block already runs on. getPackageArchiveInfo is a synchronous
+                // readApk and both lazy values are evaluated on the IO
+                // dispatcher - the inner withContext below. The enclosing
+                // withContext(Dispatchers.Main) at the top of this function is
+                // Main, not IO, and getPackageArchiveInfo is a synchronous
                 // binder into system_server that parses the whole archive -
                 // tens of megabytes - so doing it on Main stalls the UI for
                 // hundreds of milliseconds on the one path the owner cares
-                // about. Toast and startActivity are the only things that need
-                // Main, and both are below.
+                // about. The inner switch is load-bearing; do not remove it as
+                // redundant with the outer one.
                 val refusal = withContext(Dispatchers.IO) {
                     apkRefusal(
                         readApk(target),
@@ -511,6 +530,14 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
         // the disagreement this needs to catch.
         versionName = info.versionName,
     )
+}.onFailure { cause ->
+    // The outer runCatching used to end in `.getOrNull()`, so every exception
+    // below - a NameNotFoundException, an IOException reading the archive, a
+    // throw from getPackageArchiveInfo itself - vanished with no trace. The
+    // refusal then said "Скачанный файл не читается как приложение Android",
+    // which blames the file, and a bug report had nothing to go on. The Log.w
+    // above covers only `info == null`; this covers everything else.
+    Log.w(TAG, "readApk(${file.name}, ${file.length()} bytes) failed: $cause")
 }.getOrNull()
 
 /** Above API 26 this app still needs to be allowed to install packages. */
@@ -614,10 +641,13 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
                 connection.disconnect()
             }
         }
-    }.getOrNull()
-
-    private fun githubGet(url: String) = runCatching {
-        githubText(url)?.let { Json.parseToJsonElement(it) }
+    }.onFailure { cause ->
+        // DNS failure, TLS failure, 404 and timeout all became the same silent
+        // null. The caller then reported "не удалось прочитать список выпусков
+        // с GitHub" with nothing in logcat at all - which is the one place a
+        // maintainer would look. The message cannot say WHICH of the four
+        // happened; this can.
+        Log.w(TAG, "githubText failed for $url: $cause")
     }.getOrNull()
 
     /** The releases feed, which GitHub serves without an API token and without a per-address quota. */
