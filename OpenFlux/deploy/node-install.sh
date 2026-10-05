@@ -211,19 +211,24 @@ valid_port() {
 write_cookies() {
     printf '%s' "$COOKIES" | grep -Eq '^[A-Za-z0-9+/]+={0,2}$' || return 1
     [ ${#COOKIES} -le 65536 ] || return 1
-    dir="$STATE_ROOT/$CHANNEL"
+    # Its own variable, not the global `dir`. Assigning the global here is what
+    # put 5691f59's bug in the world: cmd_apply sets dir="$CONF_ROOT/$CHANNEL",
+    # calls write_cookies, and then writes the firewall record through `dir` -
+    # which by then pointed at STATE. `local` is not POSIX, and this script runs
+    # under whatever /bin/sh is, so the name is distinct rather than scoped.
+    cookies_dir="$STATE_ROOT/$CHANNEL"
     # umask 077 would make the parent 0700 and lock the node user out of
     # its own state directory (systemd only creates it when missing).
     mkdir -p "$STATE_ROOT" && chmod 0755 "$STATE_ROOT" || return 1
-    mkdir -p "$dir" || return 1
-    tmp="$dir/.cookies.json.new"
+    mkdir -p "$cookies_dir" || return 1
+    tmp="$cookies_dir/.cookies.json.new"
     if have base64; then
         printf '%s' "$COOKIES" | base64 -d > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
     else
         printf '%s' "$COOKIES" | openssl base64 -d -A > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
     fi
     head -c 1 "$tmp" | grep -q '{' || { rm -f "$tmp"; return 1; }
-    chown "$NODE_USER:$NODE_USER" "$dir" "$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$dir/cookies.json"
+    chown "$NODE_USER:$NODE_USER" "$cookies_dir" "$tmp" && chmod 0600 "$tmp" && mv -f "$tmp" "$cookies_dir/cookies.json"
 }
 
 check_channel() {
