@@ -691,6 +691,19 @@ private fun AboutSettings(model: SettingsScreenModel) {
                         if (result is InstallResult.Refused && !result.shown) {
                             toaster.show("Не удалось установить обновление", Tone.Danger)
                         }
+                    } catch (cause: Throwable) {
+                        // No catch at all used to be here, only finally, on a
+                        // SupervisorJob scope with no CoroutineExceptionHandler.
+                        // Anything a PlatformServices threw therefore reached the
+                        // platform default handler and killed the process - from
+                        // the settings screen, on a button the user pressed. Both
+                        // implementations wrap themselves today, but InstallResult
+                        // exists precisely because that is not something the
+                        // caller should have to take on trust.
+                        toaster.show(
+                            "Ошибка обновления: ${cause.message ?: cause.javaClass.simpleName}",
+                            Tone.Danger,
+                        )
                     } finally {
                         // finally, not a plain assignment: a cancellation or a
                         // throw on the way out used to skip the clear and leave

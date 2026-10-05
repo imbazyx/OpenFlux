@@ -42,8 +42,13 @@ class ActivityBridgeSlotTest {
             attached = true
         }
 
-        @Synchronized fun detach() {
+        @Synchronized fun detach(recreating: Boolean = false) {
             attached = false
+            // A configuration change is not a death: the ActivityResultRegistry
+            // outlives the activity and replays the pending result to the
+            // launcher the recreated one registers. Releasing here reported a
+            // VPN consent the user was about to grant as refused.
+            if (recreating) return
             val a = vpn
             val b = pick
             val c = scan
@@ -130,5 +135,42 @@ class ActivityBridgeSlotTest {
         // The user rotates the screen: a duplicate delivery arrives afterwards.
         bridge.onVpnConsent(granted = false)
         assertEquals(true, waiter.getCompleted(), "a late duplicate overwrote the answer")
+    }
+
+    @Test
+    fun `a rotation keeps the waiter so the granted consent still lands`() {
+        val bridge = Bridge()
+        bridge.attach()
+        assertTrue(bridge.beginVpn())
+        val waiter = bridge.vpnSlot()
+
+        // Rotation: destroyed and recreated within the same second.
+        bridge.detach(recreating = true)
+        assertTrue(!waiter!!.isCompleted, "the waiter was released by a rotation")
+        assertTrue(bridge.vpnSlot() === waiter, "the slot was dropped by a rotation")
+
+        // The recreated activity's launcher delivers the result the user chose.
+        bridge.attach()
+        bridge.onVpnConsent(granted = true)
+
+        assertTrue(waiter.isCompleted, "the granted consent never arrived")
+        assertEquals(true, waiter.getCompleted(), "a consent the user granted was reported as refused")
+    }
+
+    @Test
+    fun `an activity that really finishes still releases the waiter`() = runBlocking {
+        val bridge = Bridge()
+        bridge.attach()
+        assertTrue(bridge.beginVpn())
+        val waiter = bridge.vpnSlot()
+
+        // Leaving the app: nothing will ever answer, and a parked waiter holds
+        // the connection lock for the rest of the process's life.
+        bridge.detach(recreating = false)
+
+        val value = withTimeoutOrNull(1_000) { waiter?.await() }
+        assertTrue(waiter!!.isCompleted, "a finishing activity left the waiter parked")
+        assertNull(value, "a finishing activity must not report a granted consent")
+        assertNull(bridge.vpnSlot(), "the slot must be cleared")
     }
 }
