@@ -134,7 +134,14 @@ func (b *rawBackend) routeMTU(dst [4]byte) int {
 
 func (b *rawBackend) Recv(cb func([]byte)) {
 	for _, fd := range b.recvFds {
-		go b.recvLoop(fd, cb)
+		// SafeGo, not a bare `go`. These three loops are the whole inbound path
+		// of an l3 exit node: every packet every client of that node sends
+		// arrives on one of them. A bare goroutine meant that a panic anywhere
+		// in decoding, SNAT or conntrack killed the process, and with it every
+		// client, until systemd restarted it five seconds later. The stack is
+		// now logged at the normal level, so the next occurrence is a bug that
+		// can be found rather than an outage nobody can explain.
+		utils.SafeGo(fmt.Sprintf("l3.recvLoop.fd%d", fd), func() { b.recvLoop(fd, cb) })
 	}
 }
 
