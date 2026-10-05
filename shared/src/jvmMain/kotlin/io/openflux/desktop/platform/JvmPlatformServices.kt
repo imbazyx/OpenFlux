@@ -443,6 +443,14 @@ class JvmPlatformServices(
             // passed `target.length() > 0` and was handed to msiexec - and the
             // app's own message pointed at the checksum, while the real fault was
             // the network.
+            // The try owns `connection` from HERE, not from the copy loop below.
+            // `return false` is a non-local return out of the inline runCatching
+            // - it does not throw - so a try beginning further down has no
+            // finally to run and the socket is never released. That was true of
+            // the non-2xx return below, and of `connection.responseCode` itself
+            // throwing a SocketTimeoutException, which runCatching swallowed
+            // into a bare `false`.
+            try {
             val status = connection.responseCode
             if (status !in 200..299) {
                 part.delete()
@@ -458,20 +466,16 @@ class JvmPlatformServices(
             // corrupt download reports, with the cause nowhere. The Android
             // twin already streams.
             val digest = MessageDigest.getInstance("SHA-256")
-            try {
-                connection.inputStream.use { input ->
-                    part.outputStream().use { out ->
-                        val buffer = ByteArray(64 * 1024)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            digest.update(buffer, 0, read)
-                            out.write(buffer, 0, read)
-                        }
+            connection.inputStream.use { input ->
+                part.outputStream().use { out ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        digest.update(buffer, 0, read)
+                        out.write(buffer, 0, read)
                     }
                 }
-            } finally {
-                connection.disconnect()
             }
             if (expected == null) {
                 // Never silent. Android logs exactly this before installing an
@@ -505,6 +509,9 @@ class JvmPlatformServices(
                 return false
             }
             target.length() > 0
+            } finally {
+                connection.disconnect()
+            }
         }.getOrDefault(false)
     }
 

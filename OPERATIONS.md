@@ -181,46 +181,60 @@ curl -fsSL "<asset-url>?cb=$(date +%s%N)" -o file
 sha256sum file                # compare against SHA256SUMS.txt
 ```
 
-`SHA256SUMS.txt` covers the five APKs and nothing else. `wsl-build.sh` and
-`release.yml` both run `sha256sum *.apk`, and `release.yml` has only an Android
-job, so **no Windows artifact ever gets a line** - the two Windows files are
-uploaded by hand after the fact and are not in the manifest. This text used to
-claim seven files, Windows first. That was never true, and the desktop updater
-is built on the gap: `publishedSha256` finds no MSI line, installs the installer
-without checking it, and now says so in the log.
+`SHA256SUMS.txt` as **written by the workflow** covers the five APKs and nothing
+else — `wsl-build.sh` and `release.yml` both run `sha256sum *.apk`, and
+`release.yml` has only an Android job.
 
-Adding the line by hand is not enough on its own - `wsl-build.sh` empties
-`dist/` and the workflow truncates the manifest with `>`, so anything not
-present when that runs is gone. The real fix is a desktop job in `release.yml`
-that builds the MSI, stages it in `dist/` before line 136, and is covered by
-the same manifest. Until that exists, check the Windows artifacts by hand:
+That is not the same as saying no Windows artifact ever gets a line, and this
+text used to say exactly that, which was wrong and would have led a reader to
+conclude desktop verification had never run. It has: the published v2.3.1
+manifest is 782 bytes with **seven** lines, and both Windows hashes match the
+release API's own `digest` fields. That manifest was assembled by hand after
+`gh release create` and re-uploaded — which is the whole point of the next
+section, and it used to be written down nowhere at all.
+
+If the hand step is skipped, `publishedSha256` finds no MSI line,
+`expected` is null, `HandedOff(verified = false)` is reported on every
+install, and the client says in the log that it is installing unverified.
+
+Adding the line locally is not enough on its own — `wsl-build.sh` empties
+`dist/` and the workflow truncates the manifest with `>` (it is written at
+`release.yml:199`, not the stale "line 136" this text used to cite), so anything
+not present when that runs is gone. Worse, a *local* `dist/` is not the
+release: CI builds its own APKs on ubuntu, so mixing locally computed APK lines
+into the published manifest would give every Android user hashes that match
+nothing, and `apkRefusal` would refuse every in-app update. It would also fail
+`scripts/wsl-audit.sh` three separate ways, so `AUDIT_OK` becomes unreachable.
+
+**Use the script. Do not hand-assemble the manifest.**
+
+### Finishing a release: `scripts/finish-release.ps1`
+
+Runs on the Windows box after `git push origin v<version>`, beside
+`OpenFluxPC\collectDist`. It takes the APK lines **from the published release**,
+not from `dist/`, appends the two Windows hashes, and re-uploads the manifest
+with `--clobber`:
 
 ```
-sha256sum OpenFluxPC/dist/OpenFlux-<version>.msi
+pwsh -File scripts\finish-release.ps1 -Version 2.3.2
 ```
 
-### Making the desktop installer actually get verified
+Skip it and the MSI installs unverified on every machine. `--clobber` is not
+optional — `release.yml:220` already uploaded the manifest, and without it the
+upload fails and the release keeps the manifest that is missing the MSI line,
+which looks exactly like not having run the step.
 
-Until a desktop job exists in `release.yml`, the MSI line has to be added by
-hand — and because the workflow truncates the manifest with `>`, the manifest
-has to be **re-uploaded** as well, otherwise the corrected copy never reaches
-the release and the client keeps finding nothing:
+Verify afterwards — the manifest must have **seven** lines and the five APK
+lines must be byte-identical to the ones CI wrote:
 
 ```
-tag=v2.3.2
-sha256sum "OpenFluxPC/dist/OpenFlux-${tag#v}.msi" >> dist/SHA256SUMS.txt
-gh release upload "$tag" dist/SHA256SUMS.txt --clobber
+gh release view v2.3.2 --json assets --jq '.assets[].name'
+curl -sL https://github.com/imbazyx/OpenFlux/releases/download/v2.3.2/SHA256SUMS.txt
 ```
 
-`--clobber` is required: the asset already exists from `gh release create`, and
-without it the upload fails and the release keeps the manifest that is missing
-the MSI line — which looks exactly like not having done the step at all.
-
-That is what makes `publishedSha256` return a hash instead of null, which in
-turn is what makes `installUpdate` compare the installer before handing it to
-`msiexec`. Until it is done, `expected` is null on **every** install, the
-comparison branch never executes, and `HandedOff(verified = false)` is reported
-on 100% of them.
+The real fix is a desktop job in `release.yml` that builds the MSI and stages
+it before the manifest is written. That is a change to the release process, not
+to this script, and it should not be done under release pressure.
 
 Verify the manifest against the files on disk *before* uploading, not after.
 
