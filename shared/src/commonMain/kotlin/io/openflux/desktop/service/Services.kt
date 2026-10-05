@@ -201,8 +201,17 @@ interface PlatformServices {
  * nothing and relies entirely on the caller. Both need the same caller.
  */
 sealed interface InstallResult {
-    /** The OS installer is on screen. Whether the user accepts is not yet ours. */
-    data object HandedOff : InstallResult
+    /**
+     * The OS installer is on screen. Whether the user accepts is not yet ours.
+     *
+     * [verified] says whether the downloaded file was checked against the
+     * release's published SHA-256. On Android it always is. On the desktop it
+     * never is today - release.yml has no desktop job, `sha256sum *.apk` never
+     * writes an MSI line, and the installer replaces the running program with
+     * SYSTEM privileges. Saying so on screen is the least that can be done;
+     * refusing outright would break the desktop update button for every user.
+     */
+    data class HandedOff(val verified: Boolean = true) : InstallResult
 
     /** We never got that far. [shown] is true when the platform already told the user why. */
     data class Refused(val shown: Boolean = false) : InstallResult

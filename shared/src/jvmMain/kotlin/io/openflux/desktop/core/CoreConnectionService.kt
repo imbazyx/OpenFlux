@@ -501,10 +501,7 @@ private fun persist(block: (AppSettings) -> AppSettings): Boolean {
         log(LogLevel.Error, "Не удалось сохранить настройки: ${it.message ?: it.javaClass.simpleName}")
     }
     if (!settings.unsaved) return true
-    log(
-        LogLevel.Error,
-        settings.writeFailureHint ?: "Настройки не сохранены на диск",
-    )
+    log(LogLevel.Error, settings.writeFailureHint.ifEmpty { "Настройки не сохранены на диск" })
     return false
 }
 

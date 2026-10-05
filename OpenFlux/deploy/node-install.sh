@@ -381,13 +381,33 @@ install_core() {
         # file just deleted, leaving a dangling link that bricked every channel
         # already using it. The one thing the comment below says this prevents.
         [ -e "$core" ] || CREATED_BIN=1
-        chmod 0755 "$tmp_core" && mv -f "$tmp_core" "$core"
+        # Checked. This is the LAST statement of the `if` body, so its status was
+        # the function's - until the symlink line below became the last one and
+        # took over. A failed chmod or mv (immutable file, ENOSPC, read-only
+        # mount) then produced a missing or non-executable core, a symlink
+        # repointed at it, and a ZERO from install_core - so `|| apply_fail
+        # download` and `|| fail upgrade` could never fire. It surfaced only as
+        # "нода не запустилась" with a journal excerpt, which names neither the
+        # file nor the cause.
+        chmod 0755 "$tmp_core" && mv -f "$tmp_core" "$core" || {
+            CORE_ERROR="не удалось установить ядро в $core"
+            return 1
+        }
     fi
-    # Recorded before the link moves, and only the first time: apply may call
-    # install_core again while rolling a forward step back, and the target that
+    # Recorded before the link moves, and only the first time, so the target that
     # must be restored is the one from before the run started.
     [ -n "$PREV_LINK" ] || PREV_LINK=$(readlink "$BIN_DIR/openflux" 2>/dev/null || true)
-    ln -sfn "openflux-$CORE_VERSION" "$BIN_DIR/openflux"
+    ln -sfn "openflux-$CORE_VERSION" "$BIN_DIR/openflux" || {
+        CORE_ERROR="не удалось переключить симлинк на $CORE_VERSION"
+        return 1
+    }
+    # And the symlink must now resolve to something executable. Every unit runs
+    # this one path, so a link that dangles takes all channels down at once -
+    # which is what the PREV_LINK restore exists to undo.
+    [ -x "$BIN_DIR/openflux" ] || {
+        CORE_ERROR="симлинк $BIN_DIR/openflux не указывает на исполняемый файл"
+        return 1
+    }
 }
 
 write_unit() {
@@ -485,7 +505,15 @@ Priority = 50
 Listen = 0.0.0.0:$PORT
 EOF
     printf '%s
-' "$PORT" > "$dir/port"
+' "$PORT" > "$dir/port" || apply_fail config "не удалось записать порт в $dir/port"
+    # The write above is checked for the same reason the chown below is. This
+    # file is what `port_claimed` greps to keep two channels off one port, so a
+    # failed or short write does not fail loudly - it silently stops matching
+    # that channel, and the NEXT install can be handed the same port. Both units
+    # then bind, the second crash-loops, and `apply` still prints ok:true: the
+    # per-channel start check only covers the channel being installed.
+    # Verified relevant rather than theoretical: the host this runs on is at 74%
+    # disk, where a short write is a real outcome.
     # Checked, because unchecked they are silent and the answer is still
     # ok:true. A chown that fails leaves node.conf root:root 0640, the node
     # user is not in group root, and the node cannot read its own
@@ -501,7 +529,13 @@ EOF
     fi
 
     if [ ! -f "$UNIT_FILE" ]; then
-        write_unit
+        # Checked. This writes the ONE shared unit template every channel's
+        # ExecStart comes from, and a `cat >` that fails after truncation leaves
+        # it truncated. daemon-reload then succeeds on the broken file, and
+        # rollback restores it only when CREATED_UNIT=1 - so a failure in the
+        # already-existed branch silently destroys every other channel's unit
+        # definition for the next restart. Reported ok:true throughout.
+        write_unit || apply_fail systemd "не удалось записать $UNIT_FILE"
         CREATED_UNIT=1
     fi
     systemctl daemon-reload || apply_fail systemd "systemctl daemon-reload не удался"
@@ -546,7 +580,15 @@ EOF
     # CONF. The rule then survived the channel forever and the state dir that
     # held the record was deleted with it - one leaked ufw/firewalld allow per
     # install/remove cycle.
-    [ -n "$CREATED_FW" ] && printf '%s %s\n' "$CREATED_FW" "$PORT" > "$CONF_ROOT/$CHANNEL/firewall"
+    #
+    # And it is CHECKED. That file is the only record of the rule: `remove`
+    # closes the port by reading it, and nothing else knows which one was opened.
+    # A write that failed left the rule open with no trace, and `remove` then
+    # reported ok:true while the port stayed reachable forever.
+    [ -n "$CREATED_FW" ] && {
+        printf '%s %s\n' "$CREATED_FW" "$PORT" > "$CONF_ROOT/$CHANNEL/firewall" \
+            || apply_fail firewall "не удалось записать правило брандмауэра в $CONF_ROOT/$CHANNEL/firewall"
+    }
 
     # STARTED before the command, not after: `systemctl enable --now` runs both
     # jobs and returns non-zero if EITHER failed. Enable failing while start

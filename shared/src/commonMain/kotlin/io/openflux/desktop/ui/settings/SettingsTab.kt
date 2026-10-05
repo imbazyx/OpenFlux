@@ -692,6 +692,21 @@ private fun AboutSettings(model: SettingsScreenModel) {
                         if (result is InstallResult.Refused && !result.shown) {
                             toaster.show("Не удалось установить обновление", Tone.Danger)
                         }
+                        if (result is InstallResult.HandedOff && !result.verified) {
+                            // The desktop installs an MSI that replaces the
+                            // running program with SYSTEM privileges, and the
+                            // release publishes no checksum for it: release.yml
+                            // has no desktop job and writes `sha256sum *.apk`.
+                            // The only trace was a line in %LOCALAPPDATA%\OpenFlux
+                            // \browser.log that a user has to go and open. The
+                            // install still proceeds - refusing outright would
+                            // break the update button for every desktop user -
+                            // but it is no longer silent.
+                            toaster.show(
+                                "Установщик не сверялся с контрольной суммой выпуска",
+                                Tone.Warning,
+                            )
+                        }
                     } catch (cause: CancellationException) {
                         // collectWorkIfIdle() cancels on dispose. Swallowing this
                         // as an ordinary error showed "Ошибка обновления:
@@ -736,6 +751,13 @@ private fun AboutSettings(model: SettingsScreenModel) {
                         )
                     } finally {
                         model.checkingRelease = false
+                        // The install branch got this and the check branch did
+                        // not. If onDispose ran while the check was still going,
+                        // collectWorkIfIdle() correctly declined then, and when
+                        // the check finished nothing ever collected it - the
+                        // coroutine stayed in a scope that is never resumed.
+                        // Same defect the install side was fixed for.
+                        if (model.gone) model.collectWorkIfIdle()
                     }
                 }
             }

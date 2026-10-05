@@ -2,6 +2,7 @@ package io.openflux.desktop.platform
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -64,5 +65,51 @@ class DesktopReleaseSelectionTest {
         """.trimIndent()
 
         assertEquals(emptyList(), JvmPlatformServices.appReleaseTags(coreOnly))
+    }
+
+    @Test
+    fun `a successful HEAD has no body and must still count as reachable`() {
+        // The bug this pins: Answer.ok was derived from the body, and request()
+        // forces the body to null for a HEAD - which has no body by definition.
+        // So every successful probe of a release asset scored as a failure, the
+        // walk over the newest app releases could never find one, and the user
+        // was told
+        //
+        //   выпуск v2.3.2 есть, но установщик OpenFlux-2.3.2.msi не отдаётся: null
+        //
+        // about an asset that had just answered 200, with a literal `null`
+        // where the reason should have been.
+        //
+        // Reachability is "no problem", never "there is a body". These are the
+        // REAL Answer instances request() builds, not a copy of its logic.
+        assertTrue(JvmPlatformServices.Answer(body = null, problem = null).ok, "a 200 HEAD carries no body")
+        assertFalse(JvmPlatformServices.Answer(body = null, problem = "на GitHub нет такого файла").ok)
+        // And a body without a problem is still fine - the feed path.
+        assertTrue(JvmPlatformServices.Answer(body = "<feed/>", problem = null).ok)
+    }
+
+    @Test
+    fun `sorting is by version and not by the text of the joined digits`() {
+        // The first version of this comparator joined the components into one
+        // string, which is a TEXT sort. "2.3.10" then sits below "2.3.1", and
+        // "10.0.0" below "9.0.0". It looked right for every version this
+        // project has shipped, because all of them have single-digit components
+        // and the key has always been exactly three characters - which is how a
+        // landmine at 2.10.0 stayed invisible.
+        val wide = """
+            <feed>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v2.3.1"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v2.9.0"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v2.3.10"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v9.0.0"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v10.0.0"/></entry>
+              <entry><link href="https://github.com/imbazyx/OpenFlux/releases/tag/v2.10.0"/></entry>
+            </feed>
+        """.trimIndent()
+
+        assertEquals(
+            listOf("v10.0.0", "v9.0.0", "v2.10.0", "v2.9.0", "v2.3.10", "v2.3.1"),
+            JvmPlatformServices.appReleaseTags(wide),
+        )
     }
 }

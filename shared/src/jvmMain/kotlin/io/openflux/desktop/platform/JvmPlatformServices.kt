@@ -139,8 +139,23 @@ class JvmPlatformServices(
      * 403 from GitHub's address limit and a flat refusal to report an update
      * both arrived as null and both read as "не найден".
      */
-    private data class Answer(val body: String?, val problem: String?) {
-        val ok: Boolean get() = body != null
+    internal data class Answer(val body: String?, val problem: String?) {
+        /**
+         * Success is "no problem", NOT "there is a body".
+         *
+         * Deriving it from the body is what made the desktop update button
+         * completely dead: a HEAD request has no body by definition - and
+         * `request()` explicitly forces `body = null` when `head = true` - so
+         * `ok` was false for every successful probe. The walk over the five
+         * newest app releases could never find anything, and the user was told
+         *
+         *     выпуск v2.3.2 есть, но установщик OpenFlux-2.3.2.msi не отдаётся: null
+         *
+         * about an asset that had just answered 200, with a literal `null` where
+         * the reason should be, because `problem` was null too and Kotlin
+         * stringified it. `Available` and `UpToDate` were both unreachable.
+         */
+        val ok: Boolean get() = problem == null
     }
 
     /**
@@ -313,7 +328,8 @@ class JvmPlatformServices(
         // null, and every MSI was installed with no hash check at all - silently,
         // because the "installing unverified" warning was only on Android.
         val published = "OpenFlux-${update.version}$WINDOWS_INSTALLER_SUFFIX"
-        val downloaded = download(update.downloadUrl, target, publishedSha256(update.version, published), published)
+        val expected = publishedSha256(update.version, published)
+        val downloaded = download(update.downloadUrl, target, expected, published)
         // shown = false throughout: this platform has no way to raise a toast,
         // so the shared UI is what tells the user, and it needs to know that
         // nothing has been said yet.
@@ -335,7 +351,7 @@ class JvmPlatformServices(
             Thread.sleep(1_500)
             Runtime.getRuntime().exit(0)
         }, "openflux-exit-for-update").apply { isDaemon = true }.start()
-        InstallResult.HandedOff
+        InstallResult.HandedOff(verified = expected != null)
     }
 
     /**
@@ -456,7 +472,20 @@ class JvmPlatformServices(
             // the ordering numeric for every version this project has used
             // (all three components single-digit), and compareVersions below
             // remains the authority for any actual comparison.
-            .sortedWith(compareByDescending<String> { versionParts(it.removePrefix(DESKTOP_TAG_PREFIX)).joinToString("") })
+            // Padded per component, not simply joined. A plain joinToString("")
+            // makes the key a STRING, so "2.3.10" sorts BELOW "2.3.1" (the text
+            // "2310" is less than "231") and "10.0.0" sorts last of all ("1000"
+            // is less than "900"). Every version this project has shipped has
+            // single-digit components, so the key has always been exactly three
+            // characters and the two orders have agreed - which is precisely why
+            // the landmine at 2.10.0 was invisible. Four digits covers any
+            // plausible component.
+            .sortedWith(
+                compareByDescending<String> {
+                    versionParts(it.removePrefix(DESKTOP_TAG_PREFIX))
+                        .joinToString("") { part -> part.toString().padStart(4, '0') }
+                },
+            )
             .toList()
         /**
          * Where the desktop releases are published.
