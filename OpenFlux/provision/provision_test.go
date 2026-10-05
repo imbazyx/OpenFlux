@@ -55,18 +55,28 @@ func TestPinnedCommitIsReachable(t *testing.T) {
 	// --is-shallow-repository with true - it was cloned with --depth 1 once -
 	// while carrying the full history, so a shallow-flag check would skip the
 	// test exactly where it is most useful.
-	if _, err := exec.Command("git", "rev-parse", "--verify", "main").Output(); err != nil {
-		t.Skip("no main branch in this checkout; reachability is not decidable")
+	// Checked against the REMOTE-tracking ref, not a local branch. release.yml
+	// runs this on a tag push with actions/checkout, which leaves a detached
+	// HEAD: origin/main is present, a local `main` is not. Asking for `main`
+	// therefore made the test skip itself in exactly the configuration that
+	// produces it, and it is the configuration that matters - the pin exists to
+	// stop an already-published commit becoming unreachable.
+	ref := "origin/main"
+	if _, err := exec.Command("git", "rev-parse", "--verify", ref).Output(); err != nil {
+		if _, err2 := exec.Command("git", "rev-parse", "--verify", "main").Output(); err2 != nil {
+			t.Skip("neither origin/main nor main is in this checkout; reachability is not decidable")
+		}
+		ref = "main"
 	}
 	if _, err := exec.Command("git", "cat-file", "-e", PinnedCommit+"^{commit}").Output(); err != nil {
 		t.Skip("pinned commit is not in this clone; reachability is not decidable here")
 	}
-	out, err := exec.Command("git", "merge-base", "--is-ancestor", PinnedCommit, "main").CombinedOutput()
+	out, err := exec.Command("git", "merge-base", "--is-ancestor", PinnedCommit, ref).CombinedOutput()
 	if err != nil {
-		t.Fatalf("PinnedCommit %s is not reachable from main: %v\n%s\n"+
+		t.Fatalf("PinnedCommit %s is not reachable from %s: %v\n%s\n"+
 			"the pin points at a commit that vanished in a rewrite; "+
 			"point it at the commit that last changed deploy/node-install.sh",
-			PinnedCommit[:12], err, out)
+			PinnedCommit[:12], ref, err, out)
 	}
 }
 

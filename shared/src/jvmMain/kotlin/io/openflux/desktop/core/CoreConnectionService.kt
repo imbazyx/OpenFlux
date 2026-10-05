@@ -463,7 +463,40 @@ class CoreConnectionService(
 
     // ---- system proxy ----
 
-    /** Points Windows at the core while a client is connected and the setting is on. */
+    /**
+ * A settings write, reported rather than thrown.
+ *
+ * JsonFile.write throws on a full disk, a locked settings.json, or a move the
+ * file system refuses. Two callers sat directly on that, both in the connection
+ * lifecycle:
+ *
+ * - restoreSystemProxy() is called from stopRun() BEFORE killTree(). A throw
+ *   there skipped the kill: the core stayed alive holding the SOCKS port,
+ *   `stopping` was already true and _state stuck at Disconnecting. The next
+ *   connect found the same dead-but-alive run, threw in the same place, and
+ *   never reached start() - the connect button was dead until restart.
+ * - applySystemProxy() runs from markConnected, which is in the readOutput
+ *   coroutine - the only reader of the core's stdout. A throw killed it, and
+ *   useLines closed the pipe, so the core then died on SIGPIPE.
+ *
+ * Returns false when the value did not stick, because one caller has to be able
+ * to tell. applySystemProxy must NOT take the system proxy over when it has
+ * failed to record what the proxy was: the takeover happens either way, and a
+ * missing record means restoreSystemProxy returns early on disconnect and
+ * Windows is left pointing at 127.0.0.1 on a dead port with nothing to put
+ * back. Unrecoverable without a registry editor - strictly worse than the
+ * throw this replaced.
+ */
+private fun persist(block: (AppSettings) -> AppSettings): Boolean {
+    val failure = runCatching { settings.update(block) }.exceptionOrNull()
+    if (failure != null) {
+        log(LogLevel.Error, "Не удалось сохранить настройки: ${failure.message ?: failure.javaClass.simpleName}")
+        return false
+    }
+    return true
+}
+
+/** Points Windows at the core while a client is connected and the setting is on. */
     @Synchronized
     private fun applySystemProxy() {
         if (!isWindows) return
@@ -489,7 +522,15 @@ class CoreConnectionService(
                 log(LogLevel.Error, "Не удалось прочитать текущий системный прокси - он остаётся нетронутым")
                 return
             }
-            settings.update { it.copy(savedSystemProxy = previous) }
+            // Nothing is enabled unless the original settings were recorded. A
+            // takeover with no record is the one unrecoverable outcome here:
+            // restoreSystemProxy returns early on a null savedSystemProxy, so
+            // Windows stays pointed at a dead 127.0.0.1 on disconnect and the
+            // startup recovery has nothing to put back.
+            if (!persist { it.copy(savedSystemProxy = previous) }) {
+                log(LogLevel.Error, "Системный прокси Windows не перехвачен: не удалось сохранить текущие настройки")
+                return
+            }
         }
         runCatching { WindowsSystemProxy.enable(address) }
             .onSuccess { log(LogLevel.Info, "Системный прокси Windows: $address") }
@@ -513,7 +554,7 @@ class CoreConnectionService(
             .onSuccess { log(LogLevel.Info, "Системный прокси Windows восстановлен") }
             .onFailure { log(LogLevel.Error, "Не удалось вернуть системный прокси: ${it.message}") }
             .isSuccess
-        if (ok) settings.update { it.copy(savedSystemProxy = null) }
+        if (ok) persist { it.copy(savedSystemProxy = null) }
     }
 
     // ---- exit address ----

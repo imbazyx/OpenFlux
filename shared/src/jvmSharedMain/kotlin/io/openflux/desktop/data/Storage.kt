@@ -206,16 +206,59 @@ class FileSettingsRepository(dir: File, defaults: AppSettings = AppSettings()) :
 
     @Synchronized
     override fun update(transform: (AppSettings) -> AppSettings) {
-        state.update { old ->
-            // Only the write is refused, not the change itself. The in-memory
-            // value is what the app runs on, and freezing it would mean a user
-            // whose settings stopped reading could not so much as switch the
-            // theme until they found the file by hand. The change applies this
-            // session; it does not survive a restart, because the damaged file
-            // is deliberately left in place rather than replaced with it.
-            transform(old).also { if (it != old && !locked) store.write(it) }
+        // The write is attempted outside the StateFlow's transform, and a
+        // failure is absorbed here.
+        //
+        // It used to run inside the transform, and it threw. Three things
+        // followed from that, none of them good:
+        //
+        // - MutableStateFlow.update applies the transform before its
+        //   compareAndSet, so a throwing write meant the IN-MEMORY value was
+        //   never updated either. The change was lost, not just the file.
+        // - update is the single choke point every settings write in the app
+        //   passes through, and most of its callers are Compose click handlers
+        //   on the main thread. A full disk or a locked settings.json therefore
+        //   threw straight through the UI handler and killed the application -
+        //   one unwritable file, and the app cannot be started.
+        // - CoreConnectionService called it from stopRun() BEFORE killTree(),
+        //   where a throw left the core process alive holding the SOCKS port
+        //   with `stopping` already set and the state stuck at Disconnecting:
+        //   the next connect threw in the same place and never reached start(),
+        //   so the connect button stayed dead until the app was restarted.
+        //
+        // The settings themselves still apply in memory - the same policy the
+        // `locked` branch below follows for an unreadable file: the app runs on
+        // the in-memory value, and freezing it would be worse than not saving.
+        // What is new is that they apply even when the disk says no.
+        val next = transform(state.value)
+        if (next == state.value) return
+        // Only the write is refused, not the change itself. The in-memory
+        // value is what the app runs on, and freezing it would mean a user
+        // whose settings stopped reading could not so much as switch the
+        // theme until they found the file by hand. The change applies this
+        // session; it does not survive a restart, because the damaged file
+        // is deliberately left in place rather than replaced with it.
+        if (!locked) {
+            val written = runCatching { store.write(next) }.onFailure { cause ->
+                writeFailure = "Настройки не сохранены на диск (${cause.message ?: cause.javaClass.simpleName}). " +
+                    "Они действуют до перезапуска приложения."
+            }.isSuccess
+            if (written) writeFailure = null
         }
+        state.value = next
     }
+
+    /**
+     * Set when the last write failed, cleared by the next one that succeeds.
+     *
+     * Distinct from [unreadable]: the file is fine and is still being written,
+     * the disk just refused. Nothing displays this yet - the toaster is
+     * composition-scoped and cannot be reached from here - but it is the state
+     * a caller would need to decide whether a durable change really happened,
+     * and it is recorded here so that decision has something to read.
+     */
+    var writeFailure: String? = null
+        private set
 }
 
 /**
