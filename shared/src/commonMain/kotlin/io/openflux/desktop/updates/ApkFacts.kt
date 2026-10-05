@@ -51,16 +51,14 @@ fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSig
     facts == null -> "Скачанный файл не читается как приложение Android"
     facts.packageName != ownPackage ->
         "Скачано приложение ${facts.packageName}, а не $ownPackage"
+    // Kept BELOW the signer branch on purpose. It was above it, and shadowed it
+    // the same way the versionName branch did one commit earlier: an APK that
+    // was both mis-signed and carried a lower versionCode named the
+    // versionCode, sending the user after the wrong problem. Same defect, one
+    // branch higher than the one that was fixed.
     facts.versionCode < installedCode ->
         "В выпуске versionCode ${facts.versionCode}, он ниже установленного $installedCode — система откажется его ставить"
     ownSigner != null && facts.signer != null && facts.signer != ownSigner ->
-        // Ahead of the versionName branch below, deliberately. A release signed
-        // with another key cannot be installed at all and the only remedy is to
-        // uninstall, losing the user's settings; a version mismatch is merely
-        // useless. The versionName branch was placed above this at first and
-        // therefore SHADOWED it - a release that was both mis-tagged and
-        // mis-signed produced "тег выпуска не совпадает с содержимым APK" and
-        // never mentioned the key, sending the user after the wrong problem.
         "Выпуск подписан другим ключом, чем установленное приложение"
     // Archive against the TAG, which is what the message claims. Comparing only
     // against the installed app misses the case this was written for: a user on

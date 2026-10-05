@@ -260,7 +260,13 @@ class JvmPlatformServices(
         // Budget for the WHOLE check, taken before the feed is read, so the feed
         // cannot spend time the walk then does not have. Same shape as Android's
         // CHECK_BUDGET_MS.
+        // The wall clock still feeds the DEADLINE, because that is what the socket
+        // timeouts are derived from - they have to be comparable to
+        // System.currentTimeMillis(). The BUDGET CHECK itself reads nanoTime(),
+        // because an NTP step or a user changing the clock mid-check reported
+        // "превышено время проверки (45 с)" for a check that took two seconds.
         val deadline = System.currentTimeMillis() + DESKTOP_CHECK_BUDGET_MS
+        val budgetNanos = System.nanoTime() + DESKTOP_CHECK_BUDGET_MS * 1_000_000L
         val feed = releaseFeed(deadline)
         if (!feed.ok) {
             // The reason, not a single generic sentence. Answer was introduced
@@ -332,7 +338,7 @@ class JvmPlatformServices(
         // budget IS what failed, saying so beats reporting whatever the last
         // probe happened to answer: a 404 from a timed-out attempt is not
         // evidence that the file is absent.
-        if (System.currentTimeMillis() > deadline) {
+        if (System.nanoTime() > budgetNanos) {
             return UpdateCheck.Failed(
                 "превышено время проверки (${DESKTOP_CHECK_BUDGET_MS / 1000} с) - повторите позже",
             )
