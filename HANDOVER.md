@@ -83,10 +83,22 @@ transport healthy, tunnel up, every new connection refused.
 
 `OpenFlux/tunnel/dedupe.go` drops byte-identical packets inside a 250 ms /
 64-entry window before `InjectInbound`, wired in at the ingress in
-`tunnel/tunnel.go`. Five tests in `tunnel/dedupe_test.go`.
+`tunnel/tunnel.go`. Five tests in `tunnel/dedupe_test.go`, plus a concurrency
+test added when a data race on the window was found and fixed.
 
 Dropping is the safe direction: TCP already treats a lost segment as normal and
 retransmits on its own timer, so it cannot invent a fault that did not exist.
+
+**It does not run on the l3 exit nodes.** It is wired in `NewTCPTunnelMode`,
+which the l4 exit and the clients use. The six production nodes run
+`--role=exit --mode=l3 --transport=mailru` with a single carrier and no
+`--negotiate`, so their transport is a plain `EncryptedTransport` rather than a
+`Session`: no challenge echo, no sequence window, no session-level replay guard
+either. What stands between a repeated frame and an l3 node is the 4096-entry
+nonce FIFO in `EncryptedTransport` alone. The exposure there is much smaller -
+the kernel ignores a second SYN on a live session, and the UDP NAT re-sends a
+duplicate datagram rather than opening a second flow - but it should be named as
+uncovered rather than counted as fixed.
 
 **Honest limit, and it matters:** the duplication is intermittent. It had
 already stopped on its own before the guard was exercised. Across the runs that
