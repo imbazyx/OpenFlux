@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"sync"
 	"time"
 )
 
@@ -46,7 +47,22 @@ type dedupeEntry struct {
 // bulk transfer cannot make it grow: at 64 entries the window spans well over
 // the 5ms gap seen in the capture, and on a phone the whole thing costs about
 // 96KB in the worst case.
+//
+// The mutex is not decoration. Every carrier has its own reader goroutine, and
+// a Session installs one receive callback per link, so with two carriers in a
+// profile - vyandex + direct is what the app imports - duplicate() really is
+// called from two goroutines at once. Measured with -race before this was
+// added: read at line 63 against write at line 68, every run.
+//
+// The entry write is three words and is not atomic, so a reader could take the
+// pointer of a new packet and the length of the old one and read past the end
+// of the shorter allocation. That panics inside the carrier's reader, where
+// nothing recovers, so on a node it would take down every client on that node.
+// The cheaper failure is also real: two writers can lose an entry between them,
+// the window stops covering what it was there to cover, and the duplicate gets
+// through - the exact outage the window was added for.
 type dedupe struct {
+	mu      sync.Mutex
 	entries [dedupeCapacity]dedupeEntry
 	next    int
 	dropped uint64
@@ -58,6 +74,8 @@ func newDedupe() *dedupe { return &dedupe{} }
 // window. The bytes are kept rather than a hash: a collision would silently
 // eat a real segment, and a copied slice is bounded by the packet size.
 func (d *dedupe) duplicate(pkt []byte, now time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for i := range d.entries {
 		e := &d.entries[i]
 		if e.valid && now.Sub(e.at) < dedupeWindow && len(e.pkt) == len(pkt) && string(e.pkt) == string(pkt) {
@@ -70,4 +88,8 @@ func (d *dedupe) duplicate(pkt []byte, now time.Time) bool {
 	return false
 }
 
-func (d *dedupe) droppedCount() uint64 { return d.dropped }
+func (d *dedupe) droppedCount() uint64 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.dropped
+}

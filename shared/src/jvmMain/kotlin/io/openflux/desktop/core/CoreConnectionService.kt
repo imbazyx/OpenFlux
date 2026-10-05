@@ -73,6 +73,15 @@ class CoreConnectionService(
 
     private val lineIds = AtomicLong()
     private val lock = Any()
+
+    /**
+     * Guards the whole stop-then-start swap in [connect].
+     *
+     * Separate from [lock] because [stopRun] suspends, and Kotlin will not let
+     * a suspension point live inside a monitor block. `lock` still guards the
+     * individual field accesses; this one serialises the sequence.
+     */
+    private val swapMutex = Mutex()
     private var run: Run? = null
     private val captchaBrowser = CaptchaBrowser()
     override val captchaPage: StateFlow<BrowserPage?> = captchaBrowser.page
@@ -129,9 +138,34 @@ class CoreConnectionService(
     }
 
     override fun connect(profile: Profile) {
+        // The whole swap is inside the lock, not just the read of `run`.
+        //
+        // It used to read the current run under the lock, release it, stop that
+        // run and start a new one - so two coroutines on Dispatchers.IO could
+        // both read the same run, both stop it and both start, with the second
+        // assignment overwriting the first. The first process was then never
+        // killed and never tracked: it kept its port, and shutdown() would not
+        // kill it either. The user saw "the port is already in use by another
+        // program", or an orphaned core until reboot. The full-traffic toggle
+        // calls this on purpose while a connection is live, so this was a
+        // double-click away, not a theoretical interleaving.
         scope.launch {
-            synchronized(lock) { run }?.let { stopRun(it, restart = true) }
-            start(profile)
+            // A coroutine Mutex, not synchronized: stopRun suspends (waitFor,
+            // delay), and Kotlin forbids a suspension point inside a monitor
+            // block, which is why this used to read `run` under the lock and
+            // then release it before doing anything - leaving the swap itself
+            // unguarded. Two coroutines could read the same run, both stop it
+            // and both start, the second assignment overwriting the first, and
+            // the first process was then never killed and never tracked: it
+            // kept its port, and shutdown() would not kill it either. The user
+            // saw "the port is already in use by another program", or an
+            // orphaned core until reboot. The full-traffic toggle calls this
+            // on purpose while a connection is live, so a double click was
+            // enough - not a theoretical interleaving.
+            swapMutex.withLock {
+                run?.let { stopRun(it, restart = true) }
+                start(profile)
+            }
         }
     }
 
@@ -341,14 +375,26 @@ class CoreConnectionService(
         run.ipc?.close()
         // Files first, then the folders that held them.
         run.files.sortedBy { it.isDirectory }.forEach { it.delete() }
+        // The shared state is only cleared if this run is still the current
+        // one. `run` itself was guarded by identity and nothing else was:
+        // awaitExit calls cleanup() before checking run.stopping, and
+        // process.waitFor() is a blocking call that coroutine cancellation does
+        // not interrupt, so a stale awaitExit from the previous core can reach
+        // here after connect() has already started the next one. It then nulled
+        // the fresh run's SOCKS address - the home screen falls back to the
+        // configured port and shows a wrong or empty address while the screen
+        // says "connected" - and on the desktop it restored the Windows system
+        // proxy in the middle of a working core.
+        if (synchronized(lock) { this.run === run }) {
+            _socksAddress.value = null
+            _exitAddress.value = ExitAddress.Unknown
+            _traffic.value = TrafficStats()
+            _captcha.value = null
+            pendingCaptcha = null
+            captchaBrowser.close()
+            restoreSystemProxy()
+        }
         synchronized(lock) { if (this.run === run) this.run = null }
-        _socksAddress.value = null
-        _exitAddress.value = ExitAddress.Unknown
-        _traffic.value = TrafficStats()
-        _captcha.value = null
-        pendingCaptcha = null
-        captchaBrowser.close()
-        restoreSystemProxy()
     }
 
     private fun killTree(process: Process) {

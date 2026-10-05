@@ -75,6 +75,9 @@ import io.openflux.desktop.ui.components.SwitchRow
 import io.openflux.desktop.ui.components.Tone
 import io.openflux.desktop.ui.components.appClickable
 import io.openflux.desktop.ui.theme.AppTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
@@ -97,6 +100,21 @@ enum class SettingsCategory(val title: String, val subtitle: String, val icon: D
 }
 
 class SettingsScreenModel(val container: AppContainer) : ScreenModel {
+
+    /**
+     * Work started here outlives the screen that started it.
+     *
+     * The update button used to run on rememberCoroutineScope(), which is
+     * cancelled the moment AboutSettings leaves the composition - switching to
+     * any other category does that. `installing = true` was already set and is
+     * the model's, so it survived, while the coroutine that would have cleared
+     * it was gone. The button then read "Устанавливаю…" and stayed disabled
+     * for the rest of the process's life: no progress, no retry, no error. The
+     * download was cancelled too, so the user had also lost the update they had
+     * just started. This is the one path the owner asked to keep working, so it
+     * must not depend on where the user navigates next.
+     */
+    val work = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val android = container.platform.kind == PlatformKind.Android
     var category by mutableStateOf(SettingsCategory.Connection)
     var mobileDetailOpen by mutableStateOf(false)
@@ -618,21 +636,33 @@ private fun AboutSettings(model: SettingsScreenModel) {
             if (update != null && update.newer && canInstall) {
                 val pending = update
                 model.installing = true
-                scope.launch {
+                model.work.launch {
                     // The result used to be discarded, so a failed download or
                     // a refused install left the user with a click that
                     // appeared to work and nothing at all in return. Closing
                     // the app is the platform's own business: only the desktop
                     // needs it, because Windows Installer will not replace the
                     // running executable.
-                    if (!platform.installUpdate(pending)) {
-                        toaster.show("Не удалось установить обновление", Tone.Danger)
+                    try {
+                        if (!platform.installUpdate(pending)) {
+                            toaster.show("Не удалось установить обновление", Tone.Danger)
+                        }
+                    } finally {
+                        // finally, not a plain assignment: a cancellation or a
+                        // throw on the way out used to skip the clear and leave
+                        // the button disabled forever.
+                        model.installing = false
                     }
-                    model.installing = false
                 }
             } else {
                 model.checkingRelease = true
-                scope.launch { model.apply(platform.checkForUpdateDetailed()) }
+                model.work.launch {
+                    try {
+                        model.apply(platform.checkForUpdateDetailed())
+                    } finally {
+                        model.checkingRelease = false
+                    }
+                }
             }
         },
         enabled = !model.checkingRelease && !model.installing,

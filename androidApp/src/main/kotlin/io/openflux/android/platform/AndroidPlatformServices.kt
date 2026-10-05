@@ -9,6 +9,8 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.os.PersistableBundle
 import android.util.Log
 import android.widget.Toast
@@ -277,6 +279,17 @@ class AndroidPlatformServices(
         withContext(Dispatchers.Main) {
             runCatching {
                 val uri = FileProvider.getUriForFile(context, "${context.packageName}.updates", target)
+                // On API 26+ installing an APK is an app-op granted by hand in
+                // Settings. Without asking, the system's installer intercepts
+                // the first update of every user, sends them to the "unknown
+                // sources" page, and on return shows the same button as if
+                // nothing had happened - with nothing on screen saying they
+                // must press it a second time. It happens once per user, on
+                // the very path the owner requires to work.
+                if (needsInstallPermission() && !requestInstallPermission()) {
+                    tell("Разрешите установку из этого приложения в настройках и нажмите ещё раз")
+                    return@withContext false
+                }
                 context.startActivity(
                     Intent(Intent.ACTION_VIEW, uri)
                         .setDataAndType(uri, "application/vnd.android.package-archive")
@@ -289,6 +302,23 @@ class AndroidPlatformServices(
                 false
             }
         }
+    }
+
+    /** Above API 26 this app still needs to be allowed to install packages. */
+    private fun needsInstallPermission(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !context.packageManager.canRequestPackageInstalls()
+
+    /** Opens the Settings page where that permission is granted. */
+    private fun requestInstallPermission(): Boolean = runCatching {
+        context.startActivity(
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        true
+    }.getOrElse {
+        Log.w(TAG, "cannot open the unknown-sources settings page", it)
+        false
     }
 
     private fun download(url: String, target: java.io.File, expected: String?): Boolean {
