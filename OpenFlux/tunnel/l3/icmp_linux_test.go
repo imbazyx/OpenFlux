@@ -26,6 +26,7 @@ func TestLinuxRawICMPAndMTU(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ex.Stop()
+	ex.allowAnyDest = true // the raw peer is on this machine; the exit filter must refuse it
 	ex.backend.Recv(ex.handleFromInternet)
 	dst := [4]byte{127, 0, 0, 1}
 	if mtu := ex.backend.(*rawBackend).routeMTU(dst); mtu != 1280 {

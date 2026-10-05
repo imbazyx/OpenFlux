@@ -10,11 +10,13 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
 	"openflux/transport"
 	"openflux/transport/control"
+	"openflux/tunnel/l3"
 	"openflux/utils"
 )
 
@@ -22,6 +24,46 @@ import (
 // knows the session secret can request transports without limit, and each one
 // costs goroutines, sockets and a room join.
 const maxTransports = 16
+
+// okDialTarget refuses a dial address that would make the node talk to itself.
+//
+// A name is NOT allowed. The peer chooses the name and the node's resolver
+// resolves it, so "localhost" and a record pointing at 169.254.169.254 both
+// pass anything that only pattern-matches the string. An IPv6 literal is
+// refused outright rather than skipped: the exit filter is IPv4-only, so
+// ::1 is not merely unchecked, it is invisible to it.
+func okDialTarget(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	return !l3.BlockedDestination([4]byte{v4[0], v4[1], v4[2], v4[3]}, [4]byte{})
+}
+
+// peerParams filters what a peer may choose. The factory builds carriers for
+// the operator as well - main.go's --transports and the .conf path both reach
+// it - so the restriction belongs here, on the one path a peer can drive, not
+// in the builder. A peer must not be able to make a root VDS bind a port of its
+// choosing outside every firewall rule the installer wrote.
+func peerParams(cfg *control.TransportConfig) *control.TransportConfig {
+	filtered := *cfg
+	filtered.Params = make(map[string]any, len(cfg.Params))
+	for k, v := range cfg.Params {
+		if k == "listen" || k == "is_exit" {
+			continue
+		}
+		filtered.Params[k] = v
+	}
+	return &filtered
+}
 
 // Factory builds a raw transport from a control.TransportConfig.
 // main.go provides the concrete implementation because it is the only place
@@ -454,7 +496,12 @@ func (m *Manager) startTransport(cfg *control.TransportConfig) error {
 	if m.Count() >= maxTransports {
 		return fmt.Errorf("manager: over the %d transport limit", maxTransports)
 	}
-	raw, err := m.factory(cfg)
+	// Validated before the factory runs, not after: the address has to be
+	// refused before anything is built from it.
+	if d, _ := cfg.Params["dial"].(string); d != "" && !okDialTarget(d) {
+		return fmt.Errorf("manager: refused dial target %q", d)
+	}
+	raw, err := m.factory(peerParams(cfg))
 	if err != nil {
 		return fmt.Errorf("factory: %w", err)
 	}

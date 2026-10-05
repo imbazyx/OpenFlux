@@ -126,11 +126,11 @@ func (b *BatchedTransport) Send(data []byte) error {
 		// already broken. As Debugf they produced one logcat line per dropped
 		// packet precisely during the outage the user is trying to read logs
 		// about. The error still returns to the caller either way.
-		utils.Packetf("[BATCH] Send: not running, dropping %d bytes", len(data))
+		utils.Debugf("[BATCH] Send: not running, dropping %d bytes", len(data))
 		return fmt.Errorf("batched transport is not running")
 	}
 	if len(data) > 65535 {
-		utils.Packetf("[BATCH] Send: packet too large %d", len(data))
+		utils.Debugf("[BATCH] Send: packet too large %d", len(data))
 		return fmt.Errorf("packet too large for batch record: %d bytes", len(data))
 	}
 	p := make([]byte, len(data))
@@ -141,7 +141,7 @@ func (b *BatchedTransport) Send(data []byte) error {
 			len(p), len(b.queue), cap(b.queue))
 		return nil
 	default:
-		utils.Packetf("[BATCH] Send: QUEUE FULL, dropped %d bytes", len(p))
+		utils.Debugf("[BATCH] Send: QUEUE FULL, dropped %d bytes", len(p))
 		return fmt.Errorf("batch queue full")
 	}
 }

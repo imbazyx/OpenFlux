@@ -2,7 +2,6 @@ package l3
 
 import (
 	"fmt"
-	"net"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +21,12 @@ type L3Exit struct {
 	udp                  *udpNAT
 	fromClientFragments  reassembler
 	fromNetworkFragments reassembler
+
+	// allowAnyDest is a test seam, the same one the l4 tunnel has: the opt-in
+	// integration tests reach a server on the machine they run on, and every
+	// local address is one the exit filter has to refuse. Production code never
+	// sets it.
+	allowAnyDest bool
 
 	// counters
 	pktFromTransport atomic.Uint64
@@ -106,11 +111,15 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 		return
 	}
 	// The peer picks the destination. Refuse the ones that reach this host.
+	//
+	// Counted, not logged per packet: this path has no flow cap of its own, so
+	// a peer aiming one address writes one line per packet through the same
+	// log sink the packet path uses - the exact storm that made --no-packets
+	// necessary, and the counters below are how an operator sees it happened.
 	var dst [4]byte
 	copy(dst[:], pkt[16:20])
-	if BlockedDestination(dst, t.backend.EgressIP()) {
+	if !t.allowAnyDest && BlockedDestination(dst, t.backend.EgressIP()) {
 		t.dropBlockedDest.Add(1)
-		utils.Debugf("[L3] drop: destination %s is blocked on an exit node", net.IP(dst[:]))
 		return
 	}
 	if k.srcIP != ipU32(clientIPBytes) {
@@ -255,13 +264,14 @@ func (t *L3Exit) statsLoop() {
 		dropNoKey := t.dropNoFlowKey.Load()
 		dropNoCt := t.dropNoConntrack.Load()
 		dropNotUs := t.dropNotForUs.Load()
+		dropBlocked := t.dropBlockedDest.Load()
 
-		utils.Debugf("[L3-STATS] fromTr=%d(+%d) toNet=%d(+%d) | fromNet=%d(+%d) toCli=%d(+%d) | drops: bad=%d fragmented=%d notus=%d nokey=%d noct=%d | errs: toNet=%d toCli=%d",
+		utils.Debugf("[L3-STATS] fromTr=%d(+%d) toNet=%d(+%d) | fromNet=%d(+%d) toCli=%d(+%d) | drops: bad=%d fragmented=%d notus=%d nokey=%d noct=%d blocked=%d | errs: toNet=%d toCli=%d",
 			fromTr, fromTr-lastFromTr,
 			toNet, toNet-lastToNet,
 			fromNet, fromNet-lastFromNet,
 			toCli, toCli-lastToCli,
-			dropBad, dropFragmented, dropNotUs, dropNoKey, dropNoCt,
+			dropBad, dropFragmented, dropNotUs, dropNoKey, dropNoCt, dropBlocked,
 			t.sendToNetErrors.Load(), t.sendToClientErrs.Load())
 
 		lastFromTr, lastToNet = fromTr, toNet
