@@ -22,11 +22,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARCH=amd64
 ALLOW_DIRTY=0
+REPRODUCIBLE=0
 for arg in "$@"; do
   case "$arg" in
     --dirty-ok) ALLOW_DIRTY=1 ;;
+    --reproducible) REPRODUCIBLE=1 ;;
     amd64 | arm64 | arm) ARCH="$arg" ;;
-    *) echo "usage: $0 [amd64|arm64|arm] [--dirty-ok]" >&2; exit 2 ;;
+    *) echo "usage: $0 [amd64|arm64|arm] [--reproducible] [--dirty-ok]" >&2; exit 2 ;;
   esac
 done
 
@@ -53,26 +55,68 @@ BIN="$OUT/openflux-linux-$ARCH"
 
 echo "== Go $(go version | cut -d' ' -f3) =="
 echo "== $SHORT -> $BIN =="
-# CGO_ENABLED=0 so the node needs nothing from the host's libc; -trimpath so a
-# panic on the node reports repository-relative paths; -s -w to match the sizes
-# the release assets are pinned at.
+# -tags exitnode is not optional: it is what the published node asset is built
+# with, and without it the desktop node wizard and provision/pin.go are compiled
+# into a binary that has no business carrying them. Building without the tag
+# produced a DIFFERENT binary from the one node-install.sh pins - same tree,
+# same version, not the same file, which is worse than not building it at all.
 #
-# No -X stamp: Go embeds vcs.revision into every binary it builds from a git
-# tree, and that is the provenance record, checked below. Inventing a second
-# one would be a symbol that has to exist in main.go to mean anything.
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$BIN" .
+# CGO_ENABLED=0 so the node needs nothing from the host's libc; -trimpath so a
+# panic on the node reports repository-relative paths.
+#
+# The VCS stamp is kept on purpose. node-release.yml passes -buildvcs=false and
+# an empty -buildid= so two builds of one commit are byte-identical; that is
+# right for an asset that gets hashed, and wrong for the binary that runs on
+# the fleet, because a binary that can name its commit is one nobody has to
+# guess at from an mtime. --reproducible builds the published form instead, for
+# checking the pin; the two outputs are meant to differ.
+if [ "$REPRODUCIBLE" -eq 1 ]; then
+  echo "== воспроизводимая форма (как публикуемый актив) =="
+  CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOARM=7 go build \
+    -trimpath -buildvcs=false -tags exitnode -ldflags "-s -w -buildid=" -o "$BIN" .
+else
+  CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" go build -trimpath -tags exitnode \
+    -ldflags "-s -w" -o "$BIN" .
+fi
 
-if go version -m "$BIN" 2>/dev/null | grep -q 'vcs.modified=true'; then
+if [ "$REPRODUCIBLE" -eq 0 ] && go version -m "$BIN" 2>/dev/null | grep -q 'vcs.modified=true'; then
   echo "!! в бинаре vcs.modified=true: дерево было грязным на момент сборки" >&2
   exit 1
 fi
 
 printf '%s\n' "$SHORT" > "$OUT/openflux-core.version"
 
+GOT="$(sha256sum "$BIN" | cut -d' ' -f1)"
 echo "== версия ядра: $(cat "$OUT/openflux-core.version") =="
-# The point of the whole script: these two lines are what `go version -m` on
-# the node has to agree with. The second one absent is the whole problem.
-go version -m "$BIN" | grep -E 'vcs\.(revision|modified)'
+# The point of the whole script: this is what `go version -m` on the node has to
+# agree with. A modified=true here is the whole problem.
+if [ "$REPRODUCIBLE" -eq 0 ]; then
+  go version -m "$BIN" | grep -E 'vcs\.(revision|modified)' || true
+fi
 echo "== собранный бинарь =="
 ls -la "$BIN"
-sha256sum "$BIN"
+echo "sha256: $GOT"
+
+# Compared against the value deploy/node-install.sh pins, so "this build matches
+# what a fresh node would download" is a fact rather than an assumption. Only
+# the published form can match: the fleet build deliberately keeps its VCS
+# stamp, which the published one drops, so the two differ by design.
+PINNED=""
+case "$ARCH" in
+  amd64) PINNED="$(sed -n 's/^SHA_amd64="\(.*\)"$/\1/p' "$ROOT/OpenFlux/deploy/node-install.sh")" ;;
+  arm64) PINNED="$(sed -n 's/^SHA_arm64="\(.*\)"$/\1/p' "$ROOT/OpenFlux/deploy/node-install.sh")" ;;
+  arm)   PINNED="$(sed -n 's/^SHA_arm="\(.*\)"$/\1/p' "$ROOT/OpenFlux/deploy/node-install.sh")" ;;
+esac
+if [ -z "$PINNED" ]; then
+  echo "   закреплённый хеш в deploy/node-install.sh не найден - не сверяем" >&2
+elif [ "$REPRODUCIBLE" -eq 0 ]; then
+  echo "   сверено бы с закреплённым: $PINNED (здесь VCS-штамп, поэтому не равны)"
+elif [ "$GOT" = "$PINNED" ]; then
+  echo "   СОВПАДАЕТ с закреплённым в node-install.sh"
+else
+  echo "!! НЕ СОВПАДАЕТ с закреплённым в node-install.sh" >&2
+  echo "   закреплено $PINNED" >&2
+  echo "   получено  $GOT" >&2
+  echo "   (ищите другую версию Go: сборка воспроизводима только при той же)" >&2
+  exit 1
+fi

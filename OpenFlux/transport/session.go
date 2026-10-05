@@ -1078,7 +1078,12 @@ func (s *Session) receiveControl(link *transportLink, p []byte, env *control.Env
 		return
 	}
 	payload := append([]byte(nil), p[control.EnvelopeSize:]...)
-	go cb(sub, payload)
+	// SafeGo, not a bare `go`: this callback runs whatever the peer asked for, on
+	// the core that is the whole process on Android. A panic here on an
+	// unprotected goroutine aborts the binary and the VPN with it - one bad packet
+	// is enough. The panic is a bug in the handler, and it must not be the user's
+	// connection that reports it.
+	utils.SafeGo("session.control", func() { cb(sub, payload) })
 }
 
 // replayWindowSize is how far behind the newest sequence a data packet may

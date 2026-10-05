@@ -510,6 +510,17 @@ func (m *Manager) startTransport(cfg *control.TransportConfig) error {
 	if cfg == nil || cfg.Name == "" {
 		return errors.New("manager: empty config")
 	}
+	// The mobile bridge builds its Manager with a nil Factory (mobile/session.go),
+	// because a phone is handed its transports at startup and never builds one
+	// on demand. Calling a nil func value here would panic, and the panic used
+	// to be fatal: receiveControl dispatched this on a bare goroutine. One
+	// TransportStart from the peer - and on a phone the peer is the exit node -
+	// would abort the core, and with it the VPN, with no error the user could
+	// act on. Returning the refusal is what the CLI already does for a factory
+	// that declines a transport.
+	if m.factory == nil {
+		return errors.New("manager: this build cannot build transports on demand")
+	}
 	if len(cfg.Name) > 64 {
 		return fmt.Errorf("manager: transport name too long (%d)", len(cfg.Name))
 	}
