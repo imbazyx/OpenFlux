@@ -234,6 +234,10 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 			t.scheduleReconnect(attempt)
 			return
 		}
+		// A tunnel frame is at most 1 MiB; cap the message so a hostile
+		// participant in the document cannot build an unbounded one out of
+		// continuation frames.
+		conn.SetReadLimit(maxWSMessageBytes)
 		utils.Debugf("[YDOCS] WebSocket connected to %s", info.Host)
 
 		writeQueue := make(chan []byte, t.GetConfig().MaxQueueSize)
@@ -630,7 +634,7 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 	var err error
 
 	for hop := 0; hop < 10; hop++ {
-		utils.Debugf("[YDOCS] hop %d: GET %s", hop, shortStr(currentURL, 120))
+		utils.Debugf("[YDOCS] hop %d: GET %s", hop, safeVolgaURL(currentURL))
 
 		req, _ := http.NewRequest("GET", currentURL, nil)
 		req.Header.Set("User-Agent", ua)
@@ -704,7 +708,7 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 	htmlBytes, _ := io.ReadAll(resp.Body)
 	html := string(htmlBytes)
 	utils.Debugf("[YDOCS] response status=%d finalURL=%s body=%dB",
-		resp.StatusCode, resp.Request.URL.String(), len(html))
+		resp.StatusCode, safeVolgaURL(resp.Request.URL.String()), len(html))
 
 	var cookies []string
 	for _, c := range resp.Cookies() {

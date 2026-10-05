@@ -84,6 +84,13 @@ func DefaultVolgaConfig() VolgaConfig {
 
 const volgaUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:153.0) Gecko/20100101 Firefox/153.0"
 
+// maxWSMessageBytes caps one WebSocket message on every carrier in this package.
+// A tunnel frame is at most 1 MiB (transport/framing.go), so a few megabytes
+// leaves generous headroom for a batched read while still refusing the
+// unbounded message a participant in a public document can build out of
+// continuation frames.
+const maxWSMessageBytes = 4 << 20
+
 var reClientConfig = regexp.MustCompile(`<script[^>]*id="client-config"[^>]*>(.*?)</script>`)
 
 var (
@@ -149,7 +156,7 @@ type volgaAuth struct {
 }
 
 func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
-	utils.Debugf("[VOLGA] authorize(%s)", docURL)
+	utils.Debugf("[VOLGA] authorize(%s)", safeVolgaURL(docURL))
 
 	if jar == nil {
 		jar, _ = cookiejar.New(nil)
@@ -188,7 +195,7 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		utils.Debugf("[VOLGA] GET %s -> %d (%d bytes)", currentURL, resp.StatusCode, len(body))
+		utils.Debugf("[VOLGA] GET %s -> %d (%d bytes)", safeVolgaURL(currentURL), resp.StatusCode, len(body))
 
 		if resp.StatusCode == 200 {
 			finalBody = body
@@ -217,7 +224,7 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 				if _, cerr := solveCaptcha(docURL, jar, volgaUserAgent); cerr != nil {
 					return nil, fmt.Errorf("captcha solve: %w", cerr)
 				}
-				utils.Debugf("[VOLGA] captcha solved, retrying from %s", docURL)
+				utils.Debugf("[VOLGA] captcha solved, retrying from %s", safeVolgaURL(docURL))
 				currentURL = docURL
 				continue
 			}
@@ -237,7 +244,7 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 		return nil, fmt.Errorf("too many redirects from %s", docURL)
 	}
 
-	utils.Debugf("[VOLGA] final URL: %s", finalURL)
+	utils.Debugf("[VOLGA] final URL: %s", safeVolgaURL(finalURL))
 
 	m := reClientConfig.FindSubmatch(finalBody)
 	if len(m) < 2 {
@@ -271,7 +278,7 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 	accessToken := getStr(office, "access_token")
 	ttl := office["access_token_ttl"]
 
-	utils.Debugf("[VOLGA] action_url: %s", actionURL)
+	utils.Debugf("[VOLGA] action_url: %s", safeVolgaURL(actionURL))
 	utils.Debugf("[VOLGA] access_token: %d bytes", len(accessToken))
 	utils.Debugf("[VOLGA] access_token_ttl: %v (%T)", ttl, ttl)
 
@@ -298,7 +305,7 @@ func authorizeWithJar(docURL string, jar http.CookieJar) (*volgaAuth, error) {
 	form.Set("access_token_ttl", ttlStr)
 	body := form.Encode()
 
-	utils.Debugf("[VOLGA] POST %s (body %d bytes)", actionURL, len(body))
+	utils.Debugf("[VOLGA] POST %s (body %d bytes)", safeVolgaURL(actionURL), len(body))
 
 	req2, _ := http.NewRequest("POST", actionURL, strings.NewReader(body))
 	req2.Header.Set("User-Agent", volgaUserAgent)
@@ -953,6 +960,7 @@ func (w *wsListener) connect() error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
+	conn.SetReadLimit(maxWSMessageBytes)
 	defer conn.Close()
 	w.connMu.Lock()
 	w.conn = conn

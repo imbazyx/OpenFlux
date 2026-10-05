@@ -110,6 +110,7 @@ func testL4UDPDatagramRoundTrip(t *testing.T, codec string) {
 		}
 	}
 	exit := NewTCPTunnelMode(exitTransport, true, ExitModeL4)
+	exit.allowAnyDest = true // the echo server is on this machine; the exit filter must refuse it
 	client := NewTCPTunnelMode(clientTransport, false, ExitModeL4)
 	defer exit.Close()
 	defer client.Close()

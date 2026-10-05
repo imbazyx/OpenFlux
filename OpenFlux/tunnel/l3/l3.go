@@ -2,6 +2,7 @@ package l3
 
 import (
 	"fmt"
+	"net"
 	"sync/atomic"
 	"time"
 
@@ -29,6 +30,7 @@ type L3Exit struct {
 	pktToTransport   atomic.Uint64
 
 	dropBadIPv4      atomic.Uint64
+	dropBlockedDest  atomic.Uint64
 	dropFragmented   atomic.Uint64
 	dropNoFlowKey    atomic.Uint64
 	dropNoConntrack  atomic.Uint64
@@ -101,6 +103,14 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 	if !ok {
 		t.dropNoFlowKey.Add(1)
 		utils.Debugf("[L3] drop: no flow key")
+		return
+	}
+	// The peer picks the destination. Refuse the ones that reach this host.
+	var dst [4]byte
+	copy(dst[:], pkt[16:20])
+	if BlockedDestination(dst, t.backend.EgressIP()) {
+		t.dropBlockedDest.Add(1)
+		utils.Debugf("[L3] drop: destination %s is blocked on an exit node", net.IP(dst[:]))
 		return
 	}
 	if k.srcIP != ipU32(clientIPBytes) {

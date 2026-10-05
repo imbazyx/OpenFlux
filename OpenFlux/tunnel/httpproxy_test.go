@@ -79,6 +79,7 @@ func TestHTTPProxyThroughSideTunnel(t *testing.T) {
 
 	a, b := newTransportPair()
 	exit := NewTCPTunnelMode(b, true, ExitModeL4)
+	exit.allowAnyDest = true // the test server is on this machine; the exit filter must refuse it
 	defer exit.Close()
 	demux := transport.NewPortDemux(a, 12000, 12999)
 	mainPackets := 0

@@ -31,6 +31,12 @@ import (
 
 const mailruUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 
+// maxWSMessageBytes caps one WebSocket message. A tunnel frame is at most 1 MiB
+// (transport/framing.go), so a few megabytes leaves generous headroom for a
+// batched read while still refusing the unbounded message a hostile
+// participant can build out of continuation frames.
+const maxWSMessageBytes = 4 << 20
+
 var cursorPayloadRe = regexp.MustCompile(`"cursor":"[^;]+;([^"]+)"`)
 
 type MailruDocsInfo struct {
@@ -236,6 +242,11 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			t.scheduleReconnect(attempt)
 			return
 		}
+		// The document is public: anyone can join this room and send. Without a
+		// read limit gorilla buffers a whole continuation-framed message into
+		// memory, and ReadMessage copies it twice more, so one participant can
+		// exhaust the host with a frame that need not even be valid.
+		conn.SetReadLimit(maxWSMessageBytes)
 		utils.Debugf("[M-DOCS] WebSocket connected")
 
 		writeQueue := make(chan []byte, t.GetConfig().MaxQueueSize)
@@ -662,8 +673,11 @@ func (t *MailruDocsTransport) docKeyLoop() {
 		// session while we were fetching would otherwise make us close the
 		// new socket on the strength of the old one's key.
 		if t.closeSession(session) {
+			// The doc key is the room's address: anyone holding it can join. Log the
+			// digests, which is all that is needed to see that a rotation happened.
 			utils.Debugf("[M-DOCS] doc key rotated %s -> %s, forcing reconnect to fresh room",
-				session.Info.DocKey, info.DocKey)
+				utils.Sha256Hex([]byte(session.Info.DocKey))[:12],
+				utils.Sha256Hex([]byte(info.DocKey))[:12])
 		}
 	}
 }

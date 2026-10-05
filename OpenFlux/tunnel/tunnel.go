@@ -64,6 +64,12 @@ type TCPTunnel struct {
 	stopOnce    sync.Once
 	stopCh      chan struct{}
 	udpFlows    atomic.Int32
+	tcpFlows    atomic.Int32
+	// allowAnyDest is a test seam. An end-to-end test needs a reachable
+	// destination on the machine it runs on, and every local address is one the
+	// exit filter has to refuse - loopback, or the host's own. Production code
+	// never sets it; only the in-package tests do.
+	allowAnyDest bool
 	// seen guards the TCP stack against the carrier's at-least-once delivery.
 	seen *dedupe
 }
@@ -190,6 +196,12 @@ func (t *TCPTunnel) handleExitUDP(r *udp.ForwarderRequest) bool {
 	id := r.ID()
 	dest := net.JoinHostPort(id.LocalAddress.String(), fmt.Sprintf("%d", id.LocalPort))
 
+	if !t.allowAnyDest && !exitDestinationAllowed(id.LocalAddress) {
+		utils.Debugf("[EXIT] refused %s: blocked destination on an exit node", dest)
+		t.udpFlows.Add(-1)
+		return true
+	}
+
 	var wq waiter.Queue
 	ep, tErr := r.CreateEndpoint(&wq)
 	if tErr != nil {
@@ -242,13 +254,33 @@ func (t *TCPTunnel) handleExitUDP(r *udp.ForwarderRequest) bool {
 	return true
 }
 
+// maxExitTCPFlows bounds concurrent forwarded TCP connections on an exit node.
+// A peer can synthesise SYNs without opening anything: gVisor checks the
+// checksum, the SYN bit and that no SYN-ACK came back, all of which the packet
+// controls. Each accepted flow costs a goroutine, an outbound socket held for
+// up to the dial timeout, and two 256 KiB copy buffers.
+const maxExitTCPFlows = 1024
+
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()
 	dest := net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort)))
 
+	if !t.allowAnyDest && !exitDestinationAllowed(id.LocalAddress) {
+		utils.Debugf("[EXIT] refused %s: blocked destination on an exit node", dest)
+		r.Complete(true)
+		return
+	}
+	if t.tcpFlows.Add(1) > maxExitTCPFlows {
+		t.tcpFlows.Add(-1)
+		utils.Debugf("[EXIT] refused %s: over the %d concurrent flow limit", dest, maxExitTCPFlows)
+		r.Complete(true)
+		return
+	}
+
 	var wq waiter.Queue
 	ep, tErr := r.CreateEndpoint(&wq)
 	if tErr != nil {
+		t.tcpFlows.Add(-1)
 		utils.Debugf("[EXIT] CreateEndpoint %s: %v", dest, tErr)
 		r.Complete(true)
 		return
@@ -257,6 +289,7 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	local := gonet.NewTCPConn(&wq, ep)
 
 	utils.SafeGo("exit.flow", func() {
+		defer t.tcpFlows.Add(-1)
 		remote, err := net.DialTimeout("tcp", dest, 10*time.Second)
 		if err != nil {
 			utils.Debugf("[EXIT] dial %s failed: %v", dest, err)
