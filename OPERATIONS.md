@@ -201,7 +201,38 @@ sha256sum OpenFluxPC/dist/OpenFlux-<version>.msi
 
 Verify the manifest against the files on disk *before* uploading, not after.
 
-### Confirming the Android core is really current
+## Three workflows in this repository have never run
+
+`ci.yml`, `node-release.yml` and a second `release.yml` live in
+`OpenFlux/.github/workflows/`. GitHub executes workflows only from
+`.github/workflows/` **at the repository root**; everything in a subdirectory is
+a plain folder of YAML files that nothing reads. So the core's CI, its node
+releases and its release workflow are dormant, and have always been.
+
+Checked against the published tree, not assumed:
+
+```bash
+curl -s https://codeload.github.com/imbazyx/OpenFlux/tar.gz/refs/heads/main \
+  | tar -tz | grep '\.github/workflows'
+```
+
+Only `.github/workflows/release.yml` — the one for the Android/PC clients — is
+live. The other three appear in the listing and are still never executed.
+
+**What this costs.** No job can build the next node release, and nothing can
+re-pin the three `SHA_*` values in `OpenFlux/deploy/node-install.sh` when the
+core changes. A node release has to be produced by hand. The published asset is
+still consistent — `node-v1.0.0/openflux-linux-amd64` is present and its
+SHA-256 matches the pin — but nothing keeps it that way.
+
+**To fix.** Move them to the root `.github/workflows/`, renaming the second
+`release.yml` (same `name: Release`, so it would collide) and deciding what
+`working-directory` each expects, since they were written assuming they run
+inside `OpenFlux/`. Do not enable `ci.yml` casually: it triggers on `push`, so it
+would run on every commit for the first time, and it has never been exercised
+against the current toolchain.
+
+## Three workflows in this repository have never run
 
 The `.aar` is a build artifact and is not committed, so the version stamp alone
 does not prove the phone carries the core you just built. Compare the shipped
