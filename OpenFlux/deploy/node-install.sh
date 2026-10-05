@@ -172,8 +172,16 @@ CHANNEL=""; URL=""; KEY=""; PORT=""; COOKIES=""
 read_config() {
     if [ $# -gt 0 ]; then
         [ -f "$1" ] || fail input "нет файла конфигурации"
-        read_config < "$1"
+        # Считать и снести ДО разбора. Раньше `rm -f` стоял после рекурсивного
+        # вызова, а `fail` из любой проверки делает exit - и файл, в котором
+        # лежит ключ канала и cookies, оставался на диске. Комментарий выше
+        # обещал удаление, и обещал верно только на успешном пути.
+        cfg_data="$(cat "$1")" || fail input "не читается файл конфигурации"
         rm -f "$1"
+        read_config <<EOF
+$cfg_data
+EOF
+        cfg_data=""
         return
     fi
     while IFS= read -r line || [ -n "$line" ]; do
@@ -437,7 +445,14 @@ EOF
                 || apply_fail firewall "не удалось открыть порт в firewalld"
             CREATED_FW=firewalld ;;
     esac
-    [ -n "$CREATED_FW" ] && printf '%s %s\n' "$CREATED_FW" "$PORT" > "$dir/firewall"
+    # The record belongs in CONF, not in whatever `$dir` holds at this point:
+    # write_cookies() assigns `dir="$STATE_ROOT/$CHANNEL"` to the GLOBAL dir
+    # (the script uses no `local` anywhere), so on any install with cookies
+    # this line landed in the state directory while cmd_remove looks in
+    # CONF. The rule then survived the channel forever and the state dir that
+    # held the record was deleted with it - one leaked ufw/firewalld allow per
+    # install/remove cycle.
+    [ -n "$CREATED_FW" ] && printf '%s %s\n' "$CREATED_FW" "$PORT" > "$CONF_ROOT/$CHANNEL/firewall"
 
     systemctl enable --now "openflux-node@$CHANNEL" >/dev/null 2>&1 \
         || apply_fail start "не удалось запустить openflux-node@$CHANNEL"
