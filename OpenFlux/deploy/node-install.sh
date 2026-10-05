@@ -652,10 +652,24 @@ cmd_remove() {
         fw_record="$STATE_ROOT/$CHANNEL/firewall"
     fi
     if [ -n "$fw_record" ]; then
-        read -r kind port < "$fw_record"
+        read -r kind port < "$fw_record" || port=""
+        # Checked, which is the exact mirror of the fix on the APPLY side: the
+        # write of this record was made checked because a lost record leaves a
+        # rule open forever, and a silently failing DELETE leaves the same
+        # result while `remove` prints ok:true. Both halves have to be honest
+        # or the guarantee is only half a guarantee.
+        #
+        # A truncated record also reads an empty `port` here, which would run
+        # `ufw delete allow "/tcp"` - a silent no-op - and then report success.
         case "$kind" in
-            ufw) ufw delete allow "$port/tcp" >/dev/null 2>&1 ;;
-            firewalld) firewall-cmd --permanent --remove-port="$port/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
+            ufw)
+                [ -n "$port" ] || fail remove "запись брандмауэра пуста, порт неизвестен; правило осталось открытым"
+                ufw delete allow "$port/tcp" >/dev/null 2>&1 \
+                    || fail remove "не удалось закрыть $port/tcp в ufw; правило осталось открытым" ;;
+            firewalld)
+                [ -n "$port" ] || fail remove "запись брандмауэра пуста, порт неизвестен; правило осталось открытым"
+                { firewall-cmd --permanent --remove-port="$port/tcp" && firewall-cmd --reload; } >/dev/null 2>&1 \
+                    || fail remove "не удалось закрыть $port/tcp в firewalld; правило осталось открытым" ;;
         esac
     fi
     rm -rf "${CONF_ROOT:?}/$CHANNEL" "${STATE_ROOT:?}/$CHANNEL"
@@ -715,14 +729,28 @@ cmd_upgrade() {
             set -- "$@" "$ch"
         else
             failed="$failed $ch"
+            # Stop at the first failure. Every unit runs the SAME ExecStart -
+            # one global symlink - so once a channel has failed on the new core
+            # there is no per-channel rollback to reach for, and continuing
+            # moves every remaining channel onto a core already known to be
+            # broken for this configuration. A single failure used to end with
+            # five of six channels restarted onto it.
+            break
         fi
     done
     if [ -n "$failed" ]; then
         # The old cores stay exactly where they are. A failed upgrade must leave
         # the server able to start, and it can: the symlink still points at a
         # core that is present.
-        printf '{"ok":false,"core":"%s","restarted":%s,"failed":%s,"hint":"старые ядра сохранены; откатите канал на предыдущем ядре"}\n' \
-            "$CORE_VERSION" "$(json_list "$@")" "$(json_list $failed)"
+        #
+        # The hint says what is actually true. It used to say "откатите канал на
+        # предыдущем ядре", and NO dispatcher command can do that: `upgrade`
+        # always installs the single global $CORE_VERSION, `apply` refuses an
+        # existing channel, and the unit template has one ExecStart. An operator
+        # following that hint would re-point the global symlink by hand - taking
+        # every healthy channel off the new core to fix one.
+        printf '{"ok":false,"core":"%s","restarted":%s,"failed":%s,"hint":"отката по каналу нет: каналы $failed остались на ядре %s; предыдущие ядра сохранены в %s - вернуть все каналы можно, переключив %s/openflux на openflux-node-v<прежняя> и перезапустив их"}\n' \
+            "$CORE_VERSION" "$(json_list "$@")" "$(json_list $failed)" "$CORE_VERSION" "$BIN_DIR" "$BIN_DIR"
         return 1
     fi
     # Older cores nothing points at any more - only once every channel is up.
