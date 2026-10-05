@@ -28,8 +28,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One page of the built-in browser: a WebView the UI shows with
@@ -62,7 +62,6 @@ class WebPage(
     private var view: WebView? = null
     private var proxyOverridden = false
     private val results = ConcurrentHashMap<String, CompletableDeferred<String>>()
-    private val ids = AtomicLong()
 
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     internal fun view(context: Context): WebView {
@@ -74,6 +73,14 @@ class WebPage(
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            // Default is true on API 26-29 (minSdk 26). A page that navigates
+            // itself to file:///data/data/<pkg>/files/... would otherwise be
+            // reading this app's own files with the app's own uid.
+            allowFileAccess = false
+            @Suppress("DEPRECATION")
+            allowFileAccessFromFileURLs = false
+            allowUniversalAccessFromFileURLs = false
+            allowContentAccess = false
             // The UA the core fetches the document with: a check's pass may be bound to it.
             userAgentString = USER_AGENT
             useWideViewPort = true
@@ -175,7 +182,7 @@ class WebPage(
     /** Runs [expression] (it may return a Promise) on the page; its value as a string. */
     suspend fun evaluate(expression: String, timeoutMs: Long = 90_000): String {
         check(scripts) { "This page does not run scripts" }
-        val id = ids.incrementAndGet().toString()
+        val id = SecureRandom().nextLong().toString(16).padStart(16, '0')
         val result = CompletableDeferred<String>().also { results[id] = it }
         try {
             withContext(Dispatchers.Main) {

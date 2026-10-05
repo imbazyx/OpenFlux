@@ -1,6 +1,7 @@
 package io.openflux.android.platform
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -8,6 +9,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.PersistableBundle
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -69,7 +71,14 @@ class AndroidPlatformServices(
         runCatching { clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString() }.getOrNull()
 
     override fun setClipboardText(text: String) {
-        clipboard.setPrimaryClip(ClipData.newPlainText("OpenFlux", text))
+        val clip = ClipData.newPlainText("OpenFlux", text)
+        // The share link carries the node's encryption key. On Android 8.0-9.0
+        // (still in range: minSdk 26) any app holding focus, and the IME, can
+        // read the clipboard, so the platform needs to be told this is secret.
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+        clipboard.setPrimaryClip(clip)
     }
 
     override val clipboardImageSupported = false

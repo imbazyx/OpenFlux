@@ -523,6 +523,7 @@ func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
 		}
 		return fmt.Errorf("dial %s (http %d): %w", wsURL, status, err)
 	}
+	conn.SetReadLimit(maxWSMessageBytes)
 	utils.Debugf("[BOARDS] WS connected: %s", info.wsHost)
 
 	participant := info.userHash

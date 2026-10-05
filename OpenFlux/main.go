@@ -703,8 +703,13 @@ DEPRECATED (removed in v2)
 
 	sessionContext = pickSessionContext(*sessionContextFlag, globalDocUrl, specs)
 	if *encryptionKeyFile != "" {
-		utils.Debugf("[KEY] context=%q sha256=%s (MUST match on both peers)",
-			sessionContext, utils.Sha256Hex([]byte(sessionContext)))
+		// Only the digest. The context is derived from the document URL, and
+		// that URL is also the credential that lets anyone join the room - so
+		// printing it here would hand the room to whoever reads the log, and
+		// this line runs on every connect on Android, where mobile.go turns
+		// level 2 on unconditionally.
+		utils.Debugf("[KEY] context sha256=%s (MUST match on both peers)",
+			utils.Sha256Hex([]byte(sessionContext)))
 	}
 
 	// Decide whether we run the full Session path (encryption + negotiate)
