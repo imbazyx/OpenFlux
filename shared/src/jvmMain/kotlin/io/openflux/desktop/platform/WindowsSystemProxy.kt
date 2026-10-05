@@ -67,6 +67,15 @@ object WindowsSystemProxy {
     // cannot tell the two cases apart because it returns null and discards the
     // output on any non-zero exit, so ask the registry whether the value is
     // there before trying to remove it.
+    //
+    // The limit of that: query() also returns null when `reg query` itself
+    // failed - a timeout, a refused access - so a delete that would have failed
+    // is now skipped silently. That is the right way round here, because the
+    // line that decides whether Windows is left on a dead address is the
+    // set("ProxyEnable", "0") that follows, and a leftover unused ProxyServer
+    // string harms nothing once ProxyEnable is 0. The failure that matters -
+    // that set() throwing - still propagates, still keeps the saved record,
+    // and still gets retried.
     private fun delete(name: String) {
         if (query(name) == null) return
         run("reg", "delete", KEY, "/v", name, "/f")
