@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 )
@@ -207,7 +208,13 @@ func SafeGo(name string, fn func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				Debugf("[PANIC] recovered in %s: %v", name, r)
+				// Infof, not Debugf: Debugf is gated on the debug level and a
+				// node runs without --debug, so this line used to disappear
+				// exactly where it mattered. The goroutine still died, the
+				// feature it served simply stopped working, and the journal
+				// said nothing at all. With the stack, because a recovered
+				// panic without one is a bug nobody can locate.
+				Infof("[PANIC] recovered in %s: %v\n%s", name, r, debug.Stack())
 			}
 		}()
 		fn()
