@@ -23,8 +23,8 @@ the three files to read, and the two things not to do.
 | Repository | `git@github.com:imbazyx/OpenFlux.git`, branch `main` |
 | Version | 2.3.1, declared once in `gradle.properties` |
 
-There was once a second checkout of upstream `p1neappleXpress/OpenFlux` beside
-this one. The fork also used to live one directory deeper, inside *that* tree.
+There was once a second checkout of the upstream core beside this one. The
+fork also used to live one directory deeper, inside *that* tree.
 Both were git repositories, so building from the wrong one produced the upstream
 core — no duplicate-packet guard, none of this fork's fixes — with nothing in the
 build complaining. The upstream checkout has since been deleted; everything the

@@ -256,9 +256,9 @@ its own version, and installs it without leaving the app.
 
 ### Fixed
 
-- The repository link under Settings → About still read
-  `github.com/p1neappleXpress/OpenFlux`. The URL it opened was already the
-  fork's, so the link worked and the label under it was simply wrong.
+- The repository link under Settings → About still read the upstream address.
+  The URL it opened was already this repository's, so the link worked and the
+  label under it was simply wrong.
 - A failed update check and "no update available" showed the same thing, so a
   check that could not reach GitHub was indistinguishable from being up to
   date. A failed check now says so.
@@ -386,9 +386,7 @@ the core.
 First release of this app. Replaces the previous single-transport native
 app (tun2socks + pdnsd JNI, preserved at the
 [`legacy-native-app`](../../tree/legacy-native-app) tag) with the Compose
-Multiplatform app originally built by [@meepo161](https://github.com/meepo161)
-in [OpenFluxClient](https://github.com/meepo161/OpenFluxClient), moved here
-with his agreement.
+Multiplatform app this repository has carried ever since.
 
 ### Added
 
@@ -401,8 +399,8 @@ with his agreement.
   own address.
 - A node-deployment wizard: install an exit node on your own VPS over SSH
   from the app.
-- `shared/` and `OpenFlux/` as git submodules ([OpenFluxClientShared](https://github.com/p1neappleXpress/OpenFluxClientShared)
-  and the [OpenFlux](https://github.com/p1neappleXpress/OpenFlux) core), so
+- `shared/` and `OpenFlux/` as git submodules (the shared Compose app and the
+  [OpenFlux](https://github.com/imbazyx/OpenFlux) core), so
   this app always builds against one pinned, single copy of each instead of
   a vendored one. *(Both became ordinary directories in 1.2.0 — see above.)*
 - `.github/workflows/release.yml`: a `v*` tag builds and signs a release
@@ -410,9 +408,8 @@ with his agreement.
 
 ### Credits
 
-- [@meepo161](https://github.com/meepo161) — this app's UI and logic.
-- [@p1neappleXpress](https://github.com/p1neappleXpress) — the OpenFlux
-  core it embeds.
+- [@imbazyx](https://github.com/imbazyx) — this app and the OpenFlux core
+  it embeds.
 - [@damnurmum](https://github.com/damnurmum) — `openflux://` links/QR codes
   and the cups.online transport in the core, which this app's share and
   scan screens build on.

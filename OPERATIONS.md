@@ -29,8 +29,8 @@ because a fresh `git clone` still lands wherever it lands.
 |---|---|
 | `<drive>:/project/OpenFluxAndroid/` | **This fork, and the only tree that has it.** The git repository everything ships from. |
 
-The fork used to live one directory deeper, inside a checkout of upstream
-`p1neappleXpress/OpenFlux`. Both were separate git repositories with separate
+The fork used to live one directory deeper, inside a checkout of the upstream
+core. Both were separate git repositories with separate
 remotes. Building from the parent produced the upstream core — no duplicate-packet
 guard, none of this fork's fixes — and nothing in the build complained. The tell
 was `OpenFlux/tunnel/dedupe.go`: present here, absent there. The parent's

@@ -14,8 +14,8 @@ Cookie-файл даёт доступ к Яндекс-аккаунту, а сс�
 ## 1. Exit-нода на VPS
 
 ```bash
-git clone https://github.com/meepo161/openfluxfork.git
-cd openfluxfork
+git clone https://github.com/imbazyx/OpenFlux.git
+cd OpenFlux
 docker build -t openflux:local .
 mkdir -p ~/openflux-phone-1
 cp deploy/vyandex-exit.compose.yml ~/openflux-phone-1/compose.yml
@@ -32,7 +32,7 @@ docker compose logs --tail 30
 
 ## 2а. Android
 
-Используйте [приложение из Android-форка](https://github.com/meepo161/openfluxandroidfork) с arm64-бинарником OpenFlux. Установите APK поверх предыдущей версии, если подпись совпадает. Откройте приложение, добавьте профиль вручную и укажите:
+Используйте [приложение отсюда](https://github.com/imbazyx/OpenFluxAndroid) с arm64-бинарником OpenFlux. Установите APK поверх предыдущей версии, если подпись совпадает. Откройте приложение, добавьте профиль вручную и укажите:
 
 | Поле | Значение |
 | --- | --- |

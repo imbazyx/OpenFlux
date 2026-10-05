@@ -12,14 +12,14 @@ maintainer's multi-transport work folded together) and the first cut by
 ### Added
 
 - `mobile/`: the Android/iOS gomobile bridge now lives in this repository
-  (moved from `meepo161/openfluxfork`, full history and authorship
-  preserved), so building the mobile clients needs only this checkout.
+  (moved in with its full history), so building the mobile clients needs only
+  this checkout.
 - `.github/workflows/release.yml`: a `v*` tag cross-compiles the CLI for
   Linux (amd64/arm/arm64), Windows (386/amd64/arm64) and macOS
   (amd64/arm64) and publishes it with `SHA256SUMS.txt`. Replaces the
   ad-hoc manually-built `0.0.x` releases.
 - `deploy/node-install.sh` now downloads the exit-node core from this
-  repository's own `node-v*` releases instead of `meepo161/openfluxfork`;
+  repository's own `node-v*` releases instead of the upstream fork;
   `provision/pin.go`'s pinned script commit/hash points here too.
 
 ### Fixed
@@ -36,11 +36,9 @@ maintainer's multi-transport work folded together) and the first cut by
 
 ### Credits
 
-`androidApp`/`desktopApp`/`shared` for [OpenFluxAndroid](https://github.com/p1neappleXpress/OpenFluxAndroid)
-and [OpenFluxDesktop](https://github.com/p1neappleXpress/OpenFluxDesktop) now
-run the Compose Multiplatform app built by [@meepo161](https://github.com/meepo161)
-in [OpenFluxClient](https://github.com/meepo161/OpenFluxClient), moved into
-those repositories with his agreement.
+`androidApp`/`desktopApp`/`shared` for
+[OpenFluxAndroid](https://github.com/imbazyx/OpenFluxAndroid) run the Compose
+Multiplatform app in this repository.
 
 ## [0.0.1] - [0.0.5]
 

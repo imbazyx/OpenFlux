@@ -1,4 +1,4 @@
-Проект OpenFlux, форк p1neappleXpress/OpenFlux. Рабочий каталог:
+Проект OpenFlux, репозиторий imbazyx/OpenFlux. Рабочий каталог:
 D:\project\OpenFluxAndroid. Всё в нём: ядро (OpenFlux/), оба клиента,
 скрипты сборки и reserve/ с резервной копией ключа подписи. Больше нигде
 ничего нет, второй checkout апстрима удалён - собирать только отсюда.

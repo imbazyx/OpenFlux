@@ -24,7 +24,7 @@
 
 | Параметр | Значение |
 |---|---|
-| Bundle ID | `com.p1neapplexpress-saharev.openflux` |
+| Bundle ID | `com.imbazyx.openflux` |
 | Team ID | `8GQH8GQ252` (Alexandr Revin, Individual) |
 | Marketing version | `1.0.0` |
 | Deployment target | iOS 15.0 |
