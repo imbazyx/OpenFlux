@@ -3,6 +3,7 @@ package tunnel
 import (
 	"net"
 	"sync"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 
@@ -15,17 +16,39 @@ import (
 // hands out its credentials. Private ranges stay reachable on purpose — sharing
 // a LAN is a normal thing to want from an exit node.
 var (
-	egressOnce sync.Once
+	egressMu   sync.Mutex
 	egressAddr [4]byte
+	egressAt   time.Time
 )
+
+// egressTTL bounds how stale the node's own address may get. The address
+// changes when a DHCP lease renews, a VPN comes up or an interface flaps, and
+// a value cached for the life of the process means the node's NEW address is
+// never compared - reopening exactly the hole the comparison closes - while
+// the old one stays blocked for no reason. The re-detect is one connected UDP
+// socket that puts nothing on the wire, so running it every few minutes is
+// free. An early call that finds no route caches zero only for one TTL
+// instead of silently disabling the self-check for the life of the process.
+const egressTTL = 5 * time.Minute
+
+// egressIPv4 returns the node's own address, re-detected once the cached value
+// is older than egressTTL.
+func egressIPv4() [4]byte {
+	egressMu.Lock()
+	defer egressMu.Unlock()
+	if time.Since(egressAt) < egressTTL {
+		return egressAddr
+	}
+	egressAddr = detectEgressIPv4()
+	egressAt = time.Now()
+	return egressAddr
+}
 
 // exitDestinationAllowed reports whether an exit node may forward to addr.
 func exitDestinationAllowed(addr tcpip.Address) bool {
-	var dst, self [4]byte
+	var dst [4]byte
 	copy(dst[:], addr.AsSlice())
-	egressOnce.Do(func() { egressAddr = detectEgressIPv4() })
-	self = egressAddr
-	return !l3.BlockedDestination(dst, self)
+	return !l3.BlockedDestination(dst, egressIPv4())
 }
 
 // detectEgressIPv4 asks the routing table which source address the kernel

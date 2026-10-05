@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"sync"
@@ -45,6 +46,21 @@ func (s *Server) Listen() error {
 	ln, err := net.Listen("unix", s.path)
 	if err != nil {
 		return err
+	}
+	// Go never restricts a socket it binds: connect(2) needs write permission,
+	// and the default 0777 & ~umask leaves 0755 here, so the file is readable
+	// and, under any permissive umask or a group-writable parent directory,
+	// connectable by anyone who can reach it. Nothing in the protocol
+	// authenticates a peer - any connection that lands here is "the app" - and
+	// what it gets is the cookie jar and the right to push a new one, so the
+	// socket belongs to the user that bound it and nobody else.
+	//
+	// ponytail: no SO_PEERCRED check. 0600 on the socket already means only the
+	// owner can connect, which is the whole of the threat. Add the credential
+	// check if the socket ever has to live in a directory shared by several uids.
+	if err := os.Chmod(s.path, 0600); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("ipc: restrict %s: %w", s.path, err)
 	}
 	s.mu.Lock()
 	s.listener = ln

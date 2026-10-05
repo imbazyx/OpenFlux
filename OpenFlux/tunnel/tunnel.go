@@ -257,9 +257,16 @@ func (t *TCPTunnel) handleExitUDP(r *udp.ForwarderRequest) bool {
 // maxExitTCPFlows bounds concurrent forwarded TCP connections on an exit node.
 // A peer can synthesise SYNs without opening anything: gVisor checks the
 // checksum, the SYN bit and that no SYN-ACK came back, all of which the packet
-// controls. Each accepted flow costs a goroutine, an outbound socket held for
-// up to the dial timeout, and two 256 KiB copy buffers.
-const maxExitTCPFlows = 1024
+// controls, and it does not bound live flows — the slot is released before the
+// dial, so an injected SYN gets a goroutine, an outbound socket held for up to
+// the dial timeout, and two 256 KiB copy buffers plus 16 MiB of socket buffers.
+//
+// 128 is sized from that budget rather than picked: 128 * ~16.5 MiB is about
+// 2 GB, and the host this runs on is a 1 GB VDS. The UDP side is capped at 256
+// * 64 KiB = 16 MiB, so 128 TCP flows is still eight times the memory of a
+// full UDP table, which is the right order for a workload where a handful of
+// long-lived connections carry the traffic.
+const maxExitTCPFlows = 128
 
 func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 	id := r.ID()

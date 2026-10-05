@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 
 	"openflux/transport"
@@ -11,7 +12,25 @@ import (
 	"openflux/transport/manager"
 	"openflux/transport/oneme"
 	"openflux/transport/yandex"
+	"openflux/tunnel/l3"
 )
+
+// okDialTarget refuses a dial address that would make the node talk to itself.
+// A host name is allowed: it is resolved by the operator's own resolver, and
+// once it becomes an address the exit filter applies to tunnel traffic anyway.
+func okDialTarget(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host).To4()
+	if ip == nil {
+		return true
+	}
+	var dst [4]byte
+	copy(dst[:], ip)
+	return !l3.BlockedDestination(dst, [4]byte{})
+}
 
 // yandexCookiesFile is --yandex-cookies-file: a Netscape cookies.txt with
 // a Yandex login that every vyandex transport starts with.
@@ -55,14 +74,18 @@ func transportFactory(baseCfg transport.TransportConfig) manager.Factory {
 			return oneme.NewOneMeTransport(exit, token, uid, baseCfg), nil
 		case "direct":
 			dcfg := transport.DefaultDirectConfig()
-			if v, ok := cfg.Params["listen"].(string); ok {
-				dcfg.ListenAddr = v
-			}
-			if v, ok := cfg.Params["dial"].(string); ok {
+			// Which address to bind and whether to bind at all are the operator's
+			// decisions, not the peer's. A peer that can reach the transport must
+			// not be able to make a root VDS listen on a port of its choosing
+			// outside every firewall rule the installer wrote, and must not be
+			// able to point the dial side at the node's own loopback, which is
+			// the same pivot the exit filter closes for tunnel traffic.
+			//
+			// Nothing legitimate is lost: the app and the CLI set these by
+			// calling NewDirectTransport directly (mobile.go:214) and never come
+			// through here. This path exists for peer-requested carriers.
+			if v, ok := cfg.Params["dial"].(string); ok && okDialTarget(v) {
 				dcfg.DialAddr = v
-			}
-			if v, ok := cfg.Params["is_exit"].(bool); ok {
-				dcfg.IsExit = v
 			}
 			return transport.NewDirectTransport(baseCfg, dcfg), nil
 		default:
