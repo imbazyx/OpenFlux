@@ -169,13 +169,37 @@ class FileProfileRepository(dir: File) : ProfileRepository {
 
 class FileSettingsRepository(dir: File, defaults: AppSettings = AppSettings()) : SettingsRepository {
     private val store = JsonFile(File(dir, "settings.json"), AppSettings.serializer())
-    private val state = MutableStateFlow(
+
+    /**
+     * Set when settings.json is present but unreadable.
+     *
+     * While it is, saves are refused, for the reason
+     * [FileProfileRepository.unreadable] gives: the in-memory settings are
+     * only the defaults because the real ones could not be parsed, so writing
+     * them back would destroy the user's server host, port, and the master
+     * keys of every node of their own. The file is left exactly as it is and
+     * kept aside as settings.json.bad, so it can still be recovered by hand.
+     *
+     * The copy was already being made; what was missing is the refusal to
+     * overwrite, which is why a corrupt file became a lost file the moment the
+     * user changed anything.
+     */
+    var unreadable: String? = null
+        private set
+
+    private val locked: Boolean get() = unreadable != null
+
+    private val state: MutableStateFlow<AppSettings> = MutableStateFlow(
         when (val read = store.readOver(defaults)) {
             is JsonFile.Read.Ok ->
                 read.value.sane().let { loaded -> loaded.migrated().also { m -> if (m != loaded) store.write(m) } }
+            is JsonFile.Read.Unreadable -> {
+                unreadable = "Сохранённые настройки не читаются (${read.message}). Файл сохранён как settings.json.bad и не перезаписан."
+                defaults.sane().migrated()
+            }
             // Nothing to migrate and nothing to write: the file is the user's,
             // and it stays exactly as it is.
-            else -> defaults.sane().migrated()
+            JsonFile.Read.Absent -> defaults.sane().migrated()
         },
     )
     override val settings: StateFlow<AppSettings> = state.asStateFlow()
@@ -183,7 +207,13 @@ class FileSettingsRepository(dir: File, defaults: AppSettings = AppSettings()) :
     @Synchronized
     override fun update(transform: (AppSettings) -> AppSettings) {
         state.update { old ->
-            transform(old).also { if (it != old) store.write(it) }
+            // Only the write is refused, not the change itself. The in-memory
+            // value is what the app runs on, and freezing it would mean a user
+            // whose settings stopped reading could not so much as switch the
+            // theme until they found the file by hand. The change applies this
+            // session; it does not survive a restart, because the damaged file
+            // is deliberately left in place rather than replaced with it.
+            transform(old).also { if (it != old && !locked) store.write(it) }
         }
     }
 }
