@@ -441,9 +441,15 @@ EOF
                 || apply_fail firewall "не удалось открыть порт в ufw"
             CREATED_FW=ufw ;;
         firewalld)
+            # CREATED_FW is set BEFORE the commands, not after. --permanent
+            # --add-port writes the permanent zone straight away, so a failure
+            # in the --reload that follows left the port open in the config,
+            # survived every reboot, and rollback() - which switches on
+            # CREATED_FW - matched nothing and cleaned up nothing. A failed
+            # install reported a clean failure while quietly opening a port.
+            CREATED_FW=firewalld
             { firewall-cmd --permanent --add-port="$PORT/tcp" && firewall-cmd --reload; } >/dev/null 2>&1 \
-                || apply_fail firewall "не удалось открыть порт в firewalld"
-            CREATED_FW=firewalld ;;
+                || apply_fail firewall "не удалось открыть порт в firewalld" ;;
     esac
     # The record belongs in CONF, not in whatever `$dir` holds at this point:
     # write_cookies() assigns `dir="$STATE_ROOT/$CHANNEL"` to the GLOBAL dir
@@ -472,8 +478,24 @@ cmd_remove() {
     dir="$CONF_ROOT/$CHANNEL"
     [ -d "$dir" ] || fail remove "канала $CHANNEL нет на сервере"
     systemctl disable --now "openflux-node@$CHANNEL" >/dev/null 2>&1
+    # Look in CONF first, then in STATE, because the record moved there.
+    #
+    # Before this was corrected, the record was written to `$dir/firewall` while
+    # `dir` had already been reassigned by write_cookies() to the STATE
+    # directory. Every channel installed by that script WITH cookies - the
+    # ordinary case - kept its record in STATE, so remove looked in CONF, found
+    # nothing, left the ufw/firewalld rule open forever, and then deleted the
+    # channel directory including the only copy of the record. There is no
+    # migration anywhere else: nothing in the repo mentions those channels, so
+    # this fallback is the only thing that can close their rules.
+    fw_record=""
     if [ -f "$dir/firewall" ]; then
-        read -r kind port < "$dir/firewall"
+        fw_record="$dir/firewall"
+    elif [ -f "$STATE_ROOT/$CHANNEL/firewall" ]; then
+        fw_record="$STATE_ROOT/$CHANNEL/firewall"
+    fi
+    if [ -n "$fw_record" ]; then
+        read -r kind port < "$fw_record"
         case "$kind" in
             ufw) ufw delete allow "$port/tcp" >/dev/null 2>&1 ;;
             firewalld) firewall-cmd --permanent --remove-port="$port/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 ;;
