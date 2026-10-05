@@ -128,8 +128,8 @@ class JvmPlatformServices(
      * update". The feed has no such limit, and for "what is the newest tag" it
      * carries the same fact.
      */
-    private suspend fun releaseFeed(): String? = withContext(Dispatchers.IO) {
-        request("https://github.com/$RELEASE_REPO/releases.atom").body
+    private suspend fun releaseFeed(deadlineMs: Long = Long.MAX_VALUE): String? = withContext(Dispatchers.IO) {
+        request("https://github.com/$RELEASE_REPO/releases.atom", deadlineMs = deadlineMs).body
     }
 
     /**
@@ -169,12 +169,21 @@ class JvmPlatformServices(
      * NoClassDefFoundError before it draws anything. HttpURLConnection is in
      * java.base, which is in every runtime there is.
      */
-    private fun request(url: String, head: Boolean = false): Answer {
+    private fun request(url: String, head: Boolean = false, deadlineMs: Long = Long.MAX_VALUE): Answer {
         val connection = runCatching {
             (URI(url).toURL().openConnection() as HttpURLConnection).apply {
                 requestMethod = if (head) "HEAD" else "GET"
-                connectTimeout = 8_000
-                readTimeout = 15_000
+                // Derived from the deadline, not fixed. This function BLOCKS on
+                // the socket, so `withTimeout` around it cannot interrupt it:
+                // Kotlin cancellation is only observable at a suspension point,
+                // and the only one here is the withContext that calls this. So
+                // the ceiling has to be in the socket timeouts themselves.
+                //
+                // Divided by two because the value goes to connectTimeout AND
+                // readTimeout - one request can spend it twice.
+                val left = ((deadlineMs - System.currentTimeMillis()) / 2).coerceIn(1L, 15_000L).toInt()
+                connectTimeout = minOf(8_000, left)
+                readTimeout = left
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "OpenFlux-Desktop")
                 setRequestProperty("Accept", "*/*")
@@ -247,7 +256,11 @@ class JvmPlatformServices(
      * implementation that can disagree with it.
      */
     override suspend fun checkForUpdateDetailed(): UpdateCheck {
-        val feed = releaseFeed()
+        // Budget for the WHOLE check, taken before the feed is read, so the feed
+        // cannot spend time the walk then does not have. Same shape as Android's
+        // CHECK_BUDGET_MS.
+        val deadline = System.currentTimeMillis() + DESKTOP_CHECK_BUDGET_MS
+        val feed = releaseFeed(deadline)
             ?: return UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub")
         // App tags only, newest version first, walked until one is found.
         //
@@ -268,7 +281,7 @@ class JvmPlatformServices(
             // rather than as "no update", which a user cannot act on.
             val name = "OpenFlux-$version$WINDOWS_INSTALLER_SUFFIX"
             val url = "https://github.com/$RELEASE_REPO/releases/download/$tag/$name"
-            val head = withContext(Dispatchers.IO) { request(url, head = true) }
+            val head = withContext(Dispatchers.IO) { request(url, head = true, deadlineMs = deadline) }
             if (head.ok) {
                 val update = AppUpdate(
                     version = version,
@@ -300,6 +313,17 @@ class JvmPlatformServices(
                 newestAppTag = tag
                 newestProblem = "выпуск $tag есть, но установщик $name не отдаётся: ${head.problem}"
             }
+        }
+        // Checked after the walk, where the whole of it has actually run out.
+        // The loop has no deadline test of its own, so in the normal case - one
+        // newer release - nothing bounded the time spent inside it. And when the
+        // budget IS what failed, saying so beats reporting whatever the last
+        // probe happened to answer: a 404 from a timed-out attempt is not
+        // evidence that the file is absent.
+        if (System.currentTimeMillis() > deadline) {
+            return UpdateCheck.Failed(
+                "превышено время проверки (${DESKTOP_CHECK_BUDGET_MS / 1000} с) - повторите позже",
+            )
         }
         newestAppTag
             ?: return UpdateCheck.Failed("в списке выпусков нет ни одного выпуска приложения")
@@ -524,6 +548,17 @@ class JvmPlatformServices(
 
     /** Same depth as the Android walk: newest-first, stop after this many. */
     private const val DESKTOP_MAX_RELEASES_TO_CHECK = 5
+
+    /**
+     * Ceiling for one whole desktop update check, in milliseconds.
+     *
+     * Worst case before this existed: the feed at 8s connect + 15s read, then
+     * five installer HEADs at the same, = 138 seconds of a disabled "Проверяю…"
+     * button. Fixed per request, not wrapped in `withTimeout`, because `request`
+     * blocks on the socket and cancellation is only observable at a suspension
+     * point - so the socket timeouts have to come from the deadline.
+     */
+    private const val DESKTOP_CHECK_BUDGET_MS = 45_000L
 
     /** Exactly `vX.Y.Z` - no suffix, no shorter form. Mirrors APP_VERSION_TAG on Android. */
     private val DESKTOP_VERSION_TAG = Regex("""^v\d+\.\d+\.\d+$""")
