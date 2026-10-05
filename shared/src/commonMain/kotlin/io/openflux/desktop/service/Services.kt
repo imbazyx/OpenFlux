@@ -161,11 +161,32 @@ interface PlatformServices {
     suspend fun checkForUpdateDetailed(): UpdateCheck = UpdateCheck.Failed("платформа не умеет проверять обновления")
 
     /**
-     * Downloads [update] and hands it to the OS installer; false when this
-     * platform cannot install (the desktop build). Whether the user actually
-     * accepts the install is not this method's business.
+     * Downloads [update] and hands it to the OS installer.
+     *
+     * Whether the user actually accepts the install is not this method's
+     * business - it does not learn the outcome, which is [InstallResult]'s
+     * whole reason for existing rather than a Boolean.
      */
-    suspend fun installUpdate(update: AppUpdate): Boolean = false
+    suspend fun installUpdate(update: AppUpdate): InstallResult =
+        InstallResult.Refused(shown = false)
+}
+
+/**
+ * How far an install attempt got.
+ *
+ * A Boolean could not carry this. Every failed path on Android had already told
+ * the user something specific - "grant the permission and press again", "the
+ * download did not finish" - and then the shared UI added "Не удалось
+ * установить обновление" on top, so a user who had been told exactly what to do
+ * was also told the whole thing had failed. The desktop, by contrast, explains
+ * nothing and relies entirely on the caller. Both need the same caller.
+ */
+sealed interface InstallResult {
+    /** The OS installer is on screen. Whether the user accepts is not yet ours. */
+    data object HandedOff : InstallResult
+
+    /** We never got that far. [shown] is true when the platform already told the user why. */
+    data class Refused(val shown: Boolean = false) : InstallResult
 }
 
 /**
