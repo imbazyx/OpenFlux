@@ -32,9 +32,14 @@ for arg in "$@"; do
   esac
 done
 
-# Tracked changes only. Untracked files cannot change the build of the package
-# being compiled unless they are Go files in the package, and those would be
-# reported by go build itself; this asks git about what it is responsible for.
+# Tracked changes only. --untracked-files=no has two real blind spots, measured
+# on a scratch repo: an untracked new file is invisible to it, and a file
+# marked `git update-index --assume-unchanged` is invisible to it too. This
+# check is a fast refusal, not the safety net. The safety net is `vcs.modified`
+# in the built binary further down, which go derives from the real build inputs
+# and which does catch the untracked case; --reproducible passes
+# -buildvcs=false and carries no such stamp, and is covered instead by the
+# sha256 comparison against the pin.
 DIRTY="$(git -C "$ROOT" status --porcelain --untracked-files=no)"
 if [ -n "$DIRTY" ] && [ "$ALLOW_DIRTY" -eq 0 ]; then
   echo "!! рабочее дерево изменено - сборка будет помечена как vcs.modified" >&2

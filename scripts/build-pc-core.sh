@@ -88,6 +88,13 @@ fetch_wintun
 git -C "$ROOT" rev-parse --short HEAD > "$VER"
 if go version -m "$OUT/openflux-windows-amd64.exe" 2>/dev/null | grep -q 'vcs.modified=true'; then
   echo "!! в .exe vcs.modified=true: дерево было грязным на момент сборки" >&2
+  # Remove it. This directory is packaged verbatim by
+  # OpenFluxPC/build.gradle.kts and it is gitignored, so nothing else in the
+  # tree would notice: a failed run left a binary whose stamp claimed HEAD
+  # while its bytes came from a modified tree, sitting exactly where the next
+  # collectDist would ship it.
+  rm -f "$OUT/openflux-windows-amd64.exe" "$VER"
+  echo "!! битый .exe удалён, чтобы его не подхватила следующая сборка" >&2
   exit 1
 fi
 echo "== версия ядра: $(cat "$VER") =="
