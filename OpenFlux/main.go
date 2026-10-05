@@ -392,6 +392,29 @@ DEPRECATED (removed in v2)
 	}
 
 	os.Args = expandShortFlags(os.Args)
+
+	// `openflux version` and `openflux help` are what anyone types to ask a
+	// deployed node what it is. Neither was ever a subcommand, and Go's flag
+	// package stops at the first non-flag argument, so BOTH were silently
+	// ignored as positionals: every flag took its default, --role became
+	// `client`, --url was empty, and the process started a real client that
+	// blocks forever holding 127.0.0.1:1080. On an exit node that looks like a
+	// hung service, and the stray process is not under systemd so nothing
+	// reaps it.
+	//
+	// Handled before flag.Parse so it cannot reach the transport layer. Not a
+	// flag: a flag would still be swallowed the moment a positional follows it.
+	if len(os.Args) > 1 {
+		switch strings.ToLower(os.Args[1]) {
+		case "version", "--version", "-v":
+			fmt.Println("openflux (no version flag; the build stamp is embedded in the binary)")
+			fmt.Println("  server side:  strings /usr/local/bin/openflux | grep vcs.revision")
+			return
+		case "help", "--help":
+			flag.Usage()
+			return
+		}
+	}
 	flag.Parse()
 
 	// isExit is the session/encryption-directionality role: which side of a

@@ -4,6 +4,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"openflux/utils"
 )
 
 // Client connects to an IPC Server.
@@ -22,7 +24,9 @@ func Dial(path string) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{conn: conn}
-	go c.readLoop()
+	// SafeGo: readLoop invokes cb(typ, payload) with a frame parsed off the
+	// socket, and had no recover of its own.
+	utils.SafeGo("ipc.read", c.readLoop)
 	return c, nil
 }
 

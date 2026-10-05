@@ -95,7 +95,10 @@ func (b *BatchedTransport) Start() error {
 		return err
 	}
 	b.running.Store(true)
-	go b.flushLoop()
+	// SafeGo: this is the coalescing writer every packet passes through. A panic
+	// in encodeBatch or in b.Transport.Send kills the process, and this loop is
+	// the only thing that calls either.
+	utils.SafeGo("batched.flush", b.flushLoop)
 	utils.Debugf("[BATCH] Start: OK")
 	return nil
 }
