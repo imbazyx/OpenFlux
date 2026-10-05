@@ -481,9 +481,16 @@ class JvmPlatformServices(
         Regex("""<link[^>]*href="[^"]*/releases/tag/([^"/]+)"""")
             .findAll(feed)
             .map { it.groupValues[1].trim() }
-            .filter { it.startsWith(DESKTOP_TAG_PREFIX) && it.length > DESKTOP_TAG_PREFIX.length }
+            // Same shape Android uses. "Starts with v and is longer than v" also
+            // accepts `v2.4.0-rc1`, and versionParts drops the suffix - so a
+            // pre-release tag sorts ABOVE v2.3.2, takes the first walk slot,
+            // fails its probe, and the user is told "выпуск v2.4.0-rc1 есть, но
+            // установщик OpenFlux-2.4.0.msi не отдаётся" about a tag this
+            // project publishes no assets for.
+            .filter { DESKTOP_VERSION_TAG.matches(it) }
             .distinct()
-            // versionParts returns List<Int>, which is not itself Comparable, so the
+            // versionParts returns List<Int>, which is not Comparable, so the selector
+            // returns the padded digits below.
             // selector has to return something that is - the joined digits keep
             // the ordering numeric for every version this project has used
             // (all three components single-digit), and compareVersions below
@@ -517,6 +524,9 @@ class JvmPlatformServices(
 
     /** Same depth as the Android walk: newest-first, stop after this many. */
     private const val DESKTOP_MAX_RELEASES_TO_CHECK = 5
+
+    /** Exactly `vX.Y.Z` - no suffix, no shorter form. Mirrors APP_VERSION_TAG on Android. */
+    private val DESKTOP_VERSION_TAG = Regex("""^v\d+\.\d+\.\d+$""")
         const val WINDOWS_INSTALLER_SUFFIX = ".msi"
     }
 }
