@@ -122,4 +122,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.zxing.core)
     implementation(libs.zxing.android)
+    // Unit tests only - not packaged into the APK. Without this the Android
+    // layer had no way to be tested at all, and its defects were visible only
+    // by reading.
+    testImplementation(kotlin("test"))
 }
