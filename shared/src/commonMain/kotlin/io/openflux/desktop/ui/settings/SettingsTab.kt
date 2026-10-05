@@ -77,6 +77,7 @@ import io.openflux.desktop.ui.components.Tone
 import io.openflux.desktop.ui.components.appClickable
 import io.openflux.desktop.ui.theme.AppTheme
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -100,6 +101,18 @@ enum class SettingsCategory(val title: String, val subtitle: String, val icon: D
     }
 }
 
+/**
+ * Whether [work] may be collected now.
+ *
+ * True only when the screen is genuinely finished AND nothing is running. The
+ * second half is the whole point: the model outlives the composition so that an
+ * install survives the user switching tabs, and cancelling on the first visit
+ * away would put back the bug this scope was moved to fix - a permanently
+ * disabled "Устанавливаю…" button and a lost download.
+ */
+internal fun workShouldBeCollected(gone: Boolean, installing: Boolean, checkingRelease: Boolean): Boolean =
+    gone && !installing && !checkingRelease
+
 class SettingsScreenModel(val container: AppContainer) : ScreenModel {
 
     /**
@@ -116,6 +129,28 @@ class SettingsScreenModel(val container: AppContainer) : ScreenModel {
      * must not depend on where the user navigates next.
      */
     val work = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Whether the screen is gone for good, as opposed to merely navigated away from.
+     *
+     * Voyager keeps the model alive for the whole tab registration, so [work]
+     * does not leak a scope per visit - but nothing ever cancelled it either.
+     * [onDispose] is the point where the model is genuinely finished, and the
+     * install below is the one thing that must not die there.
+     */
+    var gone = false
+
+    /** True once the model has been disposed; the install finally-block reads it. */
+
+    /** Cancel [work], but only once the screen is finished and nothing is running. */
+    fun collectWorkIfIdle() {
+        if (workShouldBeCollected(gone, installing, checkingRelease)) work.coroutineContext.cancelChildren()
+    }
+
+    override fun onDispose() {
+        gone = true
+        collectWorkIfIdle()
+    }
     val android = container.platform.kind == PlatformKind.Android
     var category by mutableStateOf(SettingsCategory.Connection)
     var mobileDetailOpen by mutableStateOf(false)
@@ -661,6 +696,12 @@ private fun AboutSettings(model: SettingsScreenModel) {
                         // throw on the way out used to skip the clear and leave
                         // the button disabled forever.
                         model.installing = false
+                        // The scope survives a screen that is merely navigated
+                        // away from, and is cancelled only when the model is
+                        // finished - which may well be while this install is
+                        // still running. Collect it here instead of leaving it
+                        // alive with nothing left to run.
+                        if (model.gone) model.collectWorkIfIdle()
                     }
                 }
             } else {
