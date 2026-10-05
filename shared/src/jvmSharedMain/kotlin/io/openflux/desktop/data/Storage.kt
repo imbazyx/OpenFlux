@@ -114,6 +114,8 @@ internal fun restrictToOwner(file: File) {
 }
 
 class FileProfileRepository(dir: File) : ProfileRepository {
+    private val STORAGE_LOG = java.util.logging.Logger.getLogger("io.openflux.desktop.data.Storage")
+
     private val store = JsonFile(File(dir, "profiles.json"), ListSerializer(Profile.serializer()))
 
     /**
@@ -152,7 +154,13 @@ class FileProfileRepository(dir: File) : ProfileRepository {
         } else {
             current + profile
         }
-        store.write(next)
+        // Same treatment as settings, same reason. upsert is called straight
+        // from Compose click handlers, and a throwing write here killed the
+        // process - so one full disk, or a read-only profiles.json, took the
+        // app down rather than the one edit.
+        runCatching { store.write(next) }.onFailure {
+            STORAGE_LOG.warning("Не удалось сохранить список профилей: ${it.message ?: it.javaClass.simpleName}")
+        }
         state.value = next
     }
 
@@ -160,7 +168,9 @@ class FileProfileRepository(dir: File) : ProfileRepository {
     override fun delete(id: String) {
         if (locked) return
         val next = state.value.filterNot { it.id == id }
-        store.write(next)
+        runCatching { store.write(next) }.onFailure {
+            STORAGE_LOG.warning("Не удалось сохранить список профилей: ${it.message ?: it.javaClass.simpleName}")
+        }
         state.value = next
     }
 
