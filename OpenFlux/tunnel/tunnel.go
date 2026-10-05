@@ -138,7 +138,7 @@ func NewTCPTunnelMode(trans transport.Transport, isExitNode bool, mode ExitMode)
 			// failing to send once per packet therefore turns into a storm of
 			// logging that contends with the packets it is complaining about -
 			// the failure makes the tunnel slower.
-			utils.Debugf("[TUNNEL] trans.Send error: %v", err)
+			utils.Packetf("[TUNNEL] trans.Send error: %v", err)
 		}
 	}
 	t.tunnelEP = tunnelEP
