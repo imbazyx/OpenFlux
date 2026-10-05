@@ -18,11 +18,39 @@ object WindowsSystemProxy {
     private const val KEY = """HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"""
     private const val BYPASS = "<local>;localhost;127.*;10.*;192.168.*"
 
-    fun read(): SavedSystemProxy = SavedSystemProxy(
-        enabled = query("ProxyEnable")?.let { it.removePrefix("0x").toIntOrNull(16) == 1 } ?: false,
-        server = query("ProxyServer").orEmpty(),
-        override = query("ProxyOverride").orEmpty(),
-    )
+    // Returns the current settings, or throws when the registry could not be read.
+    //
+    // It used to degrade to "no proxy" whenever a query came back empty, and
+    // the caller saved that as the user's previous settings. A `reg query` that
+    // timed out, and a value that genuinely is not set, are indistinguishable
+    // from the exit code alone - but only one of them means "the user has no
+    // proxy". Recording the other as fact is how a restore ends up DELETING a
+    // corporate proxy that was there all along: the log says the proxy was
+    // restored, and the user has to type it back in by hand.
+    fun read(): SavedSystemProxy {
+        return SavedSystemProxy(
+            enabled = value("ProxyEnable")?.let { it.removePrefix("0x").toIntOrNull(16) == 1 } ?: false,
+            server = value("ProxyServer").orEmpty(),
+            override = value("ProxyOverride").orEmpty(),
+        )
+    }
+
+    // null means "the value is not set", which is a normal state and not an
+    // error. Throwing means "I could not find out", which is a different thing
+    // entirely, and the callers above need the difference: treating the second
+    // as the first is what turns a failed read into a claim about the user.
+    private fun value(name: String): String? =
+        when (val o = ProcessRunner.attempt(15, TimeUnit.SECONDS, "reg", "query", KEY, "/v", name)) {
+            is ProcessRunner.Outcome.Exited -> if (o.code == 0) parseQuery(name, o.output) else null
+            ProcessRunner.Outcome.Unavailable ->
+                throw IllegalStateException("Не удалось прочитать системный прокси из реестра ($name)")
+        }
+
+    private fun parseQuery(name: String, out: String): String? {
+        val line = out.lines().firstOrNull { it.trim().startsWith(name) } ?: return null
+        val parts = line.trim().split(Regex("\\s{2,}|\\t"), limit = 3)
+        return parts.getOrNull(2)?.trim()
+    }
 
     fun enable(address: String) {
         set("ProxyServer", "REG_SZ", address)
@@ -44,12 +72,7 @@ object WindowsSystemProxy {
         return current.enabled && current.server == address
     }
 
-    private fun query(name: String): String? {
-        val out = run("reg", "query", KEY, "/v", name) ?: return null
-        val line = out.lines().firstOrNull { it.trim().startsWith(name) } ?: return null
-        val parts = line.trim().split(Regex("\\s{2,}|\\t"), limit = 3)
-        return parts.getOrNull(2)?.trim()
-    }
+    private fun query(name: String): String? = value(name)
 
     private fun set(name: String, type: String, value: String) {
         run("reg", "add", KEY, "/v", name, "/t", type, "/d", value, "/f")

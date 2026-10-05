@@ -19,7 +19,25 @@ import java.util.concurrent.TimeUnit
  */
 object ProcessRunner {
 
-    fun run(timeout: Long, unit: TimeUnit, vararg command: String): String? = runCatching {
+    /**
+     * What a run produced, with "could not run at all" kept distinct from
+     * "ran and exited non-zero".
+     *
+     * [run] collapses both to null, which is fine for callers that only want a
+     * string. It is not fine for a caller that has to tell "the value is not
+     * there" from "I could not find out": those look identical from the exit
+     * code alone, and conflating them is how a failed read of the registry
+     * becomes a recorded claim that the user had no proxy.
+     */
+    sealed interface Outcome {
+        /** The process ran to completion. [output] is stdout and stderr merged. */
+        data class Exited(val code: Int, val output: String) : Outcome
+
+        /** The process never started, or overran [timeout] and was killed. */
+        data object Unavailable : Outcome
+    }
+
+    fun attempt(timeout: Long, unit: TimeUnit, vararg command: String): Outcome = runCatching {
         val process = ProcessBuilder(*command).redirectErrorStream(true).start()
         val out = StringBuilder()
 
@@ -43,10 +61,16 @@ object ProcessRunner {
             process.destroyForcibly()
             // Let the reader see the pipe close before giving up on its output.
             reader.join(500)
-            return null
+            return@runCatching Outcome.Unavailable
         }
         // The process has exited; the reader drains what is left and stops.
         reader.join(2_000)
-        if (process.exitValue() != 0) null else synchronized(out) { out.toString() }
-    }.getOrNull()
+        Outcome.Exited(process.exitValue(), synchronized(out) { out.toString() })
+    }.getOrElse { Outcome.Unavailable }
+
+    fun run(timeout: Long, unit: TimeUnit, vararg command: String): String? =
+        when (val o = attempt(timeout, unit, *command)) {
+            is Outcome.Exited -> if (o.code == 0) o.output else null
+            Outcome.Unavailable -> null
+        }
 }
