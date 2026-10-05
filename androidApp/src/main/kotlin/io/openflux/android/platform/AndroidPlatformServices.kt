@@ -342,7 +342,24 @@ class AndroidPlatformServices(
     // "download failed" into a crash. A member rather than a local, because
     // download() is a separate method and could not see a local one.
     private fun tell(message: String) = CoroutineScope(Dispatchers.Main).launch {
-        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        // Contained, and not by accident. `CoroutineScope(Dispatchers.Main)` has
+        // no Job and no CoroutineExceptionHandler, so launch creates a ROOT
+        // coroutine: an exception here goes to handleCoroutineException, then to
+        // Thread.uncaughtExceptionHandler, which on Android is
+        // RuntimeInit.KillApplicationHandler - the process dies. That is the
+        // crash the comment above says this code exists to prevent; the comment
+        // fixed the dispatcher and left the containment out.
+        //
+        // It is worse than a crash, because every call site returns
+        // Refused(shown = true) immediately after calling tell - claiming the
+        // user was shown a reason before the toast has even been scheduled, and
+        // telling the shared screen not to show its own fallback. A throwing tell
+        // therefore produced neither message. This is the one function whose
+        // whole job is to make a failure visible.
+        //
+        // Swallowing CancellationException is acceptable precisely because this
+        // scope is fire-and-forget and never cancelled.
+        runCatching { Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
     }
 
     override suspend fun installUpdate(update: AppUpdate): InstallResult = withContext(Dispatchers.IO) {
@@ -401,6 +418,7 @@ class AndroidPlatformServices(
                         context.packageName,
                         installedVersionCode,
                         ownSigner,
+                        BuildConfig.VERSION_NAME,
                     )
                 }
                 if (refusal != null) {
@@ -487,6 +505,10 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
         versionCode = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode else
             @Suppress("DEPRECATION") info.versionCode.toLong(),
         signer = signatures,
+        // Read out of the archive. The version in the file is the only one that
+        // can disagree with the tag it was downloaded under, and that is exactly
+        // the disagreement this needs to catch.
+        versionName = info.versionName,
     )
 }.getOrNull()
 

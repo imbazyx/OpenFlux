@@ -2,6 +2,7 @@ package io.openflux.desktop.updates
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
@@ -92,5 +93,37 @@ class ApkRefusalTest {
     fun `the package is named before the key, because it is the actionable one`() {
         val text = apkRefusal(ApkFacts("com.fork.app", 1, "zz"), pkg, 20301, own)!!
         assertEquals(true, text.contains("com.fork.app"), text)
+    }
+
+    @Test
+    fun `an APK carrying the same version as the installed app is a treadmill`() {
+        // The release was tagged v2.3.2 but the APK in it was built from a stale
+        // gradle.properties and still says 2.3.1/20301. Equal versionCode is not
+        // a downgrade, so PackageInstaller accepts it, the app still reports
+        // 2.3.1, and the button offers 2.3.2 again on every press - the same
+        // ~40MB for ever, with nothing on screen and nothing in logcat. Only the
+        // versionName read out of the archive can see this.
+        val stale = ApkFacts(pkg, 20301, own, versionName = "2.3.1")
+
+        val text = apkRefusal(stale, pkg, 20301, own, installedVersionName = "2.3.1")
+        assertNotNull(text, "a release that cannot advance the user must be named, not installed")
+        assertEquals(true, text!!.contains("2.3.1"), text)
+    }
+
+    @Test
+    fun `a same-versionCode upgrade whose APK really is newer still passes`() {
+        // The owner's own case: 2.3.1 installed, v2.3.2 released. The codes are
+        // equal by design - 2.3.2 is 20302 for everyone - and this guard must
+        // not turn the update button the owner depends on into a refusal.
+        assertNull(apkRefusal(ApkFacts(pkg, 20302, own, "2.3.2"), pkg, 20301, own, "2.3.1"))
+    }
+
+    @Test
+    fun `an unknown version on either side is not a refusal`() {
+        // Android declines to fill versionName for some archives and some OEM
+        // builds. Treating "not known" as "wrong" would block exactly the users
+        // who need the button - the same reasoning as the unknown signer.
+        assertNull(apkRefusal(ApkFacts(pkg, 20302, own), pkg, 20301, own, "2.3.1"))
+        assertNull(apkRefusal(ApkFacts(pkg, 20302, own, "2.3.2"), pkg, 20301, own, null))
     }
 }

@@ -288,6 +288,10 @@ cmd_plan() {
     case "$(firewall_kind)" in
         ufw) set -- "$@" "Разрешить входящий $PORT/tcp в ufw" ;;
         firewalld) set -- "$@" "Разрешить входящий $PORT/tcp в firewalld" ;;
+        # Said out loud, not omitted. The apply case has no `none` branch either,
+        # so without this the plan lists the direct transport and never mentions
+        # that nothing will be filtering it.
+        none) set -- "$@" "Брандмауэр не активен: $PORT/tcp будет доступен из сети без ограничений" ;;
     esac
 
     # shellcheck disable=SC2046
@@ -485,8 +489,15 @@ cmd_apply() {
     [ -e "$STATE_ROOT/$CHANNEL" ] && STATE_PREEXISTED=1
     mkdir "$dir" || apply_fail config "не удалось создать $dir"
     CREATED_CONF=1
-    printf '%s\n' "$KEY" > "$dir/encryption-key"
-    cat > "$dir/node.conf" <<EOF
+    # Checked, and this one matters more than the `port` write two statements
+    # below it - which round 26 did check, and which sits directly after this
+    # pair. A truncated-but-non-empty key is the worst case of all the writes
+    # here: the node starts fine, on the WRONG key, `is-active` passes, apply
+    # prints ok:true, and nothing in this script or in the start check can see
+    # it. Verified relevant rather than theoretical - the host is at 72%.
+    printf '%s\n' "$KEY" > "$dir/encryption-key" \
+        || apply_fail config "не удалось записать ключ шифрования в $dir/encryption-key"
+    cat > "$dir/node.conf" <<EOF || apply_fail config "не удалось записать $dir/node.conf"
 # OpenFlux node channel $CHANNEL, written by node-install.sh
 Role = exit
 Mode = l4
@@ -572,6 +583,16 @@ EOF
             CREATED_FW=firewalld
             { firewall-cmd --permanent --add-port="$PORT/tcp" && firewall-cmd --reload; } >/dev/null 2>&1 \
                 || apply_fail firewall "не удалось открыть порт в firewalld" ;;
+        none)
+            # With neither ufw nor firewalld there is nothing to configure, and
+            # the `case` above had no branch for it - so this channel's direct
+            # transport went live on 0.0.0.0:$PORT with no rule, no record, and
+            # ok:true. VERIFIED: the server these nodes run on has no ufw and no
+            # firewall-cmd at all, so this is not a corner case.
+            # Recorded rather than refused: the port genuinely is reachable, and
+            # the operator has to be told which port and on what grounds. The
+            # record is what makes `remove` able to say it closed something.
+            CREATED_FW=none ;;
     esac
     # The record belongs in CONF, not in whatever `$dir` holds at this point:
     # write_cookies() assigns `dir="$STATE_ROOT/$CHANNEL"` to the GLOBAL dir

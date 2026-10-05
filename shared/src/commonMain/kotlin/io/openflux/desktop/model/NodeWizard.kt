@@ -27,6 +27,21 @@ data class ServerProbe(
     val sudo: String = "",
     val core: String = "",
     val channels: List<String> = emptyList(),
+    /**
+     * ufw, firewalld or none - as `firewall_kind` reports it on the server.
+     *
+     * `provision.go` decodes this field into the JSON, and until this property
+     * existed nothing in the app declared it, so the value was parsed into a
+     * data class that silently dropped it. A repo-wide grep for "firewall"
+     * across every Kotlin file found no hits at all: the wizard had no way to
+     * learn that a server has no active firewall, however loudly the plan
+     * printed it.
+     *
+     * "none" is the case worth surfacing - VERIFIED live, the host these nodes
+     * run on has neither ufw nor firewall-cmd, so the node's direct transport
+     * would listen on 0.0.0.0 with nothing filtering it.
+     */
+    val firewall: String = "",
 )
 
 /** What installing a channel will change, for the confirmation step. */

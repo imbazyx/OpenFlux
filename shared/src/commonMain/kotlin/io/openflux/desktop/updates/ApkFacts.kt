@@ -14,6 +14,19 @@ data class ApkFacts(
     val packageName: String,
     val versionCode: Long,
     val signer: String?,
+    /**
+     * The APK's own `versionName`, read out of the archive rather than taken
+     * from the tag it was downloaded under.
+     *
+     * `versionCode` alone cannot catch a release cut against a stale
+     * `gradle.properties`: tag v2.3.2 with an APK still built at 2.3.1/20301
+     * passes `versionCode < installedCode` (equal is not a downgrade), the
+     * system installs it, and the app still reports 2.3.1 - so the button
+     * offers 2.3.2 again on every press, downloading the same ~40MB for ever
+     * with nothing in logcat and nothing on screen. Null when the archive
+     * declares no version name, which is not a refusal on its own.
+     */
+    val versionName: String? = null,
 )
 
 /**
@@ -26,13 +39,24 @@ data class ApkFacts(
  * An unknown signer on either side is not a refusal. Android returns no
  * signatures for some archive reads and for some OEM builds, and treating
  * "not known" as "wrong" would block exactly the users who need the button.
+ *
+ * Same for [ApkFacts.versionName]: known on both sides, and not strictly newer
+ * than the installed one, is a release that cannot advance this user and would
+ * install the same version again. Refused here, with the two names in the
+ * message, because the alternative is the treadmill above - silent, and paid
+ * for in downloads. The legitimate upgrade passes: 2.3.2 is strictly newer than
+ * 2.3.1 whatever the versionCode pair happens to be.
  */
-fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSigner: String?): String? = when {
+fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSigner: String?, installedVersionName: String? = null): String? = when {
     facts == null -> "Скачанный файл не читается как приложение Android"
     facts.packageName != ownPackage ->
         "Скачано приложение ${facts.packageName}, а не $ownPackage"
     facts.versionCode < installedCode ->
         "В выпуске versionCode ${facts.versionCode}, он ниже установленного $installedCode — система откажется его ставить"
+    facts.versionName != null && installedVersionName != null &&
+        compareVersions(facts.versionName, installedVersionName) <= 0 ->
+        "Выпуск собран из APK версии ${facts.versionName}, а установлена ${installedVersionName} — " +
+            "обновление ничего не изменит; тег выпуска не совпадает с содержимым APK"
     ownSigner != null && facts.signer != null && facts.signer != ownSigner ->
         "Выпуск подписан другим ключом, чем установленное приложение"
     else -> null
