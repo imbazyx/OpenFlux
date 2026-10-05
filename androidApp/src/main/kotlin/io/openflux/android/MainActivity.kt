@@ -82,7 +82,12 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        app.bridge.detach(this)
+        // isChangingConfigurations, not a guess: a rotation or a multi-window
+        // resize destroys and recreates this activity within the same second,
+        // and the recreated one's launchers are the ones that will deliver the
+        // pending result. Releasing the waiters here would tell the user their
+        // VPN consent was refused moments before they granted it.
+        app.bridge.detach(this, isChangingConfigurations)
         super.onDestroy()
     }
 

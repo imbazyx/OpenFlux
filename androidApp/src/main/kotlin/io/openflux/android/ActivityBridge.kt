@@ -31,11 +31,35 @@ class ActivityBridge {
         activity = host
     }
 
+    /**
+     * The activity is going away.
+     *
+     * [recreating] is true for a configuration change - a rotation, or a
+     * multi-window resize - and the two cases are not the same.
+     *
+     * A destroyed activity's launchers are NOT gone. registerForActivityResult
+     * keeps its launcher in the ActivityResultRegistry, which outlives the
+     * activity and replays a pending result to the launcher registered by the
+     * recreated one. That is the entire reason to use it instead of
+     * startActivityForResult.
+     *
+     * Completing the slots here anyway threw that away. On a rotation during
+     * the VPN consent: onDestroy cleared the slot and completed it with null,
+     * so prepareVpn returned false and the screen said "Android не разрешил
+     * OpenFlux включить VPN" - while the user was looking at the consent dialog
+     * and about to grant it. The granted answer then arrived, found a null slot
+     * and was dropped. A permission the user gave was reported as refused, and
+     * on the path the owner requires to work.
+     *
+     * When the activity is really finishing, nothing will answer and the
+     * waiters must be released or the caller's coroutine parks forever holding
+     * the connection lock.
+     */
     @Synchronized
-    fun detach(host: MainActivity) {
+    fun detach(host: MainActivity, recreating: Boolean) {
         if (activity !== host) return
         activity = null
-        // The activity's launchers die with it; nobody will answer these.
+        if (recreating) return
         // Completed outside the lock: completing resumes the waiters, and a
         // waiter may well come back here.
         val strandedVpn = vpn
@@ -60,7 +84,6 @@ class ActivityBridge {
 
     suspend fun scanQr(): String? =
         awaitResult<String?>(null, { scan }, { scan = it }) { it.launchScanner() }
-
     /**
      * Registers a result slot and launches the thing that will fill it, or
      * answers [fallback] at once when there is no activity.
@@ -76,17 +99,28 @@ class ActivityBridge {
      * whole feature.
      */
     private suspend fun <T> awaitResult(
-        fallback: T?,
+        fallback: T,
         slot: () -> CompletableDeferred<T>?,
         store: (CompletableDeferred<T>?) -> Unit,
         launch: (MainActivity) -> Unit,
     ): T? {
         val result = CompletableDeferred<T>()
+        // Completed outside the lock below: completing resumes a waiter, and
+        // that waiter may come straight back here.
+        var displaced: CompletableDeferred<T>? = null
         val host = synchronized(this) {
             val current = activity ?: return fallback
+            displaced = slot()
             store(result)
             current
         }
+        // A second request of the SAME kind while the first is outstanding -
+        // "Сканировать QR" and "QR из файла" are plain buttons with no in-flight
+        // guard, so a double tap reaches here. The old slot was simply
+        // overwritten, and nothing else held a reference to it, so its
+        // `await()` never returned and that coroutine stayed parked for the
+        // rest of the dialog's life. Released now rather than abandoned.
+        displaced?.complete(fallback)
         withContext(Dispatchers.Main) { launch(host) }
         return result.await()
     }
