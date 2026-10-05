@@ -313,17 +313,22 @@ class JvmPlatformServices(
                 // failure already computed and thrown away.
                 //
                 // The older tag is genuinely installable, so it is still
-                // returned - refusing would hide a working update. But the
-                // newer failure is written where the user will actually see it,
-                // because the UpToDate branch has nowhere to carry it.
-                if (newestAppTag != null && newestAppTag != tag && newestProblem != null) {
-                    // newestProblem is logged RAW. It already reads "выпуск X
-                    // есть, но установщик Y не отдаётся: <reason>" - wrapping it
-                    // in that sentence again produced the same text twice, once
-                    // with the version in the middle.
-                    BrowserLog.problem(newestProblem)
+                // returned - refusing would hide a working update. The warning
+                // rides along in both branches, so "последняя версия" is never
+                // printed unqualified while a newer release is known broken.
+                val warning =
+                    newestProblem.takeIf { newestAppTag != null && newestAppTag != tag }
+                if (warning != null) {
+                    // Logged RAW. It already reads "выпуск X есть, но
+                    // установщик Y не отдаётся: <reason>" - wrapping that
+                    // sentence in itself produced the same text twice.
+                    BrowserLog.problem(warning)
                 }
-                return if (update.newer) UpdateCheck.Available(update) else UpdateCheck.UpToDate(version)
+                return if (update.newer) {
+                    UpdateCheck.Available(update)
+                } else {
+                    UpdateCheck.UpToDate(version, warning)
+                }
             }
             // Keep walking: an older app release may still carry a build this
             // machine can install. Remember why the newest one was skipped.

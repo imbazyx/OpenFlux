@@ -199,6 +199,29 @@ the same manifest. Until that exists, check the Windows artifacts by hand:
 sha256sum OpenFluxPC/dist/OpenFlux-<version>.msi
 ```
 
+### Making the desktop installer actually get verified
+
+Until a desktop job exists in `release.yml`, the MSI line has to be added by
+hand — and because the workflow truncates the manifest with `>`, the manifest
+has to be **re-uploaded** as well, otherwise the corrected copy never reaches
+the release and the client keeps finding nothing:
+
+```
+tag=v2.3.2
+sha256sum "OpenFluxPC/dist/OpenFlux-${tag#v}.msi" >> dist/SHA256SUMS.txt
+gh release upload "$tag" dist/SHA256SUMS.txt --clobber
+```
+
+`--clobber` is required: the asset already exists from `gh release create`, and
+without it the upload fails and the release keeps the manifest that is missing
+the MSI line — which looks exactly like not having done the step at all.
+
+That is what makes `publishedSha256` return a hash instead of null, which in
+turn is what makes `installUpdate` compare the installer before handing it to
+`msiexec`. Until it is done, `expected` is null on **every** install, the
+comparison branch never executes, and `HandedOff(verified = false)` is reported
+on 100% of them.
+
 Verify the manifest against the files on disk *before* uploading, not after.
 
 ## Three workflows in this repository have never run

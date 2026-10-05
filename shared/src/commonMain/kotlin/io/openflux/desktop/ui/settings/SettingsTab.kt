@@ -173,6 +173,7 @@ class SettingsScreenModel(val container: AppContainer) : ScreenModel {
     val update: AppUpdate? get() = view.update
     val updateFailed: Boolean get() = view.failed
     val updateProblem: String? get() = view.problem
+    val updateWarning: String? get() = view.warning
     val latestRelease: String? get() = view.latest
 
     /**
@@ -198,6 +199,8 @@ data class UpdateView(
     val failed: Boolean = false,
     val problem: String? = null,
     val latest: String? = null,
+    /** A newer release exists but could not be read. Not a failure. */
+    val warning: String? = null,
 )
 
 /**
@@ -211,7 +214,10 @@ fun UpdateView.apply(result: UpdateCheck): UpdateView = when (result) {
     is UpdateCheck.Available -> UpdateView(update = result.update)
     // A check that worked is not a failure, and the version it found is worth
     // showing: "2.2.0" answers the question the button was pressed to ask.
-    is UpdateCheck.UpToDate -> UpdateView(latest = result.latestVersion)
+    // The warning rides along, so "последняя версия" is never drawn
+    // unqualified while a NEWER release is known to exist and to be broken -
+    // the screen said one thing and the Логи tab said another.
+    is UpdateCheck.UpToDate -> UpdateView(latest = result.latestVersion, warning = result.warning)
     // A reason, because "не проверить" alone gives the user nothing to do and
     // the next person reading the report nothing to go on. The last version
     // actually seen is kept: it is the last thing known to be true, and the
@@ -653,9 +659,14 @@ private fun AboutSettings(model: SettingsScreenModel) {
             },
         )
     }
-    if (model.updateFailed && model.updateProblem != null) {
+    // One Text, two sources. A failed check and a warning about a newer release
+    // are not the same thing and are not drawn the same way, but they are the
+    // same kind of sentence about the same row, and a second paragraph here
+    // would be a layout change for a message that is one line either way.
+    val updateNote = model.updateProblem ?: model.updateWarning
+    if (updateNote != null) {
         Text(
-            model.updateProblem!!,
+            updateNote,
             style = AppTheme.typography.bodySmall,
             color = AppTheme.colors.textSecondary,
             modifier = Modifier.padding(AppTheme.spacing.s),
