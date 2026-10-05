@@ -6,8 +6,8 @@ package provision
 // changes, commit it, then point PinnedCommit at that commit.
 const (
 	PinnedRepo   = "imbazyx/OpenFlux"
-	PinnedCommit = "3c0c846b4eb6a070c074f12200a0624a21b286aa"
-	PinnedSHA256 = "a8623a7beb1272bec3d7d3645ff8f5454d239774dc5ce5aff82134262fdc70f4"
+	PinnedCommit = "ec3311b70a26d87a26207e258bd09a0986789925"
+	PinnedSHA256 = "ece996d1d5ffbeaa099788d475fd19dacc5290da2c0876f54b4c8d6a3f4f8c26"
 )
 
 // PinnedCommit must stay reachable from main.
