@@ -78,16 +78,19 @@ func proxyConnect(w http.ResponseWriter, r *http.Request, dial func(string) (net
 	}
 	var once sync.Once
 	closeBoth := func() { client.Close(); up.Close() }
-	go func() {
+	// SafeGo on both: net/http's own per-connection recover does NOT cover
+	// goroutines the handler spawned, so a panic in either copy killed the
+	// process rather than closing one CONNECT.
+	utils.SafeGo("proxy.up", func() {
 		defer once.Do(closeBoth)
 		// Bytes the client sent right after the CONNECT line may already
 		// sit in the server's read buffer.
 		_, _ = io.Copy(up, buffered)
-	}()
-	go func() {
+	})
+	utils.SafeGo("proxy.down", func() {
 		defer once.Do(closeBoth)
 		_, _ = io.Copy(client, up)
-	}()
+	})
 }
 
 func proxyForward(w http.ResponseWriter, r *http.Request, upstream http.RoundTripper) {

@@ -1056,7 +1056,12 @@ func (s *Session) receiveControl(link *transportLink, p []byte, env *control.Env
 		if noPong {
 			return
 		}
-		go func() { _ = s.sendControlVia(link, control.SubtypeLinkPong, nil) }()
+		// SafeGo, not a bare `go`. This is spawned BY an inbound control frame
+		// from the peer on every link, and sendControlVia allocates an Envelope,
+		// appends a payload and calls link.batched.Send - a slice/alloc path
+		// reachable with peer-chosen sizes. A bare goroutine panicking there
+		// ends the whole process, not this connection.
+		utils.SafeGo("session.pong", func() { _ = s.sendControlVia(link, control.SubtypeLinkPong, nil) })
 		return
 	case control.SubtypeLinkPong:
 		s.peerKeepalive = true

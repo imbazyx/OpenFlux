@@ -328,12 +328,18 @@ func (t *TCPTunnel) handleExitTCP(r *tcp.ForwarderRequest) {
 		}
 		utils.Debugf("[EXIT] %s connected", dest)
 
-		go func() {
+		// SafeGo, not a bare `go`. A recover() in the PARENT does not cover a CHILD
+		// goroutine - that is the trap, because this function is itself launched
+		// through SafeGo, so the surrounding code looks protected. It is not.
+		// This is the per-connection data path of the L4 exit node: one panic
+		// here takes down every user on that node, and systemd Restart=always
+		// drops all of them at once.
+		utils.SafeGo("exit.copy", func() {
 			buf := make([]byte, 256*1024)
 			io.CopyBuffer(remote, local, buf)
 			remote.Close()
 			local.Close()
-		}()
+		})
 		buf := make([]byte, 256*1024)
 		io.CopyBuffer(local, remote, buf)
 		local.Close()

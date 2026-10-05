@@ -249,7 +249,26 @@ func (t *DirectTransport) Drops() uint64 { return t.drops.Load() }
 // ---- exit mode ----
 
 func (t *DirectTransport) acceptLoop() {
-	utils.Debugf("[DIRECT] acceptLoop: started on %s", t.listener.Addr().String())
+	// The listener is read here WITHOUT the mutex at :252 and :262, while
+	// Stop() sets `t.listener = nil` under it. That is a real race and not a
+	// theoretical one: acceptLoop passes the `<-t.done` check, Stop() runs and
+	// nils the field, and the very next line calls Accept() on a nil interface
+	// - nil dereference, panic, and this goroutine is bare, so the process
+	// dies. Six exit nodes, every user on one of them.
+	//
+	// `go test -race` never caught it because no test stops a DirectTransport
+	// while an accept is in flight.
+	//
+	// So the listener is captured ONCE under the lock and kept in a local. The
+	// done channel remains the exit condition; a nil listener is treated as
+	// "already stopped" rather than being dereferenced.
+	t.mu.RLock()
+	ln := t.listener
+	t.mu.RUnlock()
+	if ln == nil {
+		return
+	}
+	utils.Debugf("[DIRECT] acceptLoop: started on %s", ln.Addr().String())
 	for {
 		select {
 		case <-t.done:
@@ -259,7 +278,7 @@ func (t *DirectTransport) acceptLoop() {
 		}
 
 		utils.Debugf("[DIRECT] acceptLoop: blocking on Accept()")
-		conn, err := t.listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			select {
 			case <-t.done:
@@ -359,7 +378,20 @@ func (t *DirectTransport) serveConn(conn net.Conn) {
 		_ = conn.Close()
 	}()
 
+	// A zero MaxRecordBytes produced a zero-length buf, and the very first
+	// `buf[:2]` below panicked with "slice bounds out of range [:2] with
+	// capacity 0". DefaultDirectConfig sets it, so production never saw it - but
+	// this runs INLINE from acceptLoop, on a bare goroutine, on the first
+	// inbound connection, so any construction path that leaves it unset takes
+	// the whole process down before a single byte is served. Found by a test
+	// written for an unrelated race in this same function.
 	buf := make([]byte, t.config.MaxRecordBytes)
+	if len(buf) < 2 {
+		utils.Debugf("[DIRECT] serveConn: MaxRecordBytes=%d is too small for the 2-byte header, refusing connection",
+			t.config.MaxRecordBytes)
+		_ = conn.Close()
+		return
+	}
 	for {
 		select {
 		case <-t.done:

@@ -104,7 +104,10 @@ func (s *Server) acceptLoop() {
 		if s.handler != nil {
 			s.handler.OnConnect()
 		}
-		go s.serve(conn)
+		// SafeGo: `serve` reaches s.handler.OnCommand/OnCookies with a payload
+		// parsed off the wire, and the per-connection entry point had no
+		// recover of its own.
+		utils.SafeGo("ipc.conn", func() { s.serve(conn) })
 	}
 }
 

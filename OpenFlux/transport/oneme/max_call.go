@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"openflux/utils"
+
 	"github.com/pion/webrtc/v3"
 )
 
@@ -81,7 +83,13 @@ func (h *CallHandler) readLoop() {
 		if pid, ok := data["participantId"].(float64); ok {
 			h.remoteID = int64(pid)
 		}
-		go h.msgHandler(text)
+		// SafeGo, not a bare `go`. `text` is a raw string off the signaling
+		// WebSocket, readable by ANY participant in the room. The parent
+		// readLoop has a defer recover(), which does NOT cover a child goroutine
+		// - so malformed remote input that panics inside msgHandler killed the
+		// whole process. This is the most remotely-triggerable bare goroutine in
+		// the tree.
+		utils.SafeGo("oneme.msg", func() { h.msgHandler(text) })
 	}
 }
 
