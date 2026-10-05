@@ -39,16 +39,18 @@ project needs is inside this directory.
 | Branch | `main`, in step with `origin/main` |
 | Tag `v2.3.1` | `f73b98c` |
 | Latest release | `OpenFlux 2.3.1`, 8 assets |
-| Exit nodes | five, all `active` |
+| Exit nodes | six, all `active` (`exit`, `-2`, `-3`, `-4`, `-6`, `-7`) |
 
-**The tag is behind HEAD, and that is correct.** Every commit since `v2.3.1` is
-`.gitignore` or documentation — no source, no build input. The property that
-matters holds: `v2.3.1` points at the commit the released artifacts were built
-from. Verify it with:
+**The tag is behind HEAD, and the shipped core is no longer the HEAD core.**
+`v2.3.1` points at `f73b98c`; commit `a0613b8` changed `OpenFlux/main.go` after
+it — the banner and the `--no-packets` flag. Documentation-only commits do not
+move this property, but a source commit does, so the released 2.3.1 artifacts
+contain the *older* core and must not be described as matching HEAD. The
+property to verify is `git diff --stat v2.3.1..HEAD` naming no build input.
 
 ```bash
 git rev-list -n1 v2.3.1          # must equal the commit in the release notes
-git log --oneline v2.3.1..HEAD   # docs only, nothing that affects a build
+git diff --stat v2.3.1..HEAD     # any OpenFlux/ or shared/ hit means a rebuild
 ```
 
 ---
@@ -95,19 +97,37 @@ because the relay had recovered, not because the fix failed.
 
 ### 3. Exit nodes
 
-Five units run `--role=exit` from one binary, `/usr/local/bin/openflux`:
-four in `l4`, the fifth (`exit5`) in `l3` on a Mail.ru document key.
+Six units run `--role=exit` from one binary, `/usr/local/bin/openflux`, all
+`--mode=l3` on their own Mail.ru document. One unit per person:
+
+| Unit | Whose | Document | Encrypted |
+|---|---|---|---|
+| `openflux-exit` | owner | `fFWK/Wnf2LLrQp` | yes |
+| `openflux-exit-2` | wife | `4Eii/4VdC79L7i` | no |
+| `openflux-exit-3` | father | `HMM5/MF7YGi5B6` | no |
+| `openflux-exit-4` | son | `ABzg/hzJorfqb6` | yes |
+| `openflux-exit-6` | Анна | `fwC9/UQZve9mTr` | yes |
+| `openflux-exit-7` | Арам | `FB7a/zrdqSDHtD` | yes |
+
+Each secret is its own file under `/etc/openflux`, mode 600, and the key goes
+into that person's own profile in the app — pasted, never generated there.
+Encryption covers nodes 1, 4, 6 and 7; 2 and 3 are left plain until their
+owners' phones are set up. `exit-5` was removed on 2026-10-03 and is kept on
+the server as `openflux-exit-5.service.disabled`.
 
 `l3` needs kernel RST suppression or every connection dies right after the
-handshake. A scoped rule matching only RSTs sourced from the egress address was
-added, rather than the host-wide one the project README describes — that one
+handshake. The scoped rule matching only RSTs sourced from the egress address is
+used, rather than the host-wide one the project README describes — that one
 changes behaviour for the whole machine, Docker included, and makes closed ports
 look filtered.
 
 Verified by a series: 4/4 successful, RST count zero.
 
-**Open risk: that iptables rule does not survive a reboot.** The unit will
-start, report itself healthy, and refuse new connections again.
+**Resolved: the iptables rule now survives a reboot.** Every l3 unit carries
+`ExecStartPre=/usr/local/sbin/openflux-rst-guard`, and the script derives the
+egress address from the routing table instead of hardcoding it. Verified by
+deleting the rule and restarting all six nodes — the first reinstalled it, the
+rest found it present, exactly one rule. A real reboot was not performed.
 
 ### 4. Repository, icon and documentation
 
@@ -187,8 +207,6 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 - **The repository avatar.** GitHub's REST API accepts `avatar_url` on a
   repository and silently ignores it. It is a web-UI operation: Settings →
   General. `branding/icon.png` is committed and ready to upload.
-- **No persistence for the iptables rule.** It would need to move into a unit
-  or `rc.local`, and that is a decision about the machine, not the code.
 - **No history rewrite, no moved tags.** Declined explicitly by the owner. The
   consequence is documented in the 2.3.0 release notes instead.
 
@@ -197,8 +215,7 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 ## Open items
 
 1. Repository avatar — Settings → General, upload `branding/icon.png`.
-2. Make the RST rule survive a reboot.
-3. Keep a third copy of `reserve/` off this machine. `D:\project` and
+2. Keep a third copy of `reserve/` off this machine. `D:\project` and
    `D:\Backup` are the same physical disk, so both existing copies die with it.
 
 ---

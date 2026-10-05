@@ -409,7 +409,5 @@ Multiplatform app this repository has carried ever since.
 ### Credits
 
 - [@imbazyx](https://github.com/imbazyx) — this app and the OpenFlux core
-  it embeds.
-- [@damnurmum](https://github.com/damnurmum) — `openflux://` links/QR codes
-  and the cups.online transport in the core, which this app's share and
-  scan screens build on.
+  it embeds, including its `openflux://` links, QR codes and the cups.online
+  transport.

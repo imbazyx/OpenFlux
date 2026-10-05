@@ -25,7 +25,7 @@
 | Параметр | Значение |
 |---|---|
 | Bundle ID | `com.imbazyx.openflux` |
-| Team ID | `8GQH8GQ252` (Alexandr Revin, Individual) |
+| Team ID | `8GQH8GQ252` (Individual) |
 | Marketing version | `1.0.0` |
 | Deployment target | iOS 15.0 |
 | Architecture | arm64 (device) |
