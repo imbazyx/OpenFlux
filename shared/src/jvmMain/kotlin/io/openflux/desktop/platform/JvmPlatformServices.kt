@@ -293,7 +293,13 @@ class JvmPlatformServices(
      */
     override suspend fun installUpdate(update: AppUpdate): Boolean = withContext(Dispatchers.IO) {
         val target = File(System.getProperty("java.io.tmpdir"), "OpenFlux-${update.version}-setup.msi")
-        val downloaded = download(update.downloadUrl, target, publishedSha256(update.version, target.name))
+        // The manifest is indexed by the PUBLISHED asset name, not by whatever
+        // this method happens to call the file on disk. They differ ("-setup"
+        // below), so looking up target.name found nothing, `expected` was always
+        // null, and every MSI was installed with no hash check at all - silently,
+        // because the "installing unverified" warning was only on Android.
+        val published = "OpenFlux-${update.version}$WINDOWS_INSTALLER_SUFFIX"
+        val downloaded = download(update.downloadUrl, target, publishedSha256(update.version, published))
         if (!downloaded) return@withContext false
 
         val started = runCatching {

@@ -36,6 +36,8 @@ import io.openflux.android.BuildConfig
 import io.openflux.desktop.service.PlatformKind
 import io.openflux.desktop.service.PlatformServices
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -247,13 +249,21 @@ class AndroidPlatformServices(
     override suspend fun installUpdate(update: AppUpdate): Boolean = withContext(Dispatchers.IO) {
         val target = java.io.File(context.cacheDir, "update-${update.version}.apk")
         val expected = publishedSha256(update.version)
+        // Every Toast goes through the Main dispatcher, including the two
+        // failure ones below: this whole function is on Dispatchers.IO, and
+        // Toast binds its Handler to the calling thread, so raising it here is
+        // at best posting to the wrong looper and at worst throwing on an
+        // API 26-30 device - which would turn "download failed" into a crash.
+        fun tell(message: String) = CoroutineScope(Dispatchers.Main).launch {
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
         val ok = runCatching { download(update.downloadUrl, target, expected) }.getOrElse {
             Log.w(TAG, "update download failed", it)
-            Toast.makeText(context, "Не удалось скачать обновление", Toast.LENGTH_LONG).show()
+            tell("Не удалось скачать обновление")
             return@withContext false
         }
         if (!ok) {
-            Toast.makeText(context, "Контрольная сумма обновления не совпала", Toast.LENGTH_LONG).show()
+            tell("Контрольная сумма обновления не совпала")
             return@withContext false
         }
         withContext(Dispatchers.Main) {

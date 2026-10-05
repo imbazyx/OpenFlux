@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Only the app's own cache, and only the update directory within it. The
-  provider is not exported; access is granted per-URI and for a single
-  install session, and a broader path here would publish the rest of the
-  cache to whatever the user opens next.
+  The app's own cache directory. The provider is not exported; access is
+  granted per-URI and for a single install session.
+
+  This grants the whole cacheDir, not just the update APK, because
+  installUpdate writes update-<version>.apk directly into cacheDir and the
+  grant has to cover that exact file. Narrowing it would mean moving the
+  download into a subdirectory and pointing path= at it - do both at once or
+  the install fails at runtime with no build-time warning.
 -->
 <paths>
     <cache-path

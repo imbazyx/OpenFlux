@@ -96,6 +96,7 @@ type Manager struct {
 	mu      sync.RWMutex
 	entries map[string]*Entry
 	order   []string // transport names, priority-descending
+	pending int      // slots taken by transports still being built; see reserveSlot
 
 	// Cookie persistence: store key per transport name.
 	store      *transport.CookieStore
@@ -172,6 +173,31 @@ func (m *Manager) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.entries)
+}
+
+// reserveSlot takes one of the maxTransports places for a transport that is
+// still being built, and releaseSlot gives it back.
+//
+// This exists because the control handler runs every TransportStart in its own
+// goroutine (session.go's `go cb(sub, payload)`). A plain Count() check was
+// check-then-act across a long window - check, then the factory joins a room,
+// opens sockets and starts goroutines, then Add - so a peer that sent a burst
+// of TransportStarts had all of them read Count() == 0 and every one attach,
+// several times over the cap. Counting the ones in flight closes that.
+func (m *Manager) reserveSlot() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.entries)+m.pending >= maxTransports {
+		return fmt.Errorf("manager: over the %d transport limit", maxTransports)
+	}
+	m.pending++
+	return nil
+}
+
+func (m *Manager) releaseSlot() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pending--
 }
 
 // Remove detaches a transport from the Session and stops it.
@@ -493,9 +519,15 @@ func (m *Manager) startTransport(cfg *control.TransportConfig) error {
 	// starts goroutines and opens connections. The rest of this codebase caps
 	// what a peer can make it hold - conntrack 65536, UDP NAT 256, the dedupe
 	// table a fixed 64 - so this is the last uncapped one.
-	if m.Count() >= maxTransports {
-		return fmt.Errorf("manager: over the %d transport limit", maxTransports)
+	//
+	// Reserved, not merely counted: the control handler runs each of these in
+	// its own goroutine, so checking here without holding the slot let a burst
+	// through together and attach far more than maxTransports. The reservation
+	// covers the whole window, including the Add below.
+	if err := m.reserveSlot(); err != nil {
+		return err
 	}
+	defer m.releaseSlot()
 	// Validated before the factory runs, not after: the address has to be
 	// refused before anything is built from it.
 	if d, _ := cfg.Params["dial"].(string); d != "" && !okDialTarget(d) {
