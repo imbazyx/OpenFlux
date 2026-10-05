@@ -1,12 +1,109 @@
 # Handover
 
-State of the project as of 2026-10-02, written for whoever works on it next —
+State of the project as of 2026-10-06, written for whoever works on it next —
 including an assistant starting from a cold session with no memory of any of
 this.
 
 Read this file first. Then `OPERATIONS.md` (how to build and publish).
 `OPERATIONS.local.md` is not in the repository and holds the credential
 locations and the node addresses.
+
+---
+
+## The update path is the priority, and it was broken in three ways
+
+2.3.2 exists so that an installed 2.3.1 updates itself by pressing one button in
+the app. Three defects on that path were found by audit in October 2026 and all
+are fixed. They are written down here because each one looked like a detail and
+each one stopped the feature for every user at once.
+
+**The update check read only the first entry of `releases.atom`.** GitHub orders
+that feed by CREATION date, not by version — the live feed has `v1.2.1` above
+`v2.0.0` — and this repository publishes its exit-node core into the same feed.
+`node-v1.0.0` and `0.0.5` are already in it, carrying no APKs at all. So the
+moment any core release was cut, it became the first entry, every ABI probe came
+back 404, and a user on 2.3.1 was told the release had nothing for their phone
+while the real 2.3.2 sat further down, never examined. `appReleaseTags()` now
+reads every tag, keeps the app versions, sorts by version descending and probes
+newest-first down to `MAX_RELEASES_TO_CHECK`. `latestRelease()` had the same flaw
+and would have shown `node-v1.0.0` to a user as the app's version.
+
+**A refusal by the system installer was silent.** Android enforces the package
+name, the signing certificate and the versionCode, and says nothing before
+declining. The app has no result listener, so a release built from another key
+just vanished into another app. `apkRefusal()` now names the cause before the
+hand-off. Note that reading the archive's certificates needs
+`GET_SIGNATURES`: with flags `0`, `PackageManagerService` skips certificate
+collection and `PackageInfo.signatures` is always null, which made the whole
+comparison inert while a test still passed.
+
+**A rotation during the VPN consent reported a granted permission as refused.**
+`registerForActivityResult` keeps its launcher in the `ActivityResultRegistry`,
+which outlives the activity and replays a pending result to the recreated one.
+`ActivityBridge.detach()` was clearing its slots anyway, so a rotation made
+`prepareVpn` return false and the screen said "Android не разрешил OpenFlux
+включить VPN" — then dropped the granted answer. It now keeps the slots when
+`isChangingConfigurations` is true.
+
+Still open on this path, and deliberately so: whether the installer actually
+finished is not observable (`TODO.local.md` predicts HyperOS will refuse an APK
+installed by the app). A real `PackageInstaller` session with a status
+`IntentSender` would answer it, and it is not written blind.
+
+## A settings write that failed could not start the app
+
+`FileSettingsRepository.update` ran `store.write` inside `MutableStateFlow.update`'s
+transform and let it throw. Since the transform runs before `compareAndSet`, the
+in-memory value was not updated either; since `update` is the one choke point
+every settings write passes through, and fifteen of its callers are Compose click
+handlers on the main thread, a full disk or a locked `settings.json` threw
+straight through the UI handler and killed the application. In the connection
+lifecycle it threw from `stopRun()` before `killTree()`, leaving the core alive
+on the SOCKS port with the connect button dead until restart.
+
+The write now happens outside the transform and a failure is recorded in
+`writeFailure`. The settings still apply in memory — that is the existing policy
+for an unreadable file, and `SettingsCorruptionTest` enforces it.
+
+One consequence is load-bearing and easy to undo by accident: `applySystemProxy`
+now REFUSES to take the Windows system proxy over when it could not record what
+the proxy was. The takeover happens either way, and a missing record means
+`restoreSystemProxy` returns early on disconnect, leaving Windows pointed at
+`127.0.0.1` on a dead port with nothing to put back — unrecoverable without a
+registry editor, and strictly worse than the throw it replaced.
+
+## The installer's rollback used to make things worse
+
+Three separate ways, all found by audit and all fixed:
+
+- It deleted the core it had pointed `$BIN_DIR/openflux` at and left the symlink
+  pointing there. Every unit it writes runs `ExecStart=$BIN_DIR/openflux`, so a
+  failed apply bricked every channel already installed. `PREV_LINK` now restores
+  the previous target.
+- It deleted a firewall rule the run had not added, and `rm -rf`'d the state
+  directory unconditionally while the config directory was properly guarded. The
+  state directory holds the Yandex sign-in — the one thing there is no way to get
+  back.
+- `cmd_upgrade` reported every channel restarted and then deleted the older
+  cores, without checking that any of them had come back.
+
+`chown`/`chmod` on the node's configuration were also unchecked, and `apply`
+answered `{"ok":true}` anyway: a node that cannot read its own config was
+reported as a successful install.
+
+## Comments in this codebase have lied about the code
+
+Worth knowing before trusting one. `cleanup()`'s comment described an atomicity
+the code did not have, then a rewrite made the guard inverted and the whole tail
+unreachable — so `_socksAddress`, the traffic counters, the captcha state and
+`captchaBrowser.close()` were dead for every input. A comment in `tunnel.go` said
+"Packetf, not Debugf" while the code called `Debugf` on the per-packet path.
+`readApk` asked for flags `0` and a test asserted the resulting null signer was
+acceptable. `TestPinnedCommitIsReachable` skipped itself in the exact CI
+configuration that produces the failure it exists to catch.
+
+When a comment claims a property — atomicity, a window that does not exist, a
+contract the platform does not honour — check the code before believing it.
 
 ---
 
@@ -21,7 +118,7 @@ the three files to read, and the two things not to do.
 |---|---|
 | Project root | `D:\project\OpenFluxAndroid` — the only tree with the project in it |
 | Repository | `git@github.com:imbazyx/OpenFlux.git`, branch `main` |
-| Version | 2.3.1, declared once in `gradle.properties` |
+| Version | 2.3.2, declared once in `gradle.properties` |
 
 There was once a second checkout of the upstream core beside this one. The
 fork also used to live one directory deeper, inside *that* tree.
@@ -37,7 +134,9 @@ project needs is inside this directory.
 | | |
 |---|---|
 | Branch | `main`, in step with `origin/main` |
-| Tag `v2.3.1` | `f73b98c` |
+| Tag `v2.3.1` | `f73b98c` — the last published tag |
+| Tag `v2.3.2` | **not cut yet.** `gradle.properties` declares 2.3.2 and `dist/` is built, but until the tag exists the in-app update check correctly reports "2.3.1 · последняя версия" and the button finds nothing. Cutting it is what actually publishes 2.3.2. |
+| Author | every commit is `imbazyx`; `.git/hooks/pre-push` refuses any push URL without it |
 | Latest release | `OpenFlux 2.3.1`, 8 assets |
 | Exit nodes | six, all `active` (`exit`, `-2`, `-3`, `-4`, `-6`, `-7`) |
 
