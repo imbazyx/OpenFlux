@@ -634,7 +634,13 @@ cmd_remove() {
     check_channel
     dir="$CONF_ROOT/$CHANNEL"
     [ -d "$dir" ] || fail remove "канала $CHANNEL нет на сервере"
-    systemctl disable --now "openflux-node@$CHANNEL" >/dev/null 2>&1
+    # Checked, and this one is not cosmetic. Everything below this line deletes
+    # the channel's config, its unit file and its state - so a unit that failed
+    # to stop kept running with none of them, and `remove` printed ok:true.
+    # A live openflux-node with no configuration is a process nobody has a
+    # handle on any more, not a removed channel.
+    systemctl disable --now "openflux-node@$CHANNEL" >/dev/null 2>&1 \
+        || fail remove "не удалось остановить openflux-node@$CHANNEL; юнит работает, а его конфигурация сейчас будет удалена"
     # Look in CONF first, then in STATE, because the record moved there.
     #
     # Before this was corrected, the record was written to `$dir/firewall` while
@@ -690,10 +696,31 @@ cmd_upgrade() {
     [ -n "$(list_channels)" ] || fail upgrade "на сервере нет каналов OpenFlux"
     arch=$(detect_arch)
     [ -n "$arch" ] || fail upgrade "архитектура $(uname -m) не поддерживается"
-    install_core "$arch" || fail upgrade "$CORE_ERROR"
+    # The link is put back by hand here, because `fail` exits and rollback()
+    # never runs on this path. It has to: install_core re-points the ONE global
+    # symlink before it can still fail (the -x check that follows ln -sfn), and
+    # every unit's ExecStart is that path. The PREV_LINK restore in rollback is
+    # additionally nested inside `if [ "$CREATED_BIN" = 1 ]`, and CREATED_BIN is
+    # set only when this run DOWNLOADED the core - so upgrading to a core already
+    # on disk would leave every channel on a broken link with no recovery.
+    install_core "$arch" || {
+        [ -n "$PREV_LINK" ] && ln -sfn "$PREV_LINK" "$BIN_DIR/openflux"
+        fail upgrade "$CORE_ERROR"
+    }
     set --
     failed=""
+    stopped=0
     for ch in $(list_channels); do
+        # Once one channel has failed, the rest are neither restarted nor
+        # polled - they stay on whatever is in memory. A `break` here would
+        # have stopped the loop, and every remaining channel would then appear
+        # in NEITHER `restarted` nor `failed`, so the operator would read a
+        # complete-looking JSON while three channels were never touched. They
+        # are named as failed instead, which is the true thing about them.
+        if [ "$stopped" = 1 ]; then
+            failed="$failed $ch"
+            continue
+        fi
         # A channel that is NOT running counts as failed. It used to be skipped
         # by this guard entirely, so it appeared in neither `restarted` nor
         # `failed`, did not block the prune, and produced no hint line: a node
@@ -729,13 +756,7 @@ cmd_upgrade() {
             set -- "$@" "$ch"
         else
             failed="$failed $ch"
-            # Stop at the first failure. Every unit runs the SAME ExecStart -
-            # one global symlink - so once a channel has failed on the new core
-            # there is no per-channel rollback to reach for, and continuing
-            # moves every remaining channel onto a core already known to be
-            # broken for this configuration. A single failure used to end with
-            # five of six channels restarted onto it.
-            break
+            stopped=1
         fi
     done
     if [ -n "$failed" ]; then

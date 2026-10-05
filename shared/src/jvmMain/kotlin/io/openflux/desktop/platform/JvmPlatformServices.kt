@@ -128,9 +128,10 @@ class JvmPlatformServices(
      * update". The feed has no such limit, and for "what is the newest tag" it
      * carries the same fact.
      */
-    private suspend fun releaseFeed(deadlineMs: Long = Long.MAX_VALUE): String? = withContext(Dispatchers.IO) {
-        request("https://github.com/$RELEASE_REPO/releases.atom", deadlineMs = deadlineMs).body
-    }
+    private suspend fun releaseFeed(deadlineMs: Long = Long.MAX_VALUE): Answer =
+        withContext(Dispatchers.IO) {
+            request("https://github.com/$RELEASE_REPO/releases.atom", deadlineMs = deadlineMs)
+        }
 
     /**
      * One request, with the reason kept when it does not work.
@@ -225,7 +226,7 @@ class JvmPlatformServices(
      */
 
     override suspend fun latestRelease(): String? =
-        releaseFeed()?.let { newestTag(it) }?.removePrefix(DESKTOP_TAG_PREFIX)
+        releaseFeed().body?.let { newestTag(it) }?.removePrefix(DESKTOP_TAG_PREFIX)
 
     private fun decodeQr(image: BufferedImage): String? {
         val pixels = IntArray(image.width * image.height)
@@ -261,7 +262,16 @@ class JvmPlatformServices(
         // CHECK_BUDGET_MS.
         val deadline = System.currentTimeMillis() + DESKTOP_CHECK_BUDGET_MS
         val feed = releaseFeed(deadline)
-            ?: return UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub")
+        if (!feed.ok) {
+            // The reason, not a single generic sentence. Answer was introduced
+            // precisely so that "GitHub has no such file" and "the rate limit
+            // from this address is 403" and "the socket timed out" stay
+            // distinguishable - and then this first call of every check threw
+            // the reason away and reported all three as "не удалось прочитать
+            // список выпусков с GitHub".
+            return UpdateCheck.Failed("не удалось прочитать список выпусков с GitHub: ${feed.problem}")
+        }
+        val body = feed.body.orEmpty()
         // App tags only, newest version first, walked until one is found.
         //
         // The first entry of the feed is the newest by CREATION date, and the
@@ -272,7 +282,7 @@ class JvmPlatformServices(
         // had this defect first and now carries the same shape.
         var newestAppTag: String? = null
         var newestProblem: String? = null
-        for (tag in appReleaseTags(feed).take(DESKTOP_MAX_RELEASES_TO_CHECK)) {
+        for (tag in appReleaseTags(body).take(DESKTOP_MAX_RELEASES_TO_CHECK)) {
             val version = tag.removePrefix(DESKTOP_TAG_PREFIX)
 
             // The installer is named after the version by the same rule the
