@@ -266,7 +266,12 @@ class AndroidPlatformServices(
             return@withContext false
         }
         if (!ok) {
-            tell("Контрольная сумма обновления не совпала")
+            // Not "the checksum did not match": download() returns false for a
+            // failed checksum, a rename that did not happen, and an empty
+            // file. Naming the first sent the user to accuse a swapped APK for
+            // what is usually a full cache or a truncated download. The exact
+            // reason is in Log.w; this line must only not lie.
+            tell("Не удалось подготовить обновление")
             return@withContext false
         }
         withContext(Dispatchers.Main) {

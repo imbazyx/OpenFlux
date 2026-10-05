@@ -380,7 +380,18 @@ class CoreConnectionService(
             return
         }
         if (settings.settings.value.savedSystemProxy == null) {
-            val previous = WindowsSystemProxy.read()
+            // Read BEFORE enabling, and refuse the takeover if the read failed.
+            //
+            // WindowsSystemProxy.read() throws when the registry could not be
+            // queried, which is different from "the user has no proxy". Saving
+            // the second when we only know the first is how the restore ends
+            // up deleting a proxy that was configured all along - and it reports
+            // success while doing it. Nothing is enabled in that case, so the
+            // tunnel is simply not taken over this session.
+            val previous = runCatching { WindowsSystemProxy.read() }.getOrElse {
+                log(LogLevel.Error, "Не удалось прочитать текущий системный прокси - он остаётся нетронутым")
+                return
+            }
             settings.update { it.copy(savedSystemProxy = previous) }
         }
         runCatching { WindowsSystemProxy.enable(address) }
