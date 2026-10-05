@@ -53,11 +53,18 @@ fun apkRefusal(facts: ApkFacts?, ownPackage: String, installedCode: Long, ownSig
         "Скачано приложение ${facts.packageName}, а не $ownPackage"
     facts.versionCode < installedCode ->
         "В выпуске versionCode ${facts.versionCode}, он ниже установленного $installedCode — система откажется его ставить"
+    ownSigner != null && facts.signer != null && facts.signer != ownSigner ->
+        // Ahead of the versionName branch below, deliberately. A release signed
+        // with another key cannot be installed at all and the only remedy is to
+        // uninstall, losing the user's settings; a version mismatch is merely
+        // useless. The versionName branch was placed above this at first and
+        // therefore SHADOWED it - a release that was both mis-tagged and
+        // mis-signed produced "тег выпуска не совпадает с содержимым APK" and
+        // never mentioned the key, sending the user after the wrong problem.
+        "Выпуск подписан другим ключом, чем установленное приложение"
     facts.versionName != null && installedVersionName != null &&
         compareVersions(facts.versionName, installedVersionName) <= 0 ->
         "Выпуск собран из APK версии ${facts.versionName}, а установлена ${installedVersionName} — " +
             "обновление ничего не изменит; тег выпуска не совпадает с содержимым APK"
-    ownSigner != null && facts.signer != null && facts.signer != ownSigner ->
-        "Выпуск подписан другим ключом, чем установленное приложение"
     else -> null
 }

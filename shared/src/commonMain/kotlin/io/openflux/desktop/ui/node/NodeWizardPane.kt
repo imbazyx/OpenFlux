@@ -294,6 +294,23 @@ private fun ColumnScope.DocumentStep(model: NodeWizardModel) {
                 HorizontalRule()
                 KeyValueRow("Каналов OpenFlux", probe.channels.size.toString())
             }
+            // Rendered, not merely decoded. `ServerProbe.firewall` was added
+            // because provision.go already sent the value and the data class
+            // dropped it - but adding the property alone changed nothing the
+            // user can see, which is what this commit was supposed to fix. A
+            // server with no active firewall opens the channel's direct
+            // transport with nothing filtering it, and that is worth one line.
+            if (probe.firewall.isNotBlank()) {
+                HorizontalRule()
+                KeyValueRow(
+                    "Брандмауэр",
+                    if (probe.firewall == "none") {
+                        "не активен — порт будет открыт без ограничений"
+                    } else {
+                        probe.firewall
+                    },
+                )
+            }
         }
         Spacer(Modifier.height(AppTheme.spacing.l))
     }
