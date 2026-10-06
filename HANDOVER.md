@@ -354,24 +354,41 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 
 ## Open items
 
-1. **Tag `v2.3.2` is not cut, and nothing downstream of it has happened.** This is
-   the one step of the audit objective that is not done. The artifacts are built,
-   signed and verified; only the owner's word is missing, because cutting the tag
-   publishes a public release and CLAUDE.md forbids moving a published tag
-   afterwards. Ask, do not assume. The sequence once approved:
+1. **`release.yml` does not run, and has not since 2026-09-30.** This is
+   pre-existing, not caused by the 2.3.2 work. Every run since run #5 fails
+   instantly with zero jobs and no log, and GitHub reports *"This run likely
+   failed because of a workflow file issue."* Releases 2.3.0 and 2.3.1 were
+   therefore published **by hand**, as 2.3.2 was.
 
-   ```bash
-   git tag -a v2.3.2 -m "OpenFlux 2.3.2"
-   git push origin v2.3.2          # CI builds 5 APKs + manifest; MSI warning is EXPECTED
-   gh release upload v2.3.2 \
-     OpenFluxPC/dist/OpenFlux-2.3.2.msi \
-     OpenFluxPC/dist/OpenFlux-2.3.2-windows-amd64.zip
-   pwsh -File scripts/finish-release.ps1 -Version 2.3.2
-   ```
+   What has been ruled out, so nobody repeats it:
 
-   Name the MSI files explicitly. `dist/` holds stale 2.2.0, 2.3.0 and 2.3.1
-   artifacts from earlier runs and a glob would upload them. Without the last
-   step the MSI installs unverified.
+   - **Not the account or the minutes.** A two-line `probe.yml` pushed to a
+     throwaway branch ran `completed/success` and had its `name: Probe` parsed
+     correctly. The same push that carried it also produced the failing
+     `release.yml` run. Jobs do start; Actions does start.
+   - **Not the bytes.** No BOM, no CRLF, no tabs, no non-printables. The file on
+     GitHub is 15140 bytes and identical to the local one.
+   - **Not duplicate keys.** PyYAML's default loader silently accepts them, so
+     the file was re-parsed with a loader that raises on duplicates: none.
+   - **Not missing files.** GitHub's contents API returns exactly one file in
+     `.github/workflows/`: `release.yml`, sha `61e89b02`, 15140 bytes. The
+     Actions API additionally advertises a `CI` workflow at `ci.yml` that does
+     not exist in the repository at all - a stale registration, and a red
+     herring.
+   - **Not a YAML parse failure.** PyYAML parses it and recovers `name: Release`
+     plus the tag trigger.
+
+   The signal that it is `release.yml`'s content specifically is that GitHub
+   displays its name as the *file path* rather than `Release`, while the probe's
+   name came through. GitHub falls back to the path when it cannot read the
+   workflow. The remaining step is empirical: bisect the file by pushing
+   truncated versions and watching which one stops being rejected. It needs a
+   token with `workflow` scope and roughly one push per iteration.
+
+2. **Tag `v2.3.2` is cut and the release exists** — 5 APKs, MSI and zip,
+   published by hand. See item 1 for why CI did not do it. Before the next
+   release, check the tag/artifact agreement the Version step performs: the tag
+   must name the version `gradle.properties` declares.
 
 2. **The two L3 ceilings are unchanged and are a policy call, not a bug.**
    `maxUDPMappings = 256` and `ctMaxEntries = 65536` are counted node-wide, not
