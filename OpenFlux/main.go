@@ -6,10 +6,12 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"runtime"
 	godebug "runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"openflux/netbind"
@@ -996,15 +998,41 @@ func runExit(trans transport.Transport, exitMode tunnel.ExitMode) {
 		if localIP != "" {
 			log.Printf("! Run: sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -s %s -j DROP", localIP)
 		} else {
-			log.Printf("! Kernel RSTs would tear down tunnel connections. Prefer a scoped rule:")
+			log.Printf("! Kernel RSTs would tear down tunnel connections. Use a scoped rule:")
 			log.Printf("!   assign a dedicated alias IP, run with --local-ip <ip>, then:")
 			log.Printf("!   sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -s <ip> -j DROP")
-			log.Printf("! Host-wide fallback (drops ALL outbound RST; makes closed ports look filtered):")
-			log.Printf("!   sudo iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP")
+			// No unscoped host-wide fallback here on purpose. It used to be
+			// printed, recommending `-A OUTPUT ... RST -j DROP` with no source,
+			// which drops EVERY outbound RST on the box and makes every closed
+			// port look filtered. Six operators reading this line would each add
+			// it. reserve/openflux-rst-guard.sh already derives the egress from
+			// the routing table and scopes the rule correctly; the systemd units
+			// run it as ExecStartPre. Point at it instead of restating a worse
+			// version of it.
+			log.Printf("! Or install the guard, which derives and scopes the rule:")
+			log.Printf("!   /usr/local/sbin/openflux-rst-guard   (already run as ExecStartPre by the exit-node units)")
 		}
 	}
 
-	select {}
+	// Wait for a stop signal rather than blocking forever. `systemctl stop` and
+	// `systemctl restart` are how these units reload, and they send SIGTERM. Go's
+	// default disposition killed the process outright, so ex.Stop() never ran:
+	// the L3 conntrack and UDP-NAT sweeps were never closed, raw descriptors
+	// stayed open, and the gVisor stack was never torn down. Nothing persisted
+	// state at exit either, so a restart lost whatever the cookie store had not
+	// already written out on its own schedule.
+	//
+	// Stop is bounded by the dataplane's own teardown; if it blocked, systemd
+	// would SIGKILL after TimeoutStopSec, which is the same outcome as before
+	// and no worse.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	s := <-sig
+	log.Printf("Received %v, stopping exit node", s)
+	if err := ex.Stop(); err != nil {
+		log.Printf("Exit node stop: %v", err)
+	}
+	log.Printf("Stopped.")
 }
 
 func runClient(trans transport.Transport, inbound, socksAddr, httpProxyAddr string, exitMode tunnel.ExitMode) {
