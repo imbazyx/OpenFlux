@@ -60,8 +60,12 @@ run `git clean -xfd` without reading that file first — it deletes all three.
 - **Do not chase throughput without a measurement.** Every suspected cause
   inside the tunnel was measured and cleared on 2026-10-06: the L3 path loses
   nothing, the dedupe guard costs 699 ns/packet, and every diff since 2.3.1 on
-  the data path is message-size caps. The ceiling is the Mail.ru relay and the
-  client's own link. See *Throughput* in `HANDOVER.md` before proposing another.
+  the data path is message-size caps. See *Throughput* in `HANDOVER.md`.
+- **Throughput is the wrong objective.** The owner must not look like a data
+  channel, because a ban takes down the node for everyone using it. Raising the
+  batch ceiling or spreading load over several documents both trade stealth for
+  speed, which is the wrong trade. Both were proposed and refused; the 8 KiB
+  ceiling and the single document are deliberate.
 - **`go test ./...` must run natively.** Under `GOOS=windows` it cannot see
   WSL's `/tmp`. `TestSessionPrefersHigherPriorityCarrier` is flaky on its own —
   check it against a stashed tree before calling it a regression.

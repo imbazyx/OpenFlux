@@ -442,12 +442,35 @@ Two things that looked like causes and are not:
 So the ceiling is the Mail.ru relay plus the client's own link, which is
 consistent with 9 Mbps on WiFi and 15 Mbps on 5G.
 
-**Being tried:** the batch was capped at 8 KiB, which at ~1400-byte segments is
-about *five* packets per WebSocket message — roughly 1800 messages/s at 15 Mbps,
-against a 1 MiB frame limit the relay is nowhere near. `exit1` alone now carries
-`Environment=OPENFLUX_BATCH_BYTES=32768` in a systemd drop-in
-(`/etc/systemd/system/openflux-exit.service.d/batch.conf`, remove to revert).
-Measure before rolling out to the other five.
+**And the ceiling is not the thing to optimise.** The owner's constraint is that
+the traffic must look like someone editing a document, because a visible data
+stream gets the room banned — and everyone on that node loses it. That makes
+throughput the *wrong* objective. Raising the batch ceiling from 8 KiB to 32 KiB
+was tried on one node: jitter fell, which is a genuine improvement, and download
+did not rise. It was reverted, because larger, faster writes are a *worse*
+disguise, not a better one. Do not propose it again, and do not propose
+spreading load across several documents to dodge a per-document rate limit.
+
+What the log does show is that the relay is already pushing back:
+
+```
+07:49:33  close 1005  reconnecting in 623ms
+07:49:34  close 1005  reconnecting in 1.35s
+07:49:36  close 1005  reconnecting in 2.51s
+07:49:39  close 1005  reconnecting in 5.34s
+```
+
+Four closures in six seconds, during a speedtest, with escalating backoff.
+Close code 1005 means the peer sent no status at all. Whether that is a
+per-document rate limit or the relay noticing a data channel is **not
+established** — and the difference decides everything, so do not guess. If it
+is the latter, the current write rate is already too high and throughput has to
+come down, not up.
+
+Note the batch loop drains its queue immediately whenever data is queued and
+otherwise waits a fixed 5 ms. Under load the cadence is therefore "as fast as
+the socket accepts", which is the least human-shaped thing it could be. If this
+work continues, that is the line to look at — not the byte ceiling.
 
 ---
 
