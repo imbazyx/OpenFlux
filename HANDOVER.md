@@ -376,11 +376,10 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 
 ## Open items
 
-1. **`release.yml` does not run, and has not since 2026-09-30.** This is
-   pre-existing, not caused by the 2.3.2 work. Every run since run #5 fails
-   instantly with zero jobs and no log, and GitHub reports *"This run likely
-   failed because of a workflow file issue."* Releases 2.3.0 and 2.3.1 were
-   therefore published **by hand**, as 2.3.2 was.
+1. **`release.yml` was broken from 2026-09-30 to 2026-10-06 and is now fixed.**
+   Every run in that window failed instantly with zero jobs and no log, and
+   GitHub reported *"This run likely failed because of a workflow file issue."*
+   Releases 2.3.0, 2.3.1 and 2.3.2 were therefore published **by hand**.
 
    What has been ruled out, so nobody repeats it:
 
@@ -397,22 +396,76 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
      Actions API additionally advertises a `CI` workflow at `ci.yml` that does
      not exist in the repository at all - a stale registration, and a red
      herring.
-   - **Not a YAML parse failure.** PyYAML parses it and recovers `name: Release`
+   - **Not a YAML parse failure — and this one was wrong.** PyYAML parses it and
+     recovers the name and the tag trigger. It also parsed it perfectly on every
+     later attempt, which is exactly why this line was so expensive: PyYAML only
+     knows YAML, and the rule that was actually broken is GitHub's *step
+     schema*. Nothing that parses YAML will ever catch it. `name: Release`
      plus the tag trigger.
 
-   The signal that it is `release.yml`'s content specifically is that GitHub
-   displays its name as the *file path* rather than `Release`, while the probe's
-   name came through. GitHub falls back to the path when it cannot read the
-   workflow. The remaining step is empirical: bisect the file by pushing
-   truncated versions and watching which one stops being rejected. It needs a
-   token with `workflow` scope and roughly one push per iteration.
+   **Solved on 2026-10-06: one misplaced key.** The checkout step read
 
-2. **Tag `v2.3.2` is cut and the release exists** — 5 APKs, MSI and zip,
-   published by hand. See item 1 for why CI did not do it. Before the next
-   release, check the tag/artifact agreement the Version step performs: the tag
-   must name the version `gradle.properties` declares.
+   ```yaml
+   - uses: actions/checkout@v4
+     fetch-depth: 0
+   ```
 
-2. **The two L3 ceilings are unchanged and are a policy call, not a bug.**
+   instead of nesting the option under `with:`. Well-formed YAML, so every
+   parse check passes; not a valid step, so GitHub rejects the whole workflow.
+   `actionlint` names it in one line and reports nothing after the fix:
+
+   ```
+   release.yml:44:9: unexpected key "fetch-depth" for step to execute action.
+   expected one of "continue-on-error", "env", "id", "if", "name",
+   "timeout-minutes", "uses", "with"
+   ```
+
+   Run it on this file before trusting any conclusion about a workflow:
+   `actionlint .github/workflows/release.yml`.
+
+   Two symptoms that point at a schema error rather than at YAML, and which the
+   write-up above did not make enough of:
+
+   - GitHub showed the workflow's name as the **file path**
+     (`.github/workflows/release.yml`) instead of `Release`. It falls back to the
+     path when it cannot read the workflow. After the fix it reads `Release`.
+   - **63 of the 70 recorded runs were on `main`**, which a tag-only trigger can
+     never produce. With the file rejected there is no trigger to honour, so
+     every push started a doomed run. A workflow that should never run on a
+     branch, running on that branch anyway, means the trigger was never parsed —
+     not that the trigger is wrong.
+
+   No bisect was needed, which is just as well: it was about to cost one push
+   and one wait per iteration across a 271-line file.
+
+   Still listed, no longer the issue: the Actions API advertises `CI` and
+   `Probe`, which exist in no branch. Their files are gone, so they are inert,
+   and both are now `disabled_manually`. GitHub has no API to delete a workflow
+   registration, so these names keep showing in the Actions tab until the
+   repository is renamed or recreated.
+
+2. **`release.yml` now works, and is worth keeping.** Verified by a real
+   `workflow_dispatch` dry run on 2026-10-06 (`publish=false`, `version=2.3.2`),
+   which passed setup, the Version check, the Android SDK install and gomobile,
+   and went on to build the core.
+
+   It carries two checks that cannot be done by hand, and that 2.3.1 failed:
+
+   - the tag must agree with the version `gradle.properties` declares;
+   - every APK must carry certificate `60487280...f156`, so a substituted
+     keystore cannot ship five self-consistent APKs that no installed copy has
+     ever seen.
+
+   Neither replaces reading the release, but both catch the failure that
+   matters: users silently unable to update.
+
+   Unchanged by the fix: the MSI is built by hand on the owner's Windows machine
+   and attached separately, and the workflow warns about it at the end.
+
+3. **Tag `v2.3.2` is cut and the release exists** — 5 APKs, MSI and zip,
+   published by hand. See item 1 for why CI did not do it.
+
+4. **The two L3 ceilings are unchanged and are a policy call, not a bug.**
    `maxUDPMappings = 256` and `ctMaxEntries = 65536` are counted node-wide, not
    per-peer, and both fail by dropping a packet with no signal to the client. A
    SYN flood or a patch-Tuesday fan-out crosses the conntrack cap, and then every
@@ -420,8 +473,8 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
    them trades memory for a slower failure; making them per-peer is a different
    structure. Neither was changed without the owner seeing the trade.
 
-3. Repository avatar — Settings → General, upload `branding/icon.png`.
-4. Keep a third copy of `reserve/` off this machine. `D:\project` and
+5. Repository avatar — Settings → General, upload `branding/icon.png`.
+6. Keep a third copy of `reserve/` off this machine. `D:\project` and
    `D:\Backup` are the same physical disk, so both existing copies die with it.
 5. Server, none of it mine to change: `mtg.service` (NRestarts≈2 415 614,
    `status=203/EXEC`, restarts ~1/7 s, largest journal writer); `needrestart`

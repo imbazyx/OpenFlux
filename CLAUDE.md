@@ -69,3 +69,13 @@ run `git clean -xfd` without reading that file first — it deletes all three.
 - **`go test ./...` must run natively.** Under `GOOS=windows` it cannot see
   WSL's `/tmp`. `TestSessionPrefersHigherPriorityCarrier` is flaky on its own —
   check it against a stashed tree before calling it a regression.
+- **Lint workflows with `actionlint`, not with a YAML parser.** A workflow can
+  be valid YAML and still be rejected wholesale by GitHub — `release.yml` sat
+  broken for nine days over a `fetch-depth` that was not nested under `with:`,
+  and PyYAML parsed it cleanly every time, which is what made "not a YAML parse
+  failure" such an expensive conclusion. `actionlint` names it in one line. Two
+  tells: GitHub shows the workflow's *path* instead of its `name`, and it runs
+  on branches its trigger excludes — both mean the trigger was never parsed.
+- **A run with zero jobs and no log is not an infrastructure failure.** Read
+  the message GitHub prints before blaming the account, the minutes or the
+  bytes.
