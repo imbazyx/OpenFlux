@@ -329,6 +329,18 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 
 ## Deliberately not done
 
+- **The per-packet copy in `l3.go` stays.** One heap allocation and a full copy
+  per packet in both directions, purely so `reportSendError` can quote the
+  pre-SNAT header. It cannot move under `if err != nil`: `rewriteSNAT` and
+  `fixChecksums` mutate the packet in place first, and `udp.send` does the same,
+  so by the time the error is known the original is already gone. Removing it
+  needs either the few header fields ICMP quoting actually uses reserved before
+  the rewrite, or a `PacketTooBigError`-only copy taken on an assumption. Both
+  belong under a load test on a live node, not as a drive-by edit to the L3
+  dataplath of six running exit nodes.
+- **`udp_nat.go` was not restructured** for the same reason: moving
+  `net.ListenUDP` and the raw write outside `n.mu` needs per-port in-flight
+  tracking and a load test.
 - **No Android change to the icon.** The launcher icon was already correct and
   identical to what ships; the published APKs are rebuilt from it.
 - **The repository avatar.** GitHub's REST API accepts `avatar_url` on a
@@ -336,14 +348,52 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
   General. `branding/icon.png` is committed and ready to upload.
 - **No history rewrite, no moved tags.** Declined explicitly by the owner. The
   consequence is documented in the 2.3.0 release notes instead.
+- **The tag `v2.3.2` was not cut unattended.** See Open items.
 
 ---
 
 ## Open items
 
-1. Repository avatar — Settings → General, upload `branding/icon.png`.
-2. Keep a third copy of `reserve/` off this machine. `D:\project` and
+1. **Tag `v2.3.2` is not cut, and nothing downstream of it has happened.** This is
+   the one step of the audit objective that is not done. The artifacts are built,
+   signed and verified; only the owner's word is missing, because cutting the tag
+   publishes a public release and CLAUDE.md forbids moving a published tag
+   afterwards. Ask, do not assume. The sequence once approved:
+
+   ```bash
+   git tag -a v2.3.2 -m "OpenFlux 2.3.2"
+   git push origin v2.3.2          # CI builds 5 APKs + manifest; MSI warning is EXPECTED
+   gh release upload v2.3.2 \
+     OpenFluxPC/dist/OpenFlux-2.3.2.msi \
+     OpenFluxPC/dist/OpenFlux-2.3.2-windows-amd64.zip
+   pwsh -File scripts/finish-release.ps1 -Version 2.3.2
+   ```
+
+   Name the MSI files explicitly. `dist/` holds stale 2.2.0, 2.3.0 and 2.3.1
+   artifacts from earlier runs and a glob would upload them. Without the last
+   step the MSI installs unverified.
+
+2. **The two L3 ceilings are unchanged and are a policy call, not a bug.**
+   `maxUDPMappings = 256` and `ctMaxEntries = 65536` are counted node-wide, not
+   per-peer, and both fail by dropping a packet with no signal to the client. A
+   SYN flood or a patch-Tuesday fan-out crosses the conntrack cap, and then every
+   new flow on that node fails silently until the 30 s sweep catches up. Raising
+   them trades memory for a slower failure; making them per-peer is a different
+   structure. Neither was changed without the owner seeing the trade.
+
+3. Repository avatar — Settings → General, upload `branding/icon.png`.
+4. Keep a third copy of `reserve/` off this machine. `D:\project` and
    `D:\Backup` are the same physical disk, so both existing copies die with it.
+5. Server, none of it mine to change: `mtg.service` (NRestarts≈2 415 614,
+   `status=203/EXEC`, restarts ~1/7 s, largest journal writer); `needrestart`
+   absent from `override_rc`, and the apt window at 06:30 could restart all six
+   units; `/var/log/btmp` 1.5 GB; `StartLimitIntervalSec=10s` against
+   `RestartSec=5s`×5 = 25 s, so the limiter can never fire;
+   `of-watchdog.sh` rotates only `openflux-exit`, `-2`, `-3`, leaving 4, 6 and 7
+   unwatched while 1, 2, 3 get deliberate ~7 h rotations; and `exit-2` runs
+   without `--encryption-key-file`.
+6. `TestSessionPrefersHigherPriorityCarrier` is genuinely flaky — 125/125 bare,
+   1 failure in 30 under `-race`. Do not call it a regression without stashing.
 
 ---
 
