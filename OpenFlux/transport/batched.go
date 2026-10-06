@@ -98,7 +98,33 @@ func (b *BatchedTransport) Start() error {
 	// SafeGo: this is the coalescing writer every packet passes through. A panic
 	// in encodeBatch or in b.Transport.Send kills the process, and this loop is
 	// the only thing that calls either.
-	utils.SafeGo("batched.flush", b.flushLoop)
+	// The wrapper below is NOT a plain SafeGo. flushLoop is the sole consumer of
+	// b.queue and the sole caller of encodeBatch and b.Transport.Send, and
+	// nothing supervises it. A bare SafeGo lets a recovered panic exit the
+	// goroutine while b.running stays true, and that state is worse than the
+	// crash it replaced:
+	//
+	//   - Send keeps returning nil, filling a 256-slot queue nothing drains;
+	//     after 256 packets every Send returns "batch queue full"
+	//   - IsConnected() still reports CONNECTED, because the connected flag is
+	//     cleared by serveConn's defer, and serveConn stays parked in ReadFull
+	//     forever waiting for bytes that will never come
+	//   - so the node accepts every packet, delivers none, never reconnects,
+	//     and the watchdog sees a healthy process
+	//
+	// Before this loop was wrapped, a panic killed the process and
+	// Restart=always recovered it cleanly. Clearing `running` on unwind
+	// restores that signal: Send reports an error, the caller fails over, and
+	// the failure is visible instead of silent.
+	utils.SafeGo("batched.flush", func() {
+		defer func() {
+			if r := recover(); r != nil {
+				b.running.Store(false)
+				panic(r) // re-panic so SafeGo logs the stack
+			}
+		}()
+		b.flushLoop()
+	})
 	utils.Debugf("[BATCH] Start: OK")
 	return nil
 }
