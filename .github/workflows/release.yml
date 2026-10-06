@@ -34,14 +34,15 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-        # Depth 0, not the default of 1. The Version step below finds the
-        # previous tag to compare versionCode against, and a depth-1 checkout
-        # of a pushed tag brings exactly one tag - the one being built, which
-        # the comparison then filters out. `prev` came out empty and the
-        # monotonicity check below was skipped silently on every release,
-        # which is the one case it exists to catch. Verified on a
-        # --depth 1 --single-branch clone of a tag: one tag, prev empty.
-        fetch-depth: 0
+        with:
+          # Depth 0, not the default of 1. The Version step below finds the
+          # previous tag to compare versionCode against, and a depth-1 checkout
+          # of a pushed tag brings exactly one tag - the one being built, which
+          # the comparison then filters out. `prev` came out empty and the
+          # monotonicity check below was skipped silently on every release,
+          # which is the one case it exists to catch. Verified on a
+          # --depth 1 --single-branch clone of a tag: one tag, prev empty.
+          fetch-depth: 0
       # OpenFlux/ and shared/ are ordinary directories in this repository.
       # `submodules: recursive` would make checkout fail outright, and it is
       # the kind of setting that survives a structural change silently looking
