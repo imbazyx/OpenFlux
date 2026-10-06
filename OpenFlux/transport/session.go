@@ -320,7 +320,12 @@ func (s *Session) startLink(link *transportLink) error {
 
 func (s *Session) superviseLink(link *transportLink) {
 	s.wg.Add(1)
-	go func() {
+	// SafeGo: every other spawn in this file is wrapped. superviseLink owns a
+	// carrier's entire retry lifetime, so a bare panic here took down the
+	// process - and wrapping it plainly would have produced the failure mode
+	// transport/batched.go documents, where the goroutine is gone with no
+	// signal and the carrier silently stops being supervised.
+	utils.SafeGo("session.supervise", func() {
 		defer s.wg.Done()
 		delay := s.restartMin
 		attempt := 0
@@ -347,7 +352,7 @@ func (s *Session) superviseLink(link *transportLink) {
 				delay = s.restartMax
 			}
 		}
-	}()
+	})
 }
 
 func (s *Session) helloLoop() {

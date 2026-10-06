@@ -132,7 +132,19 @@ func (s *CookieStore) persistLocked() error {
 	if err != nil {
 		return fmt.Errorf("cookiestore: marshal: %w", err)
 	}
-	tmp := s.path + ".tmp"
+	// Per-process temp name. It used to be a fixed `path + ".tmp"`, written with
+	// O_TRUNC and no exclusivity, so two OpenFlux processes on one store path -
+	// which is exactly what happens when two nodes share a WorkingDirectory, or
+	// a node and a local client share a --cookie-store - interleave: A writes
+	// the temp, B truncates and rewrites it, and A renames B's half-written
+	// content into place. The result is a corrupt jar, and recovery is a Debugf
+	// and an empty store, so the node silently re-authenticates from scratch.
+	//
+	// The pid in the name is what separates the two writers. It is not a lock
+	// - two threads in one process still share it - but the store is already
+	// guarded by its mutex for that case, and the collision that actually
+	// happened was across processes.
+	tmp := fmt.Sprintf("%s.%d.tmp", s.path, os.Getpid())
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("cookiestore: write %s: %w", tmp, err)
 	}

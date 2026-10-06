@@ -100,11 +100,15 @@ func (pt *PacketTunnel) handleTCP(r *tcp.ForwarderRequest) {
 			return
 		}
 		// Splice both directions; close when either side ends.
-		go func() {
+		// SafeGo, and the reason is the invariant its sibling 50 lines below
+		// already states: the caller is inside SafeGo, which does NOT protect a
+		// child goroutine. A panic here skipped both Close calls and left the
+		// flow half-open.
+		utils.SafeGo("packet.copy", func() {
 			io.Copy(remote, local)
 			remote.Close()
 			local.Close()
-		}()
+		})
 		io.Copy(local, remote)
 		local.Close()
 		remote.Close()
