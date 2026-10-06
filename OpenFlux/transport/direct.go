@@ -66,7 +66,7 @@ type DirectConfig struct {
 func DefaultDirectConfig() DirectConfig {
 	return DirectConfig{
 		HandshakeTimeout:    15 * time.Second,
-		ReadTimeout:         90 * time.Second, // see serveConn: this is the exit-node ceiling
+		ReadTimeout:         90 * time.Second, // bounds only the first-byte wait; see serveConn
 		KeepAliveInterval:   30 * time.Second,
 		ReconnectMinDelay:   200 * time.Millisecond,
 		ReconnectMaxDelay:   15 * time.Second,
@@ -152,19 +152,27 @@ func (t *DirectTransport) Start() error {
 			utils.Debugf("[DIRECT] exit: listen %s failed: %v", addr, err)
 			return fmt.Errorf("direct: listen %s: %w", addr, err)
 		}
+		t.mu.Lock()
 		t.listener = ln
+		t.mu.Unlock()
 		utils.Debugf("[DIRECT] exit listening on %s (waiting for a client)", ln.Addr().String())
-		go t.acceptLoop()
+		// SafeGo, not bare: acceptLoop calls serveConn INLINE, so it carries
+		// exactly the panic surface the listener fix was about. The write above
+		// is taken under t.mu for the same reason the reads are - the mutex, not
+		// the goroutine edge, should be what makes this pairing safe.
+		utils.SafeGo("direct.accept", t.acceptLoop)
 	} else {
 		if t.config.DialAddr == "" {
 			utils.Debugf("[DIRECT] client: DialAddr is empty, refusing to start")
 			return fmt.Errorf("direct: DialAddr is empty")
 		}
 		utils.Debugf("[DIRECT] client: starting dial loop to %s", t.config.DialAddr)
-		go t.dialLoop()
+		// SafeGo: dialLoop also calls serveConn INLINE.
+		utils.SafeGo("direct.dial", t.dialLoop)
 	}
 
-	go t.writerLoop()
+	// SafeGo: writerLoop drains the outbound queue for every mode.
+	utils.SafeGo("direct.writer", t.writerLoop)
 	utils.Debugf("[DIRECT] Start: loops launched")
 	return nil
 }
@@ -248,6 +256,9 @@ func (t *DirectTransport) Drops() uint64 { return t.drops.Load() }
 
 // ---- exit mode ----
 
+// Backs off after a failed Accept. See acceptLoop.
+const acceptErrorBackoff = 50 * time.Millisecond
+
 func (t *DirectTransport) acceptLoop() {
 	// The listener is read here WITHOUT the mutex at :252 and :262, while
 	// Stop() sets `t.listener = nil` under it. That is a real race and not a
@@ -287,6 +298,14 @@ func (t *DirectTransport) acceptLoop() {
 			default:
 			}
 			utils.Debugf("[DIRECT] acceptLoop: Accept error: %v", err)
+			// Back off. EMFILE/ENFILE - file descriptor exhaustion, the
+			// case ipc/server.go:82 documents and fixes with the same
+			// 50ms - makes Accept fail immediately and forever, so
+			// `continue` spins this loop at 100% CPU and emits one
+			// Debugf per iteration at -d. A permanent Accept error is
+			// not self-healing on a tight loop; give the descriptor
+			// table time to recover.
+			time.Sleep(acceptErrorBackoff)
 			continue
 		}
 		utils.Debugf("[DIRECT] acceptLoop: ACCEPTED %s", connDesc(conn))
@@ -400,19 +419,34 @@ func (t *DirectTransport) serveConn(conn net.Conn) {
 		default:
 		}
 
-		// This default was 0, which meant NO read deadline at all - only
-		// SetKeepAlivePeriod(30s), and TCP keepalive needs roughly nine probes
-		// before the kernel gives up, so several minutes.
+		// ReadTimeout bounds ONLY the wait for the first byte, then is cleared.
 		//
-		// serveConn is called INLINE from acceptLoop, not per connection on its
-		// own goroutine, so the exit node serves exactly one connection at a
-		// time and this loop serialises the whole node. One peer that connects
-		// and then stops sending therefore pinned every other user off that
-		// exit node for minutes. 90s is generous for the liveness this
-		// transport carries and bounded by construction.
+		// This default was 0: no deadline at all, only SetKeepAlivePeriod(30s),
+		// and keepalive needs roughly nine probes before the kernel gives up, so
+		// several minutes. serveConn is called INLINE from acceptLoop rather
+		// than on a goroutine per connection, so an exit node serves exactly
+		// one connection at a time - a peer that connects and says nothing
+		// pinned every other user off the node for minutes.
 		//
-		// Setting a non-zero ReadTimeout also arms the deadline below, which
-		// `if t.config.ReadTimeout > 0` had been skipping.
+		// But applying this deadline to the WHOLE session, which is what
+		// `SetReadDeadline` inside the loop does, severs a perfectly healthy
+		// long-lived tunnel the first time it goes idle for longer than the
+		// timeout. An L3 tunnel legitimately carries nothing for minutes at a
+		// time. That would trade a hang for a periodic disconnect - worse than
+		// the original, because it costs a reconnect and a new room on every
+		// idle period.
+		//
+		// So: it bounds each individual read - the header, and the body of a record
+		// that a peer announced and never sent - and is cleared the moment that
+		// read completes. A peer that connects and says nothing dies in bounded
+		// time, a peer that announces a record and stalls dies in bounded time,
+		// and a live tunnel that is merely quiet between records is left alone
+		// and falls back on the Session keepalive as before.
+		//
+		// That keepalive is what makes a between-records pause safe: session.go
+		// pings every 10s on a ready link, so 90s is never reached by a healthy
+		// connection. If keepaliveInterval is ever raised above ~30s, revisit
+		// this number - the two files are coupled and nothing enforces it.
 		if t.config.ReadTimeout > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout))
 		}
@@ -425,6 +459,9 @@ func (t *DirectTransport) serveConn(conn net.Conn) {
 			}
 			return
 		}
+		// The peer spoke. From here it is a normal long-lived session: keepalive
+		// governs liveness, as it did before this flag had any value.
+		_ = conn.SetReadDeadline(time.Time{})
 		n := int(buf[0])<<8 | int(buf[1])
 		utils.Debugf("[DIRECT] serveConn: header says record length=%d", n)
 		if n == 0 || n > t.config.MaxRecordBytes {
@@ -432,12 +469,24 @@ func (t *DirectTransport) serveConn(conn net.Conn) {
 				n, t.config.MaxRecordBytes)
 			return
 		}
+		// The peer spoke, but the record BODY is still owed. Clearing the deadline
+		// after the 2-byte header alone would let a peer that sends a valid
+		// header and then goes silent hold the node indefinitely - serveConn
+		// runs inline, so that is the original hang with a shorter fuse. Arm a
+		// second deadline for the body, and only that.
+		if t.config.ReadTimeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout))
+		}
 		utils.Debugf("[DIRECT] serveConn: reading body (%d bytes)", n)
 		if _, err := io.ReadFull(conn, buf[:n]); err != nil {
 			utils.Debugf("[DIRECT] serveConn: read body failed after %d/%d bytes: %v",
 				len(buf[:n]), n, err)
 			return
 		}
+		// A complete record is in. Between records the session is whatever
+		// the Session layer keeps alive - session.go pings every 10s - so the
+		// deadline goes back to zero here, not just once at the header.
+		_ = conn.SetReadDeadline(time.Time{})
 		utils.Debugf("[DIRECT] serveConn: received record #%d size=%d",
 			t.recordsIn.Load()+1, n)
 		if utils.IsVerbose() {
