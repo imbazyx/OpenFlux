@@ -6,10 +6,16 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"openflux/utils"
 )
+
+// rawSendErrors counts every failed sendto, including the ones the sampler
+// does not print. Without it a rate-limited log cannot show that the rate
+// itself changed.
+var rawSendErrors atomic.Uint64
 
 type rawBackend struct {
 	sendFd  int
@@ -108,6 +114,31 @@ func (b *rawBackend) Send(pkt []byte) error {
 	err := syscall.Sendto(b.sendFd, pkt, 0, addr)
 	if err == syscall.EMSGSIZE {
 		return &PacketTooBigError{MTU: b.routeMTU(dst)}
+	}
+	if err != nil {
+		// A bare "operation not permitted" says nothing about which of the
+		// half-dozen reasons the kernel had. On one node there were 1664 of
+		// these in 25 minutes, every one of them a bare 40-byte TCP RST, and
+		// none of them explained by anything the code does.
+		//
+		// Log-only: no control flow below changes. Sampled rather than logged
+		// whole - at ~1/second a real failure would drown the tunnel in text
+		// and the rate limiter in the log layer would start eating the lines
+		// that matter. The running total is reported so a burst is still
+		// visible as a burst.
+		n := rawSendErrors.Add(1)
+		if n <= 20 || n%200 == 0 {
+			src := net.IP(pkt[12:16]).String()
+			dstIP := net.IP(pkt[16:20]).String()
+			ihl := int(pkt[0]&0x0f) * 4
+			ipOK := onesComplementSum(pkt[:ihl]) == 0
+			flags := "-"
+			if len(pkt) >= ihl+14 {
+				flags = fmt.Sprintf("0x%02x", pkt[ihl+13])
+			}
+			utils.Debugf("[L3] raw sendto %s->%s len=%d proto=%d flags=%s ipck=%v: %v (total %d)",
+				src, dstIP, len(pkt), pkt[9], flags, ipOK, err, n)
+		}
 	}
 	return err
 }
