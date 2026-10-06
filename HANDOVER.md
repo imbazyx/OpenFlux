@@ -135,6 +135,28 @@ core — no duplicate-packet guard, none of this fork's fixes — with nothing i
 build complaining. The upstream checkout has since been deleted; everything the
 project needs is inside this directory.
 
+A second branch, `core`, also lived on GitHub: 171 commits by sixteen of the
+upstream authors, none of them reachable from `main`. It was the only place on
+the repository where someone else's name was visible. It was deleted on
+2026-10-06 after the owner's approval, with the backup taken **first** and
+checked two ways:
+
+- `core-sync`, a local branch, byte-identical to what was on GitHub at
+  `b54a742`, with `git diff core-sync origin/core` empty before the deletion.
+- `D:\Backup\OpenFlux\git-archive\core-branch.bundle` (30.5 MB), reported by
+  `git bundle verify` as recording a complete history.
+
+To bring it back: `git push origin core-sync:core` locally, or
+`git clone core-branch.bundle` from the backup. Do not assume it is gone.
+
+Note that `backup/pre-author-fix`, `backup/pre-rewrite` and
+`refs/original/refs/heads/main` do **not** contain it — those are rewrites of
+`main`, not of `core`. An earlier check of this claimed otherwise and was
+wrong: it read `$LASTEXITCODE` after a second `git` call rather than after
+`--is-ancestor`, so it reported "contains" unconditionally. Check such a
+thing with the `--is-ancestor` exit code and nothing in between.
+
+
 ---
 
 ## Current state
