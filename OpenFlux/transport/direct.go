@@ -66,7 +66,7 @@ type DirectConfig struct {
 func DefaultDirectConfig() DirectConfig {
 	return DirectConfig{
 		HandshakeTimeout:    15 * time.Second,
-		ReadTimeout:         0, // rely on TCP keepalive
+		ReadTimeout:         90 * time.Second, // see serveConn: this is the exit-node ceiling
 		KeepAliveInterval:   30 * time.Second,
 		ReconnectMinDelay:   200 * time.Millisecond,
 		ReconnectMaxDelay:   15 * time.Second,
@@ -400,6 +400,19 @@ func (t *DirectTransport) serveConn(conn net.Conn) {
 		default:
 		}
 
+		// This default was 0, which meant NO read deadline at all - only
+		// SetKeepAlivePeriod(30s), and TCP keepalive needs roughly nine probes
+		// before the kernel gives up, so several minutes.
+		//
+		// serveConn is called INLINE from acceptLoop, not per connection on its
+		// own goroutine, so the exit node serves exactly one connection at a
+		// time and this loop serialises the whole node. One peer that connects
+		// and then stops sending therefore pinned every other user off that
+		// exit node for minutes. 90s is generous for the liveness this
+		// transport carries and bounded by construction.
+		//
+		// Setting a non-zero ReadTimeout also arms the deadline below, which
+		// `if t.config.ReadTimeout > 0` had been skipping.
 		if t.config.ReadTimeout > 0 {
 			_ = conn.SetReadDeadline(time.Now().Add(t.config.ReadTimeout))
 		}

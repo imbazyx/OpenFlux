@@ -104,8 +104,18 @@ func (n *udpNAT) send(pkt []byte, key flowKey, send func([]byte) error) error {
 		m = &udpMapping{client: key, wire: wire, port: socket, lastSeen: now}
 		n.forward[key], n.reverse[reverseKey(wire)] = m, m
 	}
-	// Keep the reservation locked through send: expiry/Close must not release
-	// the port between rewriting the packet and handing it to the raw socket.
+	// The lock spans reserve() (which does a blocking net.ListenUDP bind) and
+	// send() (the raw-socket write). That is deliberate and it is what stops
+	// expiry/Close releasing the port between rewriting the packet and handing
+	// it to the socket. The cost is real: translateReply (the inbound path),
+	// the sweeper and Close all queue behind it, so one slow raw write stalls
+	// every UDP flow on this node in both directions.
+	//
+	// Known ceiling, not an oversight. Shrinking it means moving the bind and
+	// the write outside the lock, which requires per-port in-flight tracking
+	// so a concurrent expiry cannot release a port mid-send. That is worth
+	// doing only together with a load test on a real node - not as a drive-by
+	// edit to a live datapath.
 	rewriteSNAT(pkt, n.egress)
 	ihl := int(pkt[0]&0x0f) * 4
 	binary.BigEndian.PutUint16(pkt[ihl:ihl+2], m.wire.srcPort)
