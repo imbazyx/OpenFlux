@@ -57,6 +57,11 @@ run `git clean -xfd` without reading that file first — it deletes all three.
 - **The duplicate-packet guard is not a proven cure.** It closes a mechanism
   captured on live traffic, but it never fired during the runs that succeeded,
   and the outage ended on its own first. Do not present it as a fix that worked.
+- **Do not chase throughput without a measurement.** Every suspected cause
+  inside the tunnel was measured and cleared on 2026-10-06: the L3 path loses
+  nothing, the dedupe guard costs 699 ns/packet, and every diff since 2.3.1 on
+  the data path is message-size caps. The ceiling is the Mail.ru relay and the
+  client's own link. See *Throughput* in `HANDOVER.md` before proposing another.
 - **`go test ./...` must run natively.** Under `GOOS=windows` it cannot see
   WSL's `/tmp`. `TestSessionPrefersHigherPriorityCarrier` is flaky on its own —
   check it against a stashed tree before calling it a regression.

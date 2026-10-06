@@ -407,10 +407,47 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
    units; `/var/log/btmp` 1.5 GB; `StartLimitIntervalSec=10s` against
    `RestartSec=5s`×5 = 25 s, so the limiter can never fire;
    `of-watchdog.sh` rotates only `openflux-exit`, `-2`, `-3`, leaving 4, 6 and 7
-   unwatched while 1, 2, 3 get deliberate ~7 h rotations; and `exit-2` runs
-   without `--encryption-key-file`.
+   unwatched while 1, 2, 3 get deliberate ~7 h rotations.
 6. `TestSessionPrefersHigherPriorityCarrier` is genuinely flaky — 125/125 bare,
    1 failure in 30 under `-race`. Do not call it a regression without stashing.
+
+## Throughput: what was measured, and what it rules out
+
+Investigated 2026-10-06 after a report that download had roughly halved. **No
+defect was found in the tunnel.** These are measurements, not reasoning, so do
+not re-open them without something that contradicts them:
+
+| What | Result |
+|---|---|
+| Server's own internet link | 91 Mbps (`speed.cloudflare.com`) |
+| Node → Mail.ru relay, during a test | 1.3× the inbound rate, i.e. it pushes everything it receives |
+| L3 exit path | delivers ~110% of legitimate inbound; every drop counter is 0 |
+| Duplicate guard | `BenchmarkDedupeFullWindow`: 699 ns/packet, ~0.09% CPU at 1340 pkt/s |
+| Every post-2.3.1 diff | message-size caps and log sanitisation; nothing on the data path |
+| `maxExitTCPFlows = 1024` | l4-only; these nodes run `--mode=l3` |
+
+Two things that looked like causes and are not:
+
+- **`sendto` → EPERM.** Real, and 1664 of them in 25 minutes — but *every one*
+  is a bare 40-byte TCP RST (`flags=0x04`) to addresses that answer the node's
+  public IP. `openflux-rst-guard` drops all of them anyway, so they cannot
+  account for throughput. The cause is still unknown and **not** the environment:
+  a standalone Go program on the same host, same uid, same capabilities, same
+  socket options, sent 547 600 identical RSTs with **zero** failures, and so did
+  one with a deliberately broken TCP checksum. An equivalent Python probe failed
+  100% of the time — language, not kernel; that result was discarded.
+- **`koara.io` in the logs.** That is the server's own hostname, which journald
+  prefixes to every line. Not a transport.
+
+So the ceiling is the Mail.ru relay plus the client's own link, which is
+consistent with 9 Mbps on WiFi and 15 Mbps on 5G.
+
+**Being tried:** the batch was capped at 8 KiB, which at ~1400-byte segments is
+about *five* packets per WebSocket message — roughly 1800 messages/s at 15 Mbps,
+against a 1 MiB frame limit the relay is nowhere near. `exit1` alone now carries
+`Environment=OPENFLUX_BATCH_BYTES=32768` in a systemd drop-in
+(`/etc/systemd/system/openflux-exit.service.d/batch.conf`, remove to revert).
+Measure before rolling out to the other five.
 
 ---
 
