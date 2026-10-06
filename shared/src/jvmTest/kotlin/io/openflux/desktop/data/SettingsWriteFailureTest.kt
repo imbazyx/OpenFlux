@@ -11,6 +11,33 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
+ * These tests provoke a write failure by taking an exclusive `FileChannel`
+ * lock and then writing through a different descriptor.
+ *
+ * That only works where file locking is MANDATORY. On Windows it is: the
+ * second write fails with a sharing violation, which is the condition under
+ * test. On Linux, including the WSL that runs the Android build, `FileLock` is
+ * ADVISORY - nothing stops a separate descriptor from writing anyway. So the
+ * write succeeds, no failure is recorded, and these assertions fail.
+ *
+ * That is the test's premise not holding, not the behaviour regressing. It
+ * was still red on every WSL build, which meant `wsl-build.sh` could not
+ * produce an APK - a false alarm blocking a real artifact. The tests now skip
+ * where the mechanism they are testing does not exist, and say so, rather than
+ * reporting a defect that is not one.
+ *
+ * The behaviour itself - a failed write records itself, updates in-memory
+ * state anyway, and the next successful write clears the record - is portable
+ * and is still covered by the tests below that do not need a lock.
+ *
+ * Returned rather than assumed: this module tests with kotlin.test, and
+ * JUnit 5's Assumptions is not on the classpath. A silent early return is the
+ * portable idiom here, and the name says why.
+ */
+private fun fileLockingIsMandatory(): Boolean =
+    System.getProperty("os.name").orEmpty().startsWith("Windows")
+
+/**
  * A settings write that fails must not take the application with it.
  *
  * `update` used to run `store.write` inside `MutableStateFlow.update`'s
@@ -43,6 +70,7 @@ class SettingsWriteFailureTest {
 
     @Test
     fun `a write that fails still applies in memory and does not throw`() {
+        if (!fileLockingIsMandatory()) return // see the file-level note
         val dir = tempDir()
         val repo = FileSettingsRepository(dir)
         val settings = File(dir, "settings.json")
@@ -61,6 +89,7 @@ class SettingsWriteFailureTest {
 
     @Test
     fun `a failed write is remembered and cleared by the next that works`() {
+        if (!fileLockingIsMandatory()) return // see the file-level note
         val dir = tempDir()
         val repo = FileSettingsRepository(dir)
         val settings = File(dir, "settings.json")
@@ -120,6 +149,7 @@ class SettingsWriteFailureTest {
         val settings = File(dir, "settings.json")
         assertFalse(repo.unsaved, "a fresh repository has nothing unsaved")
 
+        if (!fileLockingIsMandatory()) return // see the file-level note
         RandomAccessFile(settings, "rw").use { raf ->
             raf.channel.use { channel ->
                 channel.lock().use {
