@@ -3,6 +3,8 @@ package l3
 import (
 	"sync"
 	"time"
+
+	"openflux/utils"
 )
 
 const (
@@ -31,7 +33,7 @@ func newConntrack() *conntrack {
 		entries: make(map[flowKey]*ctEntry, 1024),
 		stop:    make(chan struct{}),
 	}
-	go ct.sweepLoop()
+	utils.SafeGo("l3.sweep", ct.sweepLoop)
 	return ct
 }
 

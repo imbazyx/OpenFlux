@@ -40,7 +40,7 @@ func (c *MaxClient) Connect() error {
 	// to survive unattended to receive a call.
 	conn.SetReadLimit(maxWSFrameBytes)
 	c.conn = conn
-	go c.readLoop()
+	utils.SafeGo("oneme.wread", func() { c.readLoop() })
 	utils.Debugf("[MAX] connected")
 	return nil
 }
@@ -127,7 +127,7 @@ func (c *MaxClient) LoginByToken(token string) error {
 		return fmt.Errorf("login failed: %v", payload["error"])
 	}
 	c.loggedIn = true
-	go c.keepalive()
+	utils.SafeGo("oneme.wkeep", func() { c.keepalive() })
 	// The count, never the people. Names and phone numbers are the personal
 	// data of people who never asked to be in someone else's log window, and
 	// this package's stdout is captured by the app's Logs screen - so a dump

@@ -238,14 +238,14 @@ func (s *Session) Start() error {
 		}
 	}
 	s.wg.Add(1)
-	go s.keepaliveLoop()
+	utils.SafeGo("session.keepalive", func() { s.keepaliveLoop() })
 	if exit {
 		utils.Debugf("[SESSION] exit: Start returning, waiting for a client")
 		return nil
 	}
 
 	s.wg.Add(1)
-	go s.helloLoop()
+	utils.SafeGo("session.hello", func() { s.helloLoop() })
 
 	utils.Debugf("[SESSION] client: waiting for handshake (timeout=%v)", timeout)
 	if err := s.waitReady(timeout); err != nil {
@@ -308,7 +308,12 @@ func (s *Session) startLink(link *transportLink) error {
 	// was passed) is probed at once: the pong marks it heard, instead of it
 	// waiting for the next keepalive tick.
 	if ready {
-		go func() { _ = s.sendControlVia(link, control.SubtypeLinkPing, nil) }()
+		// SafeGo, and the reason is the one already written at :1064 - this is the
+		// SAME call, wrapped there because sendControlVia allocates an Envelope,
+		// appends a payload and calls link.batched.Send, all reachable with
+		// peer-chosen sizes. Converting one of the two identical call sites and
+		// leaving the other bare is worse than converting neither.
+		utils.SafeGo("session.ping", func() { _ = s.sendControlVia(link, control.SubtypeLinkPing, nil) })
 	}
 	return nil
 }

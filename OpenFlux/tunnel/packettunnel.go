@@ -153,7 +153,10 @@ func (pt *PacketTunnel) handleUDP(r *udp.ForwarderRequest) bool {
 					}
 				}
 			}
-			go pump(remote, conn)
+			// SafeGo for the same reason as tunnel.go's exit.copy: the caller is already
+			// inside SafeGo, which does NOT protect a child goroutine, and this
+			// is the client-side per-connection data path.
+			utils.SafeGo("packet.pump", func() { pump(remote, conn) })
 			pump(conn, remote)
 		})
 		return true
