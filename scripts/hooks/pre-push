@@ -1,0 +1,36 @@
+#!/bin/sh
+# Refuse any push that is not to imbazyx's own GitHub account.
+#
+# The upstream remote pointed at the original author's repository with push
+# access enabled. It is gone; this is the belt to that braces, in case a remote
+# like it is ever re-added by mistake or by a tool.
+#
+# The pattern used to be a bare `*imbazyx*`, which matched anywhere in the URL.
+# That let `https://evil.com/imbazyx/steal.git` through, and also
+# `https://github.com/evilimbazyx/steal.git` and `.../imbazyx-evil/...` - the
+# owner's name appearing anywhere satisfied a control whose whole purpose is
+# "only this account". It now has to sit in the account position of the host.
+#
+# It also checks EVERY pushurl, not just the first. `git remote get-url --push`
+# returns one of them, so a remote carrying
+#   pushurl = github.com/imbazyx/...
+#   pushurl = github.com/evil.com/steal.git
+# passed with the first examined and the second never seen. A remote with more
+# than one pushurl is refused outright rather than partially trusted.
+remote="$1"
+pushurls=$(git remote get-url --all --push "$remote" 2>/dev/null)
+[ -z "$pushurls" ] && pushurls=$(git remote get-url --push "$remote" 2>/dev/null)
+n=$(printf "%s\n" "$pushurls" | grep -c . || true)
+if [ "${n:-0}" -gt 1 ]; then
+  echo "refused: '$remote' has $n push urls; this project pushes to one place" >&2
+  printf "%s\n" "$pushurls" | sed "s|^|  |" >&2
+  exit 1
+fi
+case "$pushurls" in
+  *github.com[:/]imbazyx|*"github.com/imbazyx/"*|*"github.com:imbazyx/"*)
+    exit 0 ;;
+  *)
+    echo "refused: '$remote' would push to $pushurls" >&2
+    echo "this project pushes only to github.com/imbazyx" >&2
+    exit 1 ;;
+esac
