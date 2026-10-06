@@ -473,7 +473,7 @@ func startOutgoingCall(client *MaxClient, calleeID int64) *CallHandler {
 			h.mu.Lock()
 			h.conn = conn
 			h.mu.Unlock()
-			go h.readLoop()
+			utils.SafeGo("oneme.read", func() { h.readLoop() })
 
 			// Wait for disconnect signal
 			<-h.reconnectCh
@@ -560,7 +560,7 @@ func startIncomingListener(client *MaxClient) *CallHandler {
 			h.mu.Lock()
 			h.conn = conn
 			h.mu.Unlock()
-			go h.readLoop()
+			utils.SafeGo("oneme.read", func() { h.readLoop() })
 			go func() {
 				time.Sleep(1 * time.Second)
 				if !h.acceptSent {

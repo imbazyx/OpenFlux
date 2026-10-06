@@ -869,7 +869,7 @@ func newWSListener(auth *atomic.Pointer[volgaAuth], authorizeFn func() (*volgaAu
 }
 
 func (w *wsListener) Start() {
-	go w.run()
+	utils.SafeGo("yandex.run", func() { w.run() })
 }
 
 func (w *wsListener) Stop() {
@@ -1228,8 +1228,8 @@ func (t *YandexVolgaTransport) Start() error {
 	}
 	t.startLinks(auth)
 
-	go t.keepAliveLoop()
-	go t.statsLoop()
+	utils.SafeGo("yandex.keepalive", func() { t.keepAliveLoop() })
+	utils.SafeGo("yandex.stats", func() { t.statsLoop() })
 	t.SetConnected(true)
 
 	utils.Debugf("[VOLGA] transport started: user=%d", auth.UserID)

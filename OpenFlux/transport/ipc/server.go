@@ -67,7 +67,9 @@ func (s *Server) Listen() error {
 	s.mu.Unlock()
 
 	utils.Debugf("[IPC] listening on %s", s.path)
-	go s.acceptLoop()
+	// SafeGo: acceptLoop reaches s.handler.OnConnect() directly, and handler code
+	// is exactly the panic surface the per-connection wrap below guards.
+	utils.SafeGo("ipc.accept", s.acceptLoop)
 	return nil
 }
 

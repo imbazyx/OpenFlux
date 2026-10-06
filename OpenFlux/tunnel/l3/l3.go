@@ -67,7 +67,7 @@ func (t *L3Exit) Start() error {
 	t.trans.Receive(t.handleFromTransport)
 	t.backend.Recv(t.handleFromInternet)
 
-	go t.statsLoop()
+	utils.SafeGo("l3.stats", t.statsLoop)
 	return nil
 }
 

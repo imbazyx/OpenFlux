@@ -732,7 +732,7 @@ func (w *cupsWS) connectAndServe() error {
 	utils.Debugf("[CUPS] WS ready: %s", a.roomUUID)
 
 	kaStop := make(chan struct{})
-	go w.keepAliveLoop(kaStop)
+	utils.SafeGo("cup.keepalive", func() { w.keepAliveLoop(kaStop) })
 	defer close(kaStop)
 
 	for {
@@ -1159,14 +1159,14 @@ func (t *CupsonlineTransport) Start() error {
 	}
 	t.wss = wss
 	for _, ws := range wss {
-		go ws.run()
-		go ws.sendLoop()
+		utils.SafeGo("cup.run", func() { ws.run() })
+		utils.SafeGo("cup.send", func() { ws.sendLoop() })
 	}
 
 	utils.Debugf("[CUPS] transport started: %d channels", len(t.wss))
 	t.SetConnected(true)
 
-	go t.statsLoop()
+	utils.SafeGo("cup.stats", func() { t.statsLoop() })
 	return nil
 }
 
