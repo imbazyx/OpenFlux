@@ -7,6 +7,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"openflux/utils"
 )
 
 const maxUDPMappings = 256
@@ -43,7 +45,11 @@ func newUDPNAT(egress [4]byte) *udpNAT {
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}
-	go func() {
+	// SafeGo: this is the last long-lived l3 loop still launched bare. It holds
+	// no accounting state - expiry derives from the same entries send() reads -
+	// so exiting it cannot skew counters, but a panic would leave expired UDP
+	// mappings resident with nobody reclaiming them.
+	utils.SafeGo("l3.udpnat.sweep", func() {
 		defer close(n.done)
 		ticker := time.NewTicker(ctSweepInterval)
 		defer ticker.Stop()
@@ -57,7 +63,7 @@ func newUDPNAT(egress [4]byte) *udpNAT {
 				n.mu.Unlock()
 			}
 		}
-	}()
+	})
 	return n
 }
 

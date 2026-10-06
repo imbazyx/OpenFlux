@@ -259,6 +259,10 @@ func (t *DirectTransport) Drops() uint64 { return t.drops.Load() }
 // Backs off after a failed Accept. See acceptLoop.
 const acceptErrorBackoff = 50 * time.Millisecond
 
+// The record length header is two bytes, so this is the wire ceiling
+// regardless of what MaxRecordBytes is set to.
+const maxDirectRecord = 0xFFFF
+
 func (t *DirectTransport) acceptLoop() {
 	// The listener is read here WITHOUT the mutex at :252 and :262, while
 	// Stop() sets `t.listener = nil` under it. That is a real race and not a
@@ -541,7 +545,20 @@ func (t *DirectTransport) writerLoop() {
 			pending = nil
 			continue
 		}
-		hdr := [2]byte{byte(len(pending) >> 8), byte(len(pending))}
+		// The header is two bytes, so a record longer than 65535 truncates silently
+		// and the receiver reads the remainder as a fresh header - framing desyncs
+		// permanently. MaxRecordBytes is 65535 by default and the check above
+		// rejects anything larger, so this cannot happen with a sane config; but
+		// the type never enforced the ceiling, and a caller passing 1<<20 got a
+		// silently corrupt stream rather than an error.
+		n := len(pending)
+		if n > maxDirectRecord {
+			utils.Debugf("[DIRECT] writerLoop: record of %d bytes exceeds the %d-byte wire limit, dropping",
+				n, maxDirectRecord)
+			pending = nil
+			continue
+		}
+		hdr := [2]byte{byte(n >> 8), byte(n)}
 		utils.Debugf("[DIRECT] writerLoop: writing record #%d size=%d (hdr=%02x%02x)",
 			t.recordsOut.Load()+1, len(pending), hdr[0], hdr[1])
 		if utils.IsVerbose() {

@@ -126,6 +126,18 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 		t.dropNotForUs.Add(1)
 		return
 	}
+	// One heap allocation and a full copy per packet, in both directions, purely
+	// so reportSendError can quote the pre-SNAT header when the send fails.
+	// The copy cannot simply move under `if err != nil`: rewriteSNAT and
+	// fixChecksums mutate pkt in place first, and udp.send does the same, so by
+	// the time the error is known the original is already gone.
+	//
+	// Known cost, not an oversight. Removing it needs either a reservation of
+	// the few header fields ICMP quoting actually uses (icmp.go:120) captured
+	// before the rewrite, or a PacketTooBigError-only copy taken before
+	// mutation on the assumption that is the only branch that needs it. Both
+	// are worth doing under a load test on a real node, not as a drive-by edit
+	// to the L3 dataplath of six running exit nodes.
 	original := append([]byte(nil), pkt...)
 	if k.proto == 17 {
 		if !validUDPChecksums(pkt) {
