@@ -146,8 +146,9 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 		}
 		if err := t.udp.send(pkt, k, t.sendNetwork); err != nil {
 			t.reportSendError(original, err)
-			t.sendToNetErrors.Add(1)
-			utils.Debugf("[L3] UDP send to network failed: %v", err)
+			if n := t.sendToNetErrors.Add(1); n <= 5 || n%200 == 0 {
+				utils.Debugf("[L3] UDP send to network failed: %v (total %d)", err, n)
+			}
 			return
 		}
 		t.pktToNetwork.Add(1)
@@ -166,8 +167,16 @@ func (t *L3Exit) handleFromTransport(pkt []byte) {
 
 	if err := t.sendNetwork(pkt); err != nil {
 		t.reportSendError(original, err)
-		t.sendToNetErrors.Add(1)
-		utils.Debugf("[L3] send to network failed: %v", err)
+		// Sample. On a live node every one of these is a bare 40-byte TCP RST
+		// that the node's RST guard drops anyway, and a node measured ~1
+		// failure per second. Logging each one cost journald a write per
+		// second on a host whose disk is already the bottleneck, and said
+		// nothing the L3-STATS line does not already carry: it prints this
+		// same counter as errs: toNet=N. Keep the detail for the first few,
+		// where it is worth reading, and then one line per 200.
+		if n := t.sendToNetErrors.Add(1); n <= 5 || n%200 == 0 {
+			utils.Debugf("[L3] send to network failed: %v (total %d)", err, n)
+		}
 		return
 	}
 	t.pktToNetwork.Add(1)
