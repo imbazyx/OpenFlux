@@ -486,6 +486,57 @@ Kept deliberately, because each of them nearly produced a wrong conclusion.
 6. `TestSessionPrefersHigherPriorityCarrier` is genuinely flaky — 125/125 bare,
    1 failure in 30 under `-race`. Do not call it a regression without stashing.
 
+## 2026-10-08: the tunnel reported "0 bytes inbound", and it was the server
+
+The owner's phone showed 0 bytes received on `exit1`; the wife and father were
+fine. Nothing had been changed. **It was not the tunnel.** The box was
+overloaded by roughly 20x and had been for a long time.
+
+```
+nproc                     1          <- one core
+load average              22.49 18.48 17.54
+/var/log/btmp             1.5 GB
+/var/log/journal          473 MB
+```
+
+Three causes, all compounding, none of them ours:
+
+1. **`mtg.service` in an infinite restart loop.** `ExecStart=/usr/local/bin/mtg`
+   — the binary does not exist — with `Restart=always` and `RestartSec=3`. That
+   is one failed spawn every three seconds, forever: **2 473 951 restarts over
+   92 days**. MTProto is served by a different binary (`mtproto-proxy`); this
+   unit was left over from an abandoned migration. Fixed by removing the unit
+   and masking it. Backup at `/root/mtg.service.disabled-20261008.bak`.
+
+2. **An SSH brute-force attack in progress.** `admin`, `mine` and other names
+   from several IPs, minutes apart. `PasswordAuthentication` was already `no`,
+   so the attack could never succeed — it only burned CPU: one `sshd` fork per
+   attempt on a single core. Three IPs blocked; `fail2ban` was running but had
+   `bantime=3600`, so the attackers simply rotated. Now `bantime=86400`,
+   `maxretry=3`, with the owner's egress in `ignoreip`.
+
+3. **`logrotate` was not installed at all.** Nothing had ever rotated `btmp`,
+   which is why it reached 1.5 GB. Installed, plus a `btmp` rule and a daily
+   timer — there was no `logrotate.timer` and `cron` is inactive on this host,
+   so the timer was created by hand as `logrotate-self.timer`.
+
+Result: load **22.49 -> 1.06**, i/O wait 0, disk 74% -> 62%, `btmp` 1.5 GB ->
+0, journal freed of 384 MB and now capped at 200 MB via
+`/etc/systemd/journald.conf.d/limit.conf`.
+
+Two things worth keeping in mind:
+
+- **Firewall rules are runtime state.** `/etc/iptables/rules.v4` plus an
+  `/etc/network/if-up.d/iptables-persistent` hook now restore them at boot.
+  Before that, every block would have vanished on the next restart. Check the
+  `openflux-rst-guard` rule still exists after any firewall change; it is
+  reinstalled by `ExecStartPre` on every node, but the persisted copy is what
+  survives a reboot in between.
+- **This box reports high steal time.** One `vmstat` sample showed `st=77`.
+  With one shared core, CPU time can be taken by the host at any time, which
+  looks exactly like our own load. Do not chase a throughput problem here
+  before checking `st`.
+
 ## Throughput: what was measured, and what it rules out
 
 Investigated 2026-10-06 after a report that download had roughly halved. **No
