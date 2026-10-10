@@ -252,7 +252,7 @@ Six units run `--role=exit` from one binary, `/usr/local/bin/openflux`, all
 | Unit | Whose | Document | Encrypted |
 |---|---|---|---|
 | `openflux-exit` | owner | `fFWK/Wnf2LLrQp` | yes |
-| `openflux-exit-2` | wife | `4Eii/4VdC79L7i` | no |
+| `openflux-exit-2` | wife | `FbLu/vauTbQEiH` | yes |
 | `openflux-exit-3` | father | `HMM5/MF7YGi5B6` | no |
 | `openflux-exit-4` | son | `ABzg/hzJorfqb6` | yes |
 | `openflux-exit-6` | Анна | `fwC9/UQZve9mTr` | yes |
@@ -260,8 +260,13 @@ Six units run `--role=exit` from one binary, `/usr/local/bin/openflux`, all
 
 Each secret is its own file under `/etc/openflux`, mode 600, and the key goes
 into that person's own profile in the app — pasted, never generated there.
-Encryption covers nodes 1, 4, 6 and 7; 2 and 3 are left plain until their
-owners' phones are set up. `exit-5` was removed on 2026-10-03 and is kept on
+Encryption covers every node; the node's key file and the document URL are
+independent. The encryption context is derived from the URL
+(`pickSessionContext`), never pinned, so replacing a document changes the
+context on both peers and leaves the key file alone. Both peers must be given
+the same URL: the core derives it from `--url`, the app from the profile's
+room. Check the match with the `[KEY] context sha256=` line the core logs.
+`exit-5` was removed on 2026-10-03 and is kept on
 the server as `openflux-exit-5.service.disabled`.
 
 `l3` needs kernel RST suppression or every connection dies right after the
