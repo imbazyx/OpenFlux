@@ -69,6 +69,20 @@ class ReleaseNotesTest {
     }
 
     @Test
+    fun theAuthorsOwnAngleBracketsSurvive() {
+        // This project's CLI is written exactly this way. A blanket <[^>]*>
+        // strip deleted the placeholder and left "добавьте --transport=".
+        val text = from("<feed>" + entry("v1", "&lt;p&gt;добавьте --transport=&lt;name&gt;&lt;/p&gt;") + "</feed>", "v1")!!
+        assertEquals("добавьте --transport=<name>", text)
+    }
+
+    @Test
+    fun aNumericEntityIsDecodedAndABrokenOneIsLeftAlone() {
+        val text = from("<feed>" + entry("v1", "&lt;p&gt;а &#8212; б &amp;#x110000;&lt;/p&gt;") + "</feed>", "v1")!!
+        assertEquals("а — б &#x110000;", text)
+    }
+
+    @Test
     fun anAbsentTagIsNull() {
         assertNull(from("<feed>" + entry("v1", "текст") + "</feed>", "v9"))
     }

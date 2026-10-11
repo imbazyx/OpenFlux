@@ -61,6 +61,14 @@ object ReleaseNotes {
         Regex("""<content[^>]*>(.*?)</content>""", RegexOption.DOT_MATCHES_ALL)
             .find(block)?.groupValues?.get(1) ?: ""
 
+    private const val BULLET = "\u0002"
+
+    /**
+     * The tags a release note is allowed to contain. A name outside this list
+     * is treated as the author's text, never as markup.
+     */
+    private const val TAG_NAMES = "p|div|li|ul|ol|h[1-6]|tr|strong|b|em|i|code|pre|a|span|blockquote"
+
     /** Unescape first, strip markup second, then tidy the whitespace. */
     fun cleanup(raw: String): String = collapse(stripTags(unescape(raw)))
 
@@ -73,8 +81,8 @@ object ReleaseNotes {
         // Numeric references: the feed carries &#8212; for an em dash as often as
         // it carries the name, and a named one that is not in the list above
         // reaches the screen as the literal "&#8212;".
-        .replace(Regex("""&#x([0-9a-fA-F]+);""")) { m -> codepoint(m.groupValues[1], 16) }
-        .replace(Regex("""&#(\d+);""")) { m -> codepoint(m.groupValues[1], 10) }
+        .replace(Regex("""&#x([0-9a-fA-F]+);""")) { m -> codepoint(m.groupValues[1], 16, m.value) }
+        .replace(Regex("""&#(\d+);""")) { m -> codepoint(m.groupValues[1], 10, m.value) }
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
@@ -86,25 +94,35 @@ object ReleaseNotes {
         // collide with them, while a bare "&" mid-note still survives intact.
         .replace("&amp;", "&")
 
-    /** A malformed reference is left as it was: dropping the note is worse. */
-    private fun codepoint(digits: String, radix: Int): String =
+    /**
+     * A malformed or out-of-range reference is left exactly as written: dropping
+     * the note, or rendering `&#x110000;` as the decimal `&#110000;`, would both
+     * change what the author wrote.
+     */
+    private fun codepoint(digits: String, radix: Int, fallback: String): String =
         digits.toIntOrNull(radix)
             ?.takeIf { it in 1..0x10FFFF }
             ?.let { runCatching { String(Character.toChars(it)) }.getOrNull() }
-            ?: "&#$digits;"
+            ?: fallback
 
     /**
      * Turns markup into the text a person reads.
      *
      * List items and headings are turned into line breaks rather than deleted,
      * because a release note is mostly a list and dropping the bullets would
-     * leave one run-on sentence. Everything else is dropped.
+     * leave one run-on sentence.
+     *
+     * Only KNOWN tag names are removed. `<name>` in a release note is text -
+     * this project's own CLI syntax writes `--transport=<name>` - and a blanket
+     * `<[^>]*>` deleted everything inside it, so a note could lose the one word
+     * the reader needed.
      */
     private fun stripTags(s: String): String = s
-        .replace(Regex("""<\s*br\s*/?\s*>"""), "\n")
-        .replace(Regex("""<\s*/\s*(p|div|li|ul|ol|h[1-6]|tr)\s*>"""), "\n")
-        .replace(Regex("""<\s*li[^>]*>"""), "• ")
-        .replace(Regex("<[^>]*>"), "")
+        .replace(Regex("""(?i)<\s*br\s*/?\s*>"""), "\n")
+        .replace(Regex("""(?i)<\s*li[^>]*>"""), BULLET)
+        .replace(Regex("""(?i)<\s*/\s*($TAG_NAMES)\s*>"""), "\n")
+        .replace(Regex("""(?i)<\s*($TAG_NAMES)\b[^>]*>"""), "")
+        .replace(BULLET, "• ")
 
     private fun collapse(s: String): String = s
         .replace("\r\n", "\n")

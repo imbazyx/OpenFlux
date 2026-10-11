@@ -39,6 +39,10 @@ object NodeDiagnostics {
         "Android не создал VPN-интерфейс",
         "VPN выключен:",
         "Транспорт не подключился за",
+        // Deliberately NOT "WS disconnected" / "ws error": every reconnect of
+        // a flappy session prints them, and calling that "остановилось" would
+        // send the user to break a tunnel that recovers on its own. The dead
+        // carrier of an otherwise quiet run is still caught by "giving up".
     )
 
     /** The user switched the connection off; nothing is wrong. */
@@ -51,7 +55,15 @@ object NodeDiagnostics {
     private const val OFF = "Подключение выключено. Нажмите «Подключить» и проверьте ещё раз"
 
     /** Log prefixes that identify the carrier, and so the service being named. */
-    private val CARRIERS = listOf("[M-DOCS]", "[YDOCS]", "[VOLGA]", "[BOARDS]")
+    private val CARRIERS = listOf("[M-DOCS]", "[YDOCS]")
+
+    /**
+     * Carriers whose log prefix is not in [CARRIERS] but which authorize the
+     * document before opening a socket.
+     */
+    private val SOCKETLESS = listOf("[VOLGA]", "[BOARDS]")
+
+    private fun carrierIsSocketless(line: String) = SOCKETLESS.any { line.contains(it) }
 
     /**
      * "The document connection is open".
@@ -108,6 +120,12 @@ object NodeDiagnostics {
         // transports at once, and cutting at the last attempt of whichever
         // spoke last erased the other carrier's whole run - a node carrying
         // traffic was reported as "nothing established".
+        //
+        // Only the carriers that actually print that marker take part. Volga and
+        // Boards do not, and adding them to the list made them worse: with no
+        // marker of their own they fell back to the OTHER carrier's cut, so a
+        // Mail.ru reconnect at the end of the buffer erased an authorized Volga
+        // run that had not yet carried a byte.
         val runStart = lines.indexOfLast { it.contains(SESSION_START) }
         // indexOfLast answers -1 for a carrier that never spoke, and mapNotNull
         // does not drop an -1: min() would then be -1 and the cut would
@@ -141,35 +159,43 @@ object NodeDiagnostics {
             .filter { (offset, line) -> current(maxOf(anchored, 0) + offset, line) }
             .map { it.value }
 
-        // Stages are accumulated as the tail is walked, and the walk STOPS at
-        // the first failure so a refusal keeps the path that was really
-        // walked - checking for the failure first drew an empty path for a
-        // connection that had already fetched the document and opened a
-        // socket before the edge turned it away. The failure itself is judged
-        // only after the traffic: one carrier's dead document is not the
-        // answer while another carrier is carrying packets.
+        // Stages are accumulated as the tail is walked, and the walk CONTINUES
+        // past the first failure on purpose: in a session profile the second
+        // carrier is often the one that works, and stopping at the first failure
+        // drew an empty path under a working half. The FIRST failure is kept -
+        // what stopped this attempt is the first thing that went wrong - and it
+        // is judged only after the traffic, because one carrier's dead document
+        // is not the answer while another carrier is carrying packets.
         var failure: String? = null
         var gaveUpBy: String? = null
         for (line in fresh) {
             when {
-                documentFailed(line) -> failure = documentProblem(line)
+                documentFailed(line) -> failure = failure ?: documentProblem(line)
                 // Not a failure on its own: one transport giving up is what a
                 // session is FOR - the other one carries on.
-                gaveUp(line) -> gaveUpBy = line
+                gaveUp(line) -> gaveUpBy = gaveUpBy ?: line
                 dialFailed(line) -> {
                     // The socket URL only exists after the document opened,
                     // which only happens after its name resolved. Inferred from
                     // the failed upgrade, so it needs the marker to be a whole
                     // attempt and not a stray line out of the buffer.
                     if (anchored >= 0) reached.upTo(NodeCheckStage.Dns)
-                    failure = dialProblem(line)
+                    failure = failure ?: dialProblem(line)
                 }
                 // A live socket proves the two stages before it, the same way.
                 // Volga and Boards print their own wording (vyandex.go:1017,
                 // boards.go:532), so this matches the words and not one
                 // transport's spelling of them.
                 socketUp(line) -> reached.upTo(NodeCheckStage.WebSocket)
-                authorizedLine(line) -> reached.upTo(NodeCheckStage.Authorize)
+                authorizedLine(line) -> if (carrierIsSocketless(line)) {
+                    // Volga and Boards authorize the DOCUMENT before they open
+                    // any socket (vyandex.go:417, boards.go:157), so their
+                    // "auth OK" proves no channel. Back-filling the WebSocket
+                    // stage from it ticked a stage that never happened.
+                    reached.add(NodeCheckStage.Authorize)
+                } else {
+                    reached.upTo(NodeCheckStage.Authorize)
+                }
                 // Counted only after the authorization of THIS run: the counter
                 // is cumulative, so a packet seen before the authorization
                 // belongs to a previous session and says nothing about this one.
@@ -178,9 +204,6 @@ object NodeDiagnostics {
                 packetMoved(line) && NodeCheckStage.Authorize in reached ->
                     reached.add(NodeCheckStage.FirstPacket)
             }
-            // First failure wins: what stopped this attempt is the first thing that
-            // went wrong, and everything after it is a consequence.
-            if (failure != null) break
         }
 
         val authorized = NodeCheckStage.Authorize in reached
@@ -188,8 +211,15 @@ object NodeDiagnostics {
         // The run itself is over: everything above it was printed by a process
         // that is no longer running, so its traffic counters prove nothing -
         // checked BEFORE the traffic for that reason.
-        if (fresh.any { it.contains(TURNED_OFF) }) return stopped(reached, OFF)
-        if (fresh.any { line -> CORE_GONE_MARKERS.any { line.contains(it) } }) {
+        //
+        // The start line is excluded from both tests. It is
+        // "Запуск ядра: ${profile.name}" (CoreConnectionService.kt:218,
+        // AndroidConnectionService.kt:218), and the name is the user's own text:
+        // a profile called "Отключено" or "Ядро остановилось" turned this into a
+        // permanent "подключение выключено" for a node carrying traffic.
+        val events = fresh.filterNot { it.contains(SESSION_START) }
+        if (events.any { it.contains(TURNED_OFF) }) return stopped(reached, OFF)
+        if (events.any { line -> CORE_GONE_MARKERS.any { line.contains(it) } }) {
             return stopped(reached, CORE_GONE)
         }
 
@@ -303,11 +333,21 @@ object NodeDiagnostics {
     /** The core gave up retrying: nothing below this line will ever change. */
     private fun gaveUp(line: String) = line.contains("giving up after")
 
-    /** The document stage: a malformed URL or one the server will not open. */
-    private fun documentFailed(line: String) =
-        line.contains("fetchDocInfo failed") ||
+    /**
+     * The document stage: a malformed URL or one the server will not open.
+     *
+     * "keeping session" is the exception that matters: the key recheck every
+     * five minutes (mailru.go:723) prints the raw error of a failed re-fetch
+     * and deliberately does NOT tear the session down. Reading that as a failed
+     * document told a connected, authorized node that it could not open its
+     * document - every five minutes, forever.
+     */
+    private fun documentFailed(line: String): Boolean {
+        if (line.contains("keeping session")) return false
+        return line.contains("fetchDocInfo failed") ||
             line.contains("document object missing") ||
             line.contains("API returned status")
+    }
 
     private fun documentProblem(line: String): String {
         val vendor = vendorOf(line)

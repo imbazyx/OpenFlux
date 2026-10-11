@@ -772,9 +772,15 @@ class AndroidConnectionService(
         /**
          * The lines `NodeDiagnostics` reads. Kept in the buffer whatever the
          * verbose switch says - see drainLogs.
+         *
+         * Per-packet "[SESSION]" is NOT here: it is unsampled Debugf, several
+         * hundred lines a second at line rate, and `--no-packets`/SetPackets
+         * never gated it (session.go:1002-1027), so keeping it evicts the
+         * markers it exists to keep. Traffic is read instead from the 30 s
+         * [STATS] samples, which are what the screen actually shows anyway.
          */
         private val DIAGNOSTIC_TAGS = listOf(
-            "[M-DOCS]", "[YDOCS]", "[VOLGA]", "[BOARDS]", "[STATS]", "[L3-STATS]", "[SESSION]",
+            "[M-DOCS]", "[YDOCS]", "[VOLGA]", "[BOARDS]", "[STATS]", "[L3-STATS]",
         )
 
         fun levelOf(line: String): LogLevel {

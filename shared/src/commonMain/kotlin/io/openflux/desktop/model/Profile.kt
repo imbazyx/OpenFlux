@@ -56,8 +56,13 @@ data class Profile(
             val where = if (index == 0) "Основной транспорт" else "Транспорт ${index + 1}"
             carrierProblem(carrier)?.let { add("$where: $it") }
         }
-        if (session && secret.length < MIN_SECRET) add("Для режима Session нужен ключ не короче $MIN_SECRET символов")
-        if (!session && secret.isNotEmpty() && secret.length < MIN_SECRET) add("Ключ должен быть не короче $MIN_SECRET символов")
+        // Trimmed like the core does (main.go:713): spaces count toward the length
+        // here, so a field of nothing but whitespace passed the gate and was then
+        // handed to the core as an empty key - the app said "кратко", the other
+        // side said "не тот ключ". Gate on the trimmed form so both agree.
+        val key = secret.trim()
+        if (session && key.length < MIN_SECRET) add("Для режима Session нужен ключ не короче $MIN_SECRET символов")
+        if (!session && key.isNotEmpty() && key.length < MIN_SECRET) add("Ключ должен быть не короче $MIN_SECRET символов")
         if (!session && transport.sessionOnly) add("${transport.label} работает только в режиме Session")
     }
 
@@ -72,7 +77,7 @@ data class Profile(
      * shows this instead, where the user sees it and decides.
      */
     fun keyShapeWarning(): String? =
-        if (secret.length >= MIN_SECRET && !isSecretKey(secret)) {
+        if (secret.trim().length >= MIN_SECRET && !isSecretKey(secret)) {
             "Ключ выглядит не так, как ключи OpenFlux ($SECRET_KEY_SHAPE). Если подключение работает — всё в порядке."
         } else {
             null

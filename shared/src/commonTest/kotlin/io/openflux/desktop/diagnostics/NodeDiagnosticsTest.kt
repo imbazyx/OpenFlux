@@ -3,6 +3,7 @@ package io.openflux.desktop.diagnostics
 import io.openflux.desktop.service.NodeCheckStage
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -315,6 +316,85 @@ class NodeDiagnosticsTest {
             r.reached,
         )
         assertTrue(r.ok, "пакеты пошли: ${r.problem}")
+    }
+
+    @Test
+    fun aKeyRecheckThatKeepsTheSessionIsNotADocumentFailure() {
+        // mailru.go:723 logs the raw re-fetch error every five minutes and
+        // deliberately does NOT tear the session down. Read as a failed document
+        // it told a connected, authorized node that it could not open its
+        // document - forever, every five minutes.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "Запуск ядра: Нода (VPN)",
+                "[M-DOCS] connectToDoc attempt 1",
+                "[M-DOCS] WebSocket connected",
+                "[M-DOCS] Auth OK for user 001",
+                "[STATS] uptime=0m30s mode=l4 packets=0 connected=0 established=0 retrans=0",
+                "[M-DOCS] doc key recheck failed (keeping session): API returned status 500",
+            ),
+            waitedForPacket = true,
+        )
+        assertFalse(
+            "документ не открыт" in (r.problem ?: ""),
+            "перепроверка ключа не должна читаться как отказ документа: ${r.problem}",
+        )
+        assertTrue(NodeCheckStage.Authorize in r.reached, "авторизация была: ${r.reached}")
+    }
+
+    @Test
+    fun aProfileNamedAfterAStateIsNotThatState() {
+        // "Запуск ядра: ${profile.name}" carries the user's own text, and the
+        // profile name is free text. A profile called "Отключено" otherwise
+        // answered "подключение выключено" for a node carrying traffic.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "Запуск ядра: Отключено (VPN)",
+                "[M-DOCS] connectToDoc attempt 0",
+                "[M-DOCS] Auth OK for user 1",
+                "[STATS] packets=910 connected=1 established=1",
+            )
+        )
+        assertTrue(r.ok, "название профиля не должно решать вердикт: ${r.problem}")
+    }
+
+    @Test
+    fun theWorkingCarrierKeepsItsStagesWhenTheOtherOneFails() {
+        // The walk used to stop at the first failure, which drew an empty path
+        // under the half of a session profile that works.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "Запуск ядра: X (прокси)",
+                "[M-DOCS] connectToDoc attempt 1",
+                "[M-DOCS] fetchDocInfo failed: API returned status 403",
+                "[YDOCS] connectToDoc attempt 1",
+                "[YDOCS] WebSocket connected to disk.yandex.ru",
+                "[YDOCS] Auth OK for user 001",
+                "[STATS] uptime=0m30s mode=l4 packets=0 connected=0 established=0 retrans=0",
+            ),
+            waitedForPacket = true,
+        )
+        assertTrue(NodeCheckStage.Authorize in r.reached, "второй транспорт авторизовался: ${r.reached}")
+    }
+
+    @Test
+    fun aVolgaAuthorizationDoesNotOpenASocketStage() {
+        // vyandex.go:417 authorizes the DOCUMENT before any socket exists, so
+        // back-filling the WebSocket stage from it ticked a stage that never
+        // happened.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "Запуск ядра: X (VPN)",
+                "[VOLGA] auth OK: user=1(anon) rp=ok sign=ok ts=1",
+                "[STATS] uptime=1m0s mode=l4 packets=0 connected=0 established=0 retrans=0",
+            ),
+            waitedForPacket = true,
+        )
+        assertFalse(
+            NodeCheckStage.WebSocket in r.reached,
+            "сокета не было: ${r.reached}",
+        )
+        assertTrue(NodeCheckStage.Authorize in r.reached, "авторизация была: ${r.reached}")
     }
 
     @Test
