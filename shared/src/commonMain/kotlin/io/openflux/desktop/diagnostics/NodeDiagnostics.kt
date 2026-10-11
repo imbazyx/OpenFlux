@@ -67,11 +67,11 @@ object NodeDiagnostics {
 
     /**
      * Carriers whose log prefix is not in [CARRIERS] but which authorize the
-     * document before opening a socket. Cups.online is here for the same
-     * reason and for one more: its failures are logged under [CUPS] only, so
-     * without it a dead Cups node has no evidence at all in the buffer.
+     * document before opening a socket. Cups.online is NOT here: it opens its
+     * socket first and prints "[CUPS] WS ready" (cupsonline.go:732), which
+     * [socketUp] counts as a channel.
      */
-    private val SOCKETLESS = listOf("[VOLGA]", "[BOARDS]", "[CUPS]")
+    private val SOCKETLESS = listOf("[VOLGA]", "[BOARDS]")
 
     private fun carrierIsSocketless(line: String) = SOCKETLESS.any { line.contains(it) }
 
@@ -80,11 +80,12 @@ object NodeDiagnostics {
      *
      * Mail.ru says "WebSocket connected" (mailru.go:285), Yandex the same
      * (yandex.go:242), Volga and Boards their own wording (vyandex.go:1017,
-     * boards.go:532). One shared wording would leave the two newest
-     * transports permanently stuck at the authorization step.
+     * boards.go:532), Cups a third one: "WS ready" (cupsonline.go:732). One
+     * shared wording would leave three of the transports permanently stuck at
+     * the authorization step.
      */
     private fun socketUp(line: String) =
-        line.contains("WebSocket connected") || line.contains("WS connected")
+        line.contains("WebSocket connected") || line.contains("WS connected") || line.contains("WS ready")
 
     /** "The key was accepted", in every spelling the core uses. */
     private fun authorizedLine(line: String) =
@@ -179,6 +180,10 @@ object NodeDiagnostics {
         var failure: String? = null
         var failureLine: String? = null
         var gaveUpBy: String? = null
+        // Asked once, before the walk: the stage tick and the verdict must agree
+        // on what counts as traffic, or the card says "пакеты не идут" above a
+        // ticked "Данные идут".
+        val moved = movedSince(lines)
         for (line in fresh) {
             when {
                 documentFailed(line) -> if (failure == null) {
@@ -219,12 +224,14 @@ object NodeDiagnostics {
                 } else {
                     reached.upTo(NodeCheckStage.Authorize)
                 }
-                // Counted only after the authorization of THIS run: the counter
-                // is cumulative, so a packet seen before the authorization
-                // belongs to a previous session and says nothing about this one.
-                // Without that condition the drawn path had "первый пакет ✓"
-                // sitting on top of two unchecked steps.
-                packetMoved(line) && NodeCheckStage.Authorize in reached ->
+                // Counted only after the authorization of THIS run AND only if
+                // the traffic is from the attempt that is in force: the counter
+                // is cumulative, so a packet seen before the authorization or
+                // before the last reconnect belongs to a previous session and
+                // says nothing about this one. Without both conditions the drawn
+                // path had "первый пакет ✓" sitting on top of unchecked steps,
+                // and once over the sentence "пакеты не идут".
+                moved && packetMoved(line) && NodeCheckStage.Authorize in reached ->
                     reached.add(NodeCheckStage.FirstPacket)
             }
         }
@@ -250,7 +257,7 @@ object NodeDiagnostics {
         // so whatever the log said about the key describes an attempt that is
         // no longer the one in force. Reversed once, this sent the owner to
         // re-copy a key while the tunnel was carrying data.
-        if (movedSince(lines)) {
+        if (moved) {
             return NodeCheckResult(path(reached), ok = true, problem = null)
         }
 
@@ -291,6 +298,15 @@ object NodeDiagnostics {
         // authorized and in different rooms. It has a distinct sentence because
         // "всё хорошо, но пакетов нет" is what the owner saw for hours.
         if (authorized) {
+            // Reconnected but nothing sampled since: on a phone the traffic line
+            // is one per hundred packets, and an exit node's counter never moves
+            // at all, so this is a waiting state, not a fault.
+            if (movedBeforeAttempt(lines)) {
+                return stopped(
+                    reached,
+                    "Подключение переподключилось. Пакетов после него пока не видно — это нормально на первых секундах. Если не пошли и через минуту, нажмите «Отключить», потом «Подключить»",
+                )
+            }
             return stopped(
                 reached,
                 "Авторизация прошла, но пакеты не идут. Обычно нода ещё не запущена или в документе уже есть другой клиент.",
@@ -383,12 +399,17 @@ object NodeDiagnostics {
         val attempt = tail.indexOfLast { ATTEMPT_START.containsMatchIn(it) }
         val after = if (attempt < 0) tail else tail.drop(attempt + 1)
         if (after.any { it.contains("recv IPv4") }) return true
+        // No attempt marker in this tail: nothing reconnected, so the whole run
+        // is the run in force.
+        if (attempt < 0) return tail.any { packetMoved(it) }
         val afterCounts = statsCounts(after)
-        // Nothing after the attempt at all - the log simply ends there, which is
-        // a normal long run whose tail was cut, not a tunnel that stopped. Same
-        // when the run has no attempt marker: nothing reconnected, so the
-        // cumulative counter describes the run that is in force.
-        if (attempt < 0 || afterCounts.isEmpty()) return tail.any { packetMoved(it) }
+        // No [STATS] after the attempt - and on a phone there is none at all,
+        // because [STATS] belongs to the Go tunnel and the VpnService moves the
+        // packets itself. Only the sampled traffic line can count here, and it
+        // has to be AFTER the attempt: the one before it belongs to the room
+        // that was left. With nothing after the attempt at all the log is simply
+        // cut short, and then it is read the plain way.
+        if (afterCounts.isEmpty()) return if (after.isEmpty()) tail.any { packetMoved(it) } else false
         // Otherwise the only packet evidence a cumulative counter can give is
         // that it GREW. One sample on its own is the number we already had
         // before the reconnect, which is exactly the case that answered "связь
@@ -399,6 +420,19 @@ object NodeDiagnostics {
         // read the plain way.
         if (first == null) return tail.any { packetMoved(it) }
         return last > first
+    }
+
+    /**
+     * Traffic before the last attempt: this run had a working tunnel, and the
+     * only thing missing is evidence since it reconnected. Said as a waiting
+     * state rather than as a fault - on a phone the traffic line is sampled
+     * (one per hundred packets), so a quiet minute after a reconnect is not
+     * evidence of anything.
+     */
+    private fun movedBeforeAttempt(lines: List<String>): Boolean {
+        val tail = lines.drop(lines.indexOfLast { it.contains(SESSION_START) }.coerceAtLeast(0))
+        val attempt = tail.indexOfLast { ATTEMPT_START.containsMatchIn(it) }
+        return attempt > 0 && tail.take(attempt).any { packetMoved(it) }
     }
 
     private fun statsCounts(lines: List<String>) =

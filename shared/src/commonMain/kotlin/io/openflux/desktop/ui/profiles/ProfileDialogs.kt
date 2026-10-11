@@ -163,7 +163,15 @@ fun ShareDialog(model: ProfilesScreenModel, profile: Profile) {
         secondary = "Закрыть",
     ) {
         if (problems.isNotEmpty()) {
-            Banner("Сначала исправьте профиль: ${problems.first()}. Ссылка без ключа подключит без шифрования.", Tone.Warning, icon = Icons.Rounded.Lock)
+            // Nothing to show and nothing to copy: the button below is disabled
+            // for the same reason, and a link that is on screen with a "copy"
+            // icon one line under it was copied anyway.
+            Banner(
+                "Пока профиль не проходит проверку, ссылка и код не показываются: ${problems.first()}",
+                Tone.Warning,
+                icon = Icons.Rounded.Lock,
+            )
+            return@AppDialog
         }
         link.fold(
             onSuccess = { value ->

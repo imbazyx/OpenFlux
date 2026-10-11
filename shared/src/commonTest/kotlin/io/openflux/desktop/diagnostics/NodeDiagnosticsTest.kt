@@ -555,7 +555,11 @@ class NodeDiagnosticsTest {
             waitedForPacket = true,
         )
         assertTrue(!r.ok, "после переподключения пакетов не было: ${r.problem}")
-        assertTrue("пакеты" in r.problem!!, "нужна фраза про пакеты, а не про документ: ${r.problem}")
+        assertTrue("переподключилось" in r.problem!!, "нужна фраза про переподключение: ${r.problem}")
+        assertTrue(
+            NodeCheckStage.FirstPacket !in r.reached,
+            "отметка «Данные идут» противоречила бы фразе: ${r.reached}",
+        )
     }
 
     @Test
@@ -596,5 +600,49 @@ class NodeDiagnosticsTest {
     fun theYandexStatusWordingGetsTheSameSentenceAsMailru() {
         val r = NodeDiagnostics.analyze(listOf("[YDOCS] fetchDocInfo failed: final status 403"))
         assertTrue("не пускает" in r.problem!!, "403 у Яндекса — то же самое, что у Mail.ru: ${r.problem}")
+    }
+
+    @Test
+    fun theSameReconnectOnAPhoneWithNoStatsLineIsAlsoNotTraffic() {
+        // A phone in VPN mode has no [STATS] at all - it belongs to the Go
+        // tunnel, and the VpnService moves the packets itself. The only traffic
+        // line is sampled, and the one from before the reconnect belongs to the
+        // room that was left.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "Запуск ядра: Нода (VPN)",
+                "[M-DOCS] connectToDoc attempt 0",
+                "[M-DOCS] Auth OK for user 812001",
+                "[SESSION] recv IPv4 #1 seq=1 from \"mailru\" size=54 proto=6",
+                "[M-DOCS] doc key rotated 3f2a -> 77aa, forcing reconnect to fresh room",
+                "[M-DOCS] connectToDoc attempt 1",
+                "[M-DOCS] Auth OK for user 812001",
+            ),
+            waitedForPacket = true,
+        )
+        assertTrue(!r.ok, "после переподключения пакетов не было: ${r.problem}")
+        assertTrue(
+            "переподключилось" in r.problem!!,
+            "тут не поломка, а ожидание: ${r.problem}",
+        )
+        assertTrue(
+            NodeCheckStage.FirstPacket !in r.reached,
+            "отметка «Данные идут» противоречила бы фразе: ${r.reached}",
+        )
+    }
+
+    @Test
+    fun cupsOpensItsSocketAndSaysSo() {
+        // cupsonline.go:732 prints "WS ready" before the authorization. Left
+        // unread, every Cups profile drew "канал не открыт" under a ✓ key.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "[CUPS] WS ready",
+                "[CUPS] auth OK: user=1",
+                "[SESSION] recv IPv4 #1 from \"cups\" size=60 proto=6",
+            )
+        )
+        assertTrue(r.ok, "Cups с трафиком работает: ${r.problem}")
+        assertTrue(NodeCheckStage.WebSocket in r.reached, "канал открыт: ${r.reached}")
     }
 }
