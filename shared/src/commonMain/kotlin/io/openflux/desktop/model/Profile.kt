@@ -56,13 +56,15 @@ data class Profile(
             val where = if (index == 0) "Основной транспорт" else "Транспорт ${index + 1}"
             carrierProblem(carrier)?.let { add("$where: $it") }
         }
-        // Trimmed like the core does (main.go:713): spaces count toward the length
-        // here, so a field of nothing but whitespace passed the gate and was then
-        // handed to the core as an empty key - the app said "кратко", the other
-        // side said "не тот ключ". Gate on the trimmed form so both agree.
+        // The LENGTH is counted on the trimmed key, because that is what the
+        // desktop core measures (main.go:713 TrimSpace, then len < 16 is fatal).
+        // The "is there a key at all" test stays on the raw field: a classic
+        // profile whose key is 16 spaces passes the trimmed length and still has
+        // no key, and quietly reporting "всё в порядке" for it sent the user to
+        // a raw start failure instead.
         val key = secret.trim()
         if (session && key.length < MIN_SECRET) add("Для режима Session нужен ключ не короче $MIN_SECRET символов")
-        if (!session && key.isNotEmpty() && key.length < MIN_SECRET) add("Ключ должен быть не короче $MIN_SECRET символов")
+        if (!session && secret.isNotEmpty() && key.length < MIN_SECRET) add("Ключ должен быть не короче $MIN_SECRET символов")
         if (!session && transport.sessionOnly) add("${transport.label} работает только в режиме Session")
     }
 

@@ -3,6 +3,7 @@ package io.openflux.desktop.platform
 import io.openflux.desktop.platform.ReleaseNotes.from
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -78,8 +79,23 @@ class ReleaseNotesTest {
 
     @Test
     fun aNumericEntityIsDecodedAndABrokenOneIsLeftAlone() {
-        val text = from("<feed>" + entry("v1", "&lt;p&gt;а &#8212; б &amp;#x110000;&lt;/p&gt;") + "</feed>", "v1")!!
+        // Bare references, so the decoder is really reached: "&amp;#x110000;"
+        // never matches either pattern and was passing through the old code.
+        val text = from("<feed>" + entry("v1", "<p>а &#8212; б &#x110000;</p>") + "</feed>", "v1")!!
         assertEquals("а — б &#x110000;", text)
+    }
+
+    @Test
+    fun theFeedsOwnMarkupDoesNotReachTheScreen() {
+        // GitHub's footer is <a class="commit-link"><tt>v2.3.2...v2.3.3</tt></a>
+        // and a Markdown table arrives as <table><thead><tr><th>. A short tag
+        // list left all of it visible in the notes block.
+        val body = "<p>Full Changelog: " +
+            "<a class=\"commit-link\" href=\"https://x/compare/v2.3.2...v2.3.3\">" +
+            "<tt>v2.3.2...v2.3.3</tt></a></p>"
+        val text = from("<feed>" + entry("v1", body) + "</feed>", "v1")!!
+        assertEquals("Full Changelog: v2.3.2...v2.3.3", text)
+        assertFalse("<" in text, "сырая разметка на экране: $text")
     }
 
     @Test

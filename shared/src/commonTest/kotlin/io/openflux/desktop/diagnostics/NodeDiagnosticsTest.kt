@@ -336,7 +336,7 @@ class NodeDiagnosticsTest {
             waitedForPacket = true,
         )
         assertFalse(
-            "документ не открыт" in (r.problem ?: ""),
+            "Не удалось открыть документ" in (r.problem ?: ""),
             "перепроверка ключа не должна читаться как отказ документа: ${r.problem}",
         )
         assertTrue(NodeCheckStage.Authorize in r.reached, "авторизация была: ${r.reached}")
@@ -347,11 +347,15 @@ class NodeDiagnosticsTest {
         // "Запуск ядра: ${profile.name}" carries the user's own text, and the
         // profile name is free text. A profile called "Отключено" otherwise
         // answered "подключение выключено" for a node carrying traffic.
+        //
+        // No attempt marker on purpose: one would move the cut past the start
+        // line, and the line would be gone before the state test could see it -
+        // which is how this test passed for the wrong reason once. Volga never
+        // prints one, so this is a real configuration, not a contrived one.
         val r = NodeDiagnostics.analyze(
             listOf(
                 "Запуск ядра: Отключено (VPN)",
-                "[M-DOCS] connectToDoc attempt 0",
-                "[M-DOCS] Auth OK for user 1",
+                "[VOLGA] auth OK: user=1(anon)",
                 "[STATS] packets=910 connected=1 established=1",
             )
         )
@@ -359,9 +363,11 @@ class NodeDiagnosticsTest {
     }
 
     @Test
-    fun theWorkingCarrierKeepsItsStagesWhenTheOtherOneFails() {
+    fun theWorkingCarrierIsNotOverruledByTheOtherOnesFailure() {
         // The walk used to stop at the first failure, which drew an empty path
-        // under the half of a session profile that works.
+        // under the half of a session profile that works - and, once the walk
+        // continued, still let Mail.ru's 403 be the verdict over a Yandex half
+        // that had accepted the key.
         val r = NodeDiagnostics.analyze(
             listOf(
                 "Запуск ядра: X (прокси)",
@@ -375,6 +381,10 @@ class NodeDiagnosticsTest {
             waitedForPacket = true,
         )
         assertTrue(NodeCheckStage.Authorize in r.reached, "второй транспорт авторизовался: ${r.reached}")
+        assertFalse(
+            "Mail.ru" in (r.problem ?: ""),
+            "слова про Mail.ru здесь быть не должно, Яндекс авторизовался: ${r.problem}",
+        )
     }
 
     @Test
@@ -395,6 +405,9 @@ class NodeDiagnosticsTest {
             "сокета не было: ${r.reached}",
         )
         assertTrue(NodeCheckStage.Authorize in r.reached, "авторизация была: ${r.reached}")
+        // The document WAS fetched to authorize, so those two are proven.
+        assertTrue(NodeCheckStage.Document in r.reached, "документ открывали: ${r.reached}")
+        assertTrue(NodeCheckStage.Dns in r.reached, "адрес разрешали: ${r.reached}")
     }
 
     @Test

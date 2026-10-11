@@ -167,20 +167,28 @@ object NodeDiagnostics {
         // is judged only after the traffic, because one carrier's dead document
         // is not the answer while another carrier is carrying packets.
         var failure: String? = null
+        var failureLine: String? = null
         var gaveUpBy: String? = null
         for (line in fresh) {
             when {
-                documentFailed(line) -> failure = failure ?: documentProblem(line)
+                documentFailed(line) -> if (failure == null) {
+                    failure = documentProblem(line)
+                    failureLine = line
+                }
                 // Not a failure on its own: one transport giving up is what a
-                // session is FOR - the other one carries on.
-                gaveUp(line) -> gaveUpBy = gaveUpBy ?: line
+                // session is FOR - the other one carries on. The LAST one is
+                // kept: it is the carrier the user is looking at now.
+                gaveUp(line) -> gaveUpBy = line
                 dialFailed(line) -> {
                     // The socket URL only exists after the document opened,
                     // which only happens after its name resolved. Inferred from
                     // the failed upgrade, so it needs the marker to be a whole
                     // attempt and not a stray line out of the buffer.
                     if (anchored >= 0) reached.upTo(NodeCheckStage.Dns)
-                    failure = failure ?: dialProblem(line)
+                    if (failure == null) {
+                        failure = dialProblem(line)
+                        failureLine = line
+                    }
                 }
                 // A live socket proves the two stages before it, the same way.
                 // Volga and Boards print their own wording (vyandex.go:1017,
@@ -188,10 +196,15 @@ object NodeDiagnostics {
                 // transport's spelling of them.
                 socketUp(line) -> reached.upTo(NodeCheckStage.WebSocket)
                 authorizedLine(line) -> if (carrierIsSocketless(line)) {
-                    // Volga and Boards authorize the DOCUMENT before they open
-                    // any socket (vyandex.go:417, boards.go:157), so their
-                    // "auth OK" proves no channel. Back-filling the WebSocket
-                    // stage from it ticked a stage that never happened.
+                    // Volga and Boards fetch and authorize the DOCUMENT before
+                    // they open any socket (vyandex.go:331-417, boards.go:157),
+                    // so their "auth OK" proves everything up to the key and
+                    // nothing after it. Back-filling the WebSocket stage from it
+                    // ticked a stage that never happened; ticking nothing at all
+                    // drew "the document was never opened" on the very line that
+                    // accepted the key.
+                    reached.add(NodeCheckStage.Document)
+                    reached.add(NodeCheckStage.Dns)
                     reached.add(NodeCheckStage.Authorize)
                 } else {
                     reached.upTo(NodeCheckStage.Authorize)
@@ -233,8 +246,15 @@ object NodeDiagnostics {
 
         // Judged after the traffic, for the same reason: a document that one
         // carrier cannot open is not the verdict while another one carries the
-        // session.
-        if (failure != null) return stopped(reached, failure)
+        // session - or while another one has already accepted the key. Reporting
+        // "Mail.ru не пускает" over a Yandex half that authorized sent the user
+        // to fix the wrong document.
+        val failedCarrier = failureLine?.let { line -> CARRIERS.firstOrNull { line.contains(it) } }
+        val anotherCarrierAuthorized = failedCarrier != null &&
+            fresh.any { authorizedLine(it) && !it.contains(failedCarrier) }
+        if (failure != null && !anotherCarrierAuthorized) return stopped(reached, failure)
+        // The LAST carrier to give up, not the first: the one that spoke last is
+        // the one the user is looking at.
         if (gaveUpBy != null) return stopped(reached, GAVE_UP.replace("%s", vendorOf(gaveUpBy)))
 
         // The LAST auth verdict, not "one of them exists": a session that

@@ -66,8 +66,17 @@ object ReleaseNotes {
     /**
      * The tags a release note is allowed to contain. A name outside this list
      * is treated as the author's text, never as markup.
+     *
+     * Taken from what the releases feed really carries: GitHub's own footer is
+     * `<a class="commit-link"><tt>v2.3.2...v2.3.3</tt></a>`, and a note written
+     * as a Markdown table arrives as `<table><thead><tr><th>`. A short list
+     * left the user's screen full of raw angle brackets, which is worse than the
+     * case this replaced.
      */
-    private const val TAG_NAMES = "p|div|li|ul|ol|h[1-6]|tr|strong|b|em|i|code|pre|a|span|blockquote"
+    private const val TAG_NAMES =
+        "p|div|li|ul|ol|dl|dt|dd|h[1-6]|tr|td|th|thead|tbody|tfoot|table|caption|" +
+            "strong|b|em|i|u|s|del|ins|sub|sup|code|pre|kbd|samp|var|" +
+            "a|span|br|hr|img|tt|blockquote|figure|figcaption|details|summary"
 
     /** Unescape first, strip markup second, then tidy the whitespace. */
     fun cleanup(raw: String): String = collapse(stripTags(unescape(raw)))
