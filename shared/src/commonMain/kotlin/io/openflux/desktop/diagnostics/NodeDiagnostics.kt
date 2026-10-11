@@ -37,6 +37,14 @@ object NodeDiagnostics {
         "Прокси остановился",
         "Android остановил службу OpenFlux",
         "Android не создал VPN-интерфейс",
+        // PacketTunnel.kt:425 and :87 — the VPN interface itself, which the
+        // service never sees again once the tunnel has failed.
+        "VPN-интерфейс не создан",
+        "Ядро перестало передавать пакеты",
+        "Чтение VPN-интерфейса",
+        "Запись в VPN-интерфейс",
+        // AndroidConnectionService.kt:408: the readiness probe that failed.
+        "Проверка Яндекса не пройдена",
         "VPN выключен:",
         "Транспорт не подключился за",
         // Deliberately NOT "WS disconnected" / "ws error": every reconnect of
@@ -59,9 +67,11 @@ object NodeDiagnostics {
 
     /**
      * Carriers whose log prefix is not in [CARRIERS] but which authorize the
-     * document before opening a socket.
+     * document before opening a socket. Cups.online is here for the same
+     * reason and for one more: its failures are logged under [CUPS] only, so
+     * without it a dead Cups node has no evidence at all in the buffer.
      */
-    private val SOCKETLESS = listOf("[VOLGA]", "[BOARDS]")
+    private val SOCKETLESS = listOf("[VOLGA]", "[BOARDS]", "[CUPS]")
 
     private fun carrierIsSocketless(line: String) = SOCKETLESS.any { line.contains(it) }
 
@@ -240,7 +250,7 @@ object NodeDiagnostics {
         // so whatever the log said about the key describes an attempt that is
         // no longer the one in force. Reversed once, this sent the owner to
         // re-copy a key while the tunnel was carrying data.
-        if (fresh.any { packetMoved(it) }) {
+        if (movedSince(lines)) {
             return NodeCheckResult(path(reached), ok = true, problem = null)
         }
 
@@ -336,17 +346,69 @@ object NodeDiagnostics {
      *
      * ponytail: established counts the client's own TCP sessions, not carrier
      * liveness, so a node that dropped and is inside the ~3-minute watchdog
-     * still reads as working. Cut at "reconnect scheduled" (mailru.go:853) when
-     * that false "связь есть" actually reaches a user.
+     * still reads as working. [movedSince] is what keeps the counter from
+     * answering for a run that has since reconnected.
      */
     private fun packetMoved(line: String): Boolean =
         line.contains("recv IPv4") ||
             ((STATS_PACKETS.find(line)?.groupValues?.get(1)?.toLongOrNull() ?: 0L) > 0L &&
                 (STATS_ESTABLISHED.find(line)?.groupValues?.get(1)?.toLongOrNull() ?: 0L) > 0L)
 
+    /**
+     * Packets moved SINCE the last attempt, which is the only question that
+     * matters here.
+     *
+     * A cumulative counter does not reset when the core reconnects. A document
+     * key rotation forces a clean reconnect (mailru.go:737) and the next
+     * [STATS] line still prints "packets=1183" from before it, so the plain
+     * reading answered "связь есть" for a tunnel that had carried nothing since
+     * - the exact state mailru.go:599-601 describes ("both see Auth OK, but
+     * zero relayed traffic"), and the exact state the owner watched for hours.
+     *
+     * A sampled "recv IPv4" after the attempt is real traffic by itself: it is
+     * printed when a packet arrives. The cumulative counter is only trusted
+     * when it is seen to GROW across the attempt - with two samples after it,
+     * or against the last sample before it.
+     *
+     * ponytail: established counts the client's own TCP sessions, not carrier
+     * liveness, so a node that dropped and is inside the ~3-minute watchdog
+     * still reads as working. Cut at the reconnect line itself
+     * ("reconnecting in %v", mailru.go:853) when that false "связь есть"
+     * actually reaches a user.
+     */
+    private fun movedSince(lines: List<String>): Boolean {
+        // The whole run from its start line, not just the tail: the sample that
+        // proves (or disproves) growth sits BEFORE the last attempt, and the
+        // per-carrier cut that produced the tail throws exactly that one away.
+        val tail = lines.drop(lines.indexOfLast { it.contains(SESSION_START) }.coerceAtLeast(0))
+        val attempt = tail.indexOfLast { ATTEMPT_START.containsMatchIn(it) }
+        val after = if (attempt < 0) tail else tail.drop(attempt + 1)
+        if (after.any { it.contains("recv IPv4") }) return true
+        val afterCounts = statsCounts(after)
+        // Nothing after the attempt at all - the log simply ends there, which is
+        // a normal long run whose tail was cut, not a tunnel that stopped. Same
+        // when the run has no attempt marker: nothing reconnected, so the
+        // cumulative counter describes the run that is in force.
+        if (attempt < 0 || afterCounts.isEmpty()) return tail.any { packetMoved(it) }
+        // Otherwise the only packet evidence a cumulative counter can give is
+        // that it GREW. One sample on its own is the number we already had
+        // before the reconnect, which is exactly the case that answered "связь
+        // есть" for a tunnel carrying nothing.
+        val last = afterCounts.last()
+        val first = if (afterCounts.size >= 2) afterCounts.first() else statsCounts(tail.take(attempt)).lastOrNull()
+        // Nothing before the attempt to compare against: the number can only be
+        // read the plain way.
+        if (first == null) return tail.any { packetMoved(it) }
+        return last > first
+    }
+
+    private fun statsCounts(lines: List<String>) =
+        lines.mapNotNull { STATS_PACKETS.find(it)?.groupValues?.get(1)?.toLongOrNull() }
+
     /** Which service a log line is about: a Yandex profile must not be told Mail.ru refused it. */
     private fun vendorOf(line: String) = when {
         line.contains("[YDOCS]") || line.contains("[VOLGA]") || line.contains("[BOARDS]") -> "Яндекс"
+        line.contains("[CUPS]") -> "Cups.online"
         else -> "Mail.ru"
     }
 
@@ -374,13 +436,16 @@ object NodeDiagnostics {
         if (line.contains("no such host")) {
             return "Не удалось открыть адрес в интернете: нет связи с сетью или сломан DNS"
         }
-        if (line.contains("API returned status 403")) {
+        if (line.contains("API returned status 403") ||
+            line.contains("final status 403") || // yandex.go:726
+            line.contains("unexpected status 403") // yandex.go:719
+        ) {
             return "Документ не пускает это подключение. Откройте документ в $vendor и включите доступ «Редактирование по ссылке»"
         }
-        if (line.contains("API returned status 404")) {
+        if (line.contains("API returned status 404") || line.contains("config not found")) {
             return "Документ не найден. Проверьте адрес"
         }
-        if (line.contains("connection refused") || line.contains("timeout")) {
+        if (line.contains("connection refused") || line.contains("timeout") || line.contains("deadline")) {
             return "$vendor не отвечает. Проверьте связь с интернетом"
         }
         // No raw core text here: it is English and half machine-readable, and a

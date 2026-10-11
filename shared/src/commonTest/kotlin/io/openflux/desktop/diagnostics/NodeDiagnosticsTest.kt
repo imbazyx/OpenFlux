@@ -530,4 +530,71 @@ class NodeDiagnosticsTest {
         )
         assertTrue("адрес" in r.problem!!, "должна быть причина из первой строки: ${r.problem}")
     }
+
+    @Test
+    fun aCounterLeftOverFromBeforeTheReconnectIsNotTraffic() {
+        // The document key rotated, the core reconnected into a fresh room, and
+        // no packet has moved since. [STATS] still prints packets=1183 because
+        // the counter is cumulative for the run (tunnel.go:467) - reading it as
+        // "связь есть" is what the owner watched for hours.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "Запуск ядра: Нода (прокси)",
+                "[M-DOCS] connectToDoc attempt 0",
+                "[M-DOCS] WebSocket connected",
+                "[M-DOCS] Auth OK for user 812001",
+                "[SESSION] recv IPv4 #1 seq=1 from \"mailru\" size=54 proto=6",
+                "[STATS] uptime=30s mode=l4 packets=1183 connected=3 established=2 retrans=0",
+                "[M-DOCS] doc key rotated 3f2a1b0c9d8e -> 77aa11bb22cc, forcing reconnect to fresh room",
+                "[M-DOCS] reconnecting in 1s (attempt 1)",
+                "[M-DOCS] connectToDoc attempt 1",
+                "[M-DOCS] WebSocket connected",
+                "[M-DOCS] Auth OK for user 812001",
+                "[STATS] uptime=1m0s mode=l4 packets=1183 connected=1 established=2 retrans=0",
+            ),
+            waitedForPacket = true,
+        )
+        assertTrue(!r.ok, "после переподключения пакетов не было: ${r.problem}")
+        assertTrue("пакеты" in r.problem!!, "нужна фраза про пакеты, а не про документ: ${r.problem}")
+    }
+
+    @Test
+    fun packetsThatKeepMovingAfterAReconnectAreTraffic() {
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "[M-DOCS] connectToDoc attempt 0",
+                "[M-DOCS] Auth OK for user 812001",
+                "[STATS] uptime=30s mode=l4 packets=10 connected=1 established=1 retrans=0",
+                "[M-DOCS] reconnecting in 1s (attempt 1)",
+                "[M-DOCS] connectToDoc attempt 1",
+                "[M-DOCS] Auth OK for user 812001",
+                "[STATS] uptime=1m0s mode=l4 packets=412 connected=1 established=1 retrans=0",
+            )
+        )
+        assertTrue(r.ok, "счётчик вырос — пакеты шли: ${r.problem}")
+        assertEquals(NodeCheckStage.FirstPacket, r.reached.last())
+    }
+
+    @Test
+    fun theAndroidVpnRunKillersAreReadAsStopped() {
+        // PacketTunnel.kt:87. The home screen says Failed for this run; the card
+        // said "связь есть" with every stage ticked, over the same buffer.
+        val r = NodeDiagnostics.analyze(
+            listOf(
+                "Запуск ядра: Нода (VPN)",
+                "[M-DOCS] connectToDoc attempt 0",
+                "[M-DOCS] Auth OK for user 812001",
+                "[SESSION] recv IPv4 #100 seq=99 from \"mailru\" size=1400 proto=6",
+                "Ядро перестало передавать пакеты: session not ready",
+            )
+        )
+        assertTrue(!r.ok, "остановка это не связь")
+        assertTrue("остановилось" in r.problem!!, "нужна фраза об остановке: ${r.problem}")
+    }
+
+    @Test
+    fun theYandexStatusWordingGetsTheSameSentenceAsMailru() {
+        val r = NodeDiagnostics.analyze(listOf("[YDOCS] fetchDocInfo failed: final status 403"))
+        assertTrue("не пускает" in r.problem!!, "403 у Яндекса — то же самое, что у Mail.ru: ${r.problem}")
+    }
 }

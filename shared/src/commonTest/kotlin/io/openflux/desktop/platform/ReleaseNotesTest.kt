@@ -79,10 +79,13 @@ class ReleaseNotesTest {
 
     @Test
     fun aNumericEntityIsDecodedAndABrokenOneIsLeftAlone() {
-        // Bare references, so the decoder is really reached: "&amp;#x110000;"
-        // never matches either pattern and was passing through the old code.
-        val text = from("<feed>" + entry("v1", "<p>а &#8212; б &#x110000;</p>") + "</feed>", "v1")!!
-        assertEquals("а — б &#x110000;", text)
+        // The feed carries the body already escaped, so an author who typed
+        // "&amp;" arrives as "&amp;amp;" and must land on screen as "&amp;" -
+        // one pass, not two. The out-of-range reference is left exactly as it
+        // was: rewriting it would invent a character nobody typed.
+        val body = "&lt;p&gt;а &amp;amp; б &amp;#110000;&lt;/p&gt;"
+        val text = from("<feed>" + entry("v1", body) + "</feed>", "v1")!!
+        assertEquals("а &amp; б &#110000;", text)
     }
 
     @Test
@@ -90,12 +93,21 @@ class ReleaseNotesTest {
         // GitHub's footer is <a class="commit-link"><tt>v2.3.2...v2.3.3</tt></a>
         // and a Markdown table arrives as <table><thead><tr><th>. A short tag
         // list left all of it visible in the notes block.
-        val body = "<p>Full Changelog: " +
-            "<a class=\"commit-link\" href=\"https://x/compare/v2.3.2...v2.3.3\">" +
-            "<tt>v2.3.2...v2.3.3</tt></a></p>"
+        val body = "&lt;p&gt;Full Changelog: " +
+            "&lt;a class=\"commit-link\" href=\"https://x/compare/v2.3.2...v2.3.3\"&gt;" +
+            "&lt;tt&gt;v2.3.2...v2.3.3&lt;/tt&gt;&lt;/a&gt;&lt;/p&gt;"
         val text = from("<feed>" + entry("v1", body) + "</feed>", "v1")!!
         assertEquals("Full Changelog: v2.3.2...v2.3.3", text)
         assertFalse("<" in text, "сырая разметка на экране: $text")
+    }
+
+    @Test
+    fun aMarkdownTableIsRenderedAsRows() {
+        val body = "&lt;table&gt;&lt;thead&gt;&lt;tr&gt;&lt;th&gt;Файл&lt;/th&gt;&lt;th&gt;Что это&lt;/th&gt;&lt;/tr&gt;" +
+            "&lt;/thead&gt;&lt;tbody&gt;&lt;tr&gt;&lt;td&gt;a.kt&lt;/td&gt;&lt;td&gt;разбор&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;&lt;/table&gt;"
+        val text = from("<feed>" + entry("v1", body) + "</feed>", "v1")!!
+        assertFalse("<" in text, "таблица пришла разметкой: $text")
+        assertTrue("Файл" in text && "разбор" in text, "содержимое таблицы потеряно: $text")
     }
 
     @Test

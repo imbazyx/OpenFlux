@@ -145,11 +145,15 @@ fun ImportDialog(model: ProfilesScreenModel) {
 fun ShareDialog(model: ProfilesScreenModel, profile: Profile) {
     val toaster = LocalToaster.current
     val link = remember(profile) { model.shareLink(profile) }
+    // A profile the core would refuse is not shareable: the link drops the key
+    // (it is trimmed away to nothing) and the receiver gets a profile that
+    // passes every check and connects in the clear.
+    val problems = remember(profile) { profile.problems() }
     AppDialog(
         title = "QR и ссылка: ${profile.name}",
         onDismiss = { model.shareFor = null },
-        primary = "Копировать ссылку",
-        primaryEnabled = link.isSuccess,
+        primary = "Скопировать ссылку",
+        primaryEnabled = link.isSuccess && problems.isEmpty(),
         onPrimary = {
             link.onSuccess {
                 model.copy(it)
@@ -158,6 +162,9 @@ fun ShareDialog(model: ProfilesScreenModel, profile: Profile) {
         },
         secondary = "Закрыть",
     ) {
+        if (problems.isNotEmpty()) {
+            Banner("Сначала исправьте профиль: ${problems.first()}. Ссылка без ключа подключит без шифрования.", Tone.Warning, icon = Icons.Rounded.Lock)
+        }
         link.fold(
             onSuccess = { value ->
                 val matrix = remember(value) { model.qr(value) }

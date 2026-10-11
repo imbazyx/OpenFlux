@@ -189,6 +189,11 @@ data class Profile(
                 secret = config.secret.trim(),
                 codec = if (config.codec == Codec.LEGACY.cliName) Codec.LEGACY else Codec.BATCHED,
                 session = config.negotiate,
+                // ponytail: 0 means "unspecified", and it becomes the default
+                // 50 here. If the main carrier was written as 0 next to an
+                // extra that was also 50, the import puts the extra first and
+                // the two devices name their session carriers in opposite
+                // order. Pick an explicit order instead of the 0 shorthand.
                 priority = main.priority.takeIf { it != 0 } ?: 50,
                 context = if (config.negotiate) config.context else "",
                 extras = sorted.filter { it !== main }.map { ExtraTransport(type(it), value(it), priority = it.priority) },

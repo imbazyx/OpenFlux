@@ -774,7 +774,7 @@ class AndroidConnectionService(
          * verbose switch says - see drainLogs.
          */
         private val DIAGNOSTIC_TAGS = listOf(
-            "[M-DOCS]", "[YDOCS]", "[VOLGA]", "[BOARDS]", "[STATS]", "[L3-STATS]",
+            "[M-DOCS]", "[YDOCS]", "[VOLGA]", "[BOARDS]", "[CUPS]", "[STATS]", "[L3-STATS]",
         )
 
         /**
