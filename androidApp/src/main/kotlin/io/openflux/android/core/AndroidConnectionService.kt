@@ -704,7 +704,7 @@ class AndroidConnectionService(
             // way to see any of this, read an empty buffer and answered "не
             // подключено" for a node that was carrying traffic.
             if (level == LogLevel.Debug && !settings.settings.value.verboseCoreLog &&
-                DIAGNOSTIC_TAGS.none { line.startsWith(it) }
+                DIAGNOSTIC_TAGS.none { line.startsWith(it) } && !line.contains(TRAFFIC_MARK)
             ) {
                 continue
             }
@@ -772,16 +772,27 @@ class AndroidConnectionService(
         /**
          * The lines `NodeDiagnostics` reads. Kept in the buffer whatever the
          * verbose switch says - see drainLogs.
-         *
-         * Per-packet "[SESSION]" is NOT here: it is unsampled Debugf, several
-         * hundred lines a second at line rate, and `--no-packets`/SetPackets
-         * never gated it (session.go:1002-1027), so keeping it evicts the
-         * markers it exists to keep. Traffic is read instead from the 30 s
-         * [STATS] samples, which are what the screen actually shows anyway.
          */
         private val DIAGNOSTIC_TAGS = listOf(
             "[M-DOCS]", "[YDOCS]", "[VOLGA]", "[BOARDS]", "[STATS]", "[L3-STATS]",
         )
+
+        /**
+         * Traffic evidence, kept by content rather than by prefix.
+         *
+         * "[STATS]" alone is not enough: it comes from the Go tunnel, and on a
+         * phone in VPN mode there is no tunnel - the VpnService moves the
+         * packets itself - so a working VPN would have produced no traffic
+         * evidence at all and the check would have reported "пакеты не идут"
+         * for a node that was carrying them.
+         *
+         * So the traffic line is kept by its text. It is sampled (session.go:
+         * 1035: the first packet and every hundredth), which is what makes this
+         * affordable - unlike the rest of "[SESSION]", which is unsampled
+         * Debugf per rejected packet, is never gated by `--no-packets`, and
+         * would evict the very markers this filter exists to keep.
+         */
+        private const val TRAFFIC_MARK = "recv IPv4"
 
         fun levelOf(line: String): LogLevel {
             val lower = line.lowercase()
