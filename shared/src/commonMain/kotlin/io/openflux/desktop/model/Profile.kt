@@ -62,6 +62,23 @@ data class Profile(
     }
 
     /**
+     * "This does not look like a key", said once and without blocking anything.
+     *
+     * NOT part of [problems], on purpose. The core hashes any secret of
+     * [MIN_SECRET] characters or more (transport/encrypted.go:77), so a key that
+     * does not match either shape still works - a node installed by hand with
+     * `openssl rand -base64 48`, a passphrase from a server room. Gating the
+     * connect on the shape would refuse working setups over a guess; the editor
+     * shows this instead, where the user sees it and decides.
+     */
+    fun keyShapeWarning(): String? =
+        if (secret.length >= MIN_SECRET && !isSecretKey(secret)) {
+            "Ключ выглядит не так, как ключи OpenFlux ($SECRET_KEY_SHAPE). Если подключение работает — всё в порядке."
+        } else {
+            null
+        }
+
+    /**
      * The transports as the core's Session names them: after their type, then
      * type-2, type-3 for repeats, so they match the exit's names (cookie
      * exchange is addressed by name).
@@ -109,7 +126,10 @@ data class Profile(
             name = name,
             negotiate = session,
             codec = codec.cliName,
-            secret = secret,
+            // Trimmed: a key pasted from a file keeps its trailing newline, and
+            // one that travels through a link would be re-imported with it
+            // every time - and mobile does not trim what it is handed.
+            secret = secret.trim(),
             context = if (session) effectiveContext() else "",
             transports = transports,
         )
@@ -117,6 +137,7 @@ data class Profile(
 
     companion object {
         const val MIN_SECRET = 16
+
         val ICONS = listOf(
             "ic_public", "ic_link", "ic_lock", "ic_key", "ic_power",
             "ic_person", "ic_swap", "ic_terminal", "ic_apps", "ic_settings",
@@ -155,7 +176,10 @@ data class Profile(
                 name = config.name.ifBlank { "OpenFlux" },
                 transport = type(main),
                 value = value(main),
-                secret = config.secret,
+                // Trimmed like toShare(): a link built by hand, or by a build from before
+                // that trim, carries the newline of a key file - and mobile
+                // hands whatever it is given straight to the core.
+                secret = config.secret.trim(),
                 codec = if (config.codec == Codec.LEGACY.cliName) Codec.LEGACY else Codec.BATCHED,
                 session = config.negotiate,
                 priority = main.priority.takeIf { it != 0 } ?: 50,

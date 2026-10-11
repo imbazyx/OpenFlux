@@ -51,6 +51,38 @@ class JvmPlatformServices(
 
     override val coreVersion: String get() = coreVersionProvider()
     override val clientRepo: String get() = RELEASE_REPO
+
+    /**
+     * When this build was put together, as "yyyy-MM-dd HH:mm", or null.
+     *
+     * Taken from the jar the code was actually loaded from, not from a file
+     * the user happened to run: an unpacked copy in Documents carries its own
+     * timestamp, so the same build would report a different date depending on
+     * where it sat, and the one question this line exists to settle - "у меня
+     * свежая сборка или нет" - would depend on the path.
+     *
+     * On Windows this is the install time rather than the moment the build was
+     * compiled: jpackage copies the jar in, and nothing records the original.
+     * That is still the useful answer for the question being asked - it
+     * separates this copy from one installed before the last release - and it
+     * is the only date this platform can state without lying about a build it
+     * never wrote down. Null when the code is loaded from a directory, which
+     * is what a developer build does.
+     */
+    override val buildDate: String? by lazy {
+        runCatching {
+            val location = JvmPlatformServices::class.java.protectionDomain?.codeSource?.location ?: return@runCatching null
+            val file = java.io.File(location.toURI())
+            if (!file.isFile) return@runCatching null
+            // An unreadable file reports 0, which would be shown as a build from
+            // 1970 - a plausible-looking date is worse than no date.
+            val modified = file.lastModified().takeIf { it > 0L } ?: return@runCatching null
+            java.time.LocalDateTime.ofInstant(
+                java.time.Instant.ofEpochMilli(modified),
+                java.time.ZoneId.systemDefault(),
+            ).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        }.getOrNull()
+    }
     override val systemProxySupported: Boolean = os.contains("win")
     override val fullTunnelSupported: Boolean = os.contains("win")
     override val elevated: Boolean get() = WindowsElevation.elevated
@@ -226,8 +258,13 @@ class JvmPlatformServices(
      * the two cannot disagree.
      */
 
+    // The newest APP release, not the newest tag: the repository also carries
+    // core and node tags (node-v1.0.0, 0.0.5), and the feed's first entry is
+    // the most recently created release of any kind. Showing one of those as
+    // "последний выпуск приложения" is how the two clients drifted apart -
+    // Android filters them, this did not.
     override suspend fun latestRelease(): String? =
-        releaseFeed().body?.let { newestTag(it) }?.removePrefix(DESKTOP_TAG_PREFIX)
+        releaseFeed().body?.let { appReleaseTags(it).firstOrNull() }?.removePrefix(DESKTOP_TAG_PREFIX)
 
     private fun decodeQr(image: BufferedImage): String? {
         val pixels = IntArray(image.width * image.height)
@@ -305,6 +342,7 @@ class JvmPlatformServices(
                     downloadUrl = url,
                     versionCode = versionCodeOf(version),
                     newer = compareVersions(version, appVersion) > 0,
+                    notes = ReleaseNotes.from(body, tag),
                 )
                 // A success on a LATER tag must not paper over a failure on the newest
                 // one. v2.3.2's MSI exists but its HEAD got a transient 502
@@ -378,10 +416,13 @@ class JvmPlatformServices(
     /**
      * Downloads the MSI and hands it to Windows Installer.
      *
-     * Verified against the release's own SHA256SUMS.txt before msiexec is
-     * started, for the reason Android verifies its APK: this file replaces the
-     * running program, and a truncated download must not become a silent
-     * update.
+     * Verified against the release's own SHA256SUMS.txt when the release
+     * publishes a line for this file, for the reason Android verifies its APK:
+     * this file replaces the running program, and a truncated download must not
+     * become a silent update. In practice the manifest has NO line for the MSI
+     * - release.yml publishes no desktop job, the MSI is attached by hand -
+     * so the length is what is checked and the unverified case is named to the
+     * user before msiexec starts.
      *
      * msiexec /i runs the install straight away, and Windows Installer will
      * refuse to replace files the running app holds open. So this starts the
@@ -393,7 +434,7 @@ class JvmPlatformServices(
      * window. The screen used to call the installer and then sit there running,
      * so the update could never actually replace anything.
      */
-    override suspend fun installUpdate(update: AppUpdate): InstallResult = withContext(Dispatchers.IO) {
+    override suspend fun installUpdate(update: AppUpdate, onProgress: (Long, Long) -> Unit): InstallResult = withContext(Dispatchers.IO) {
         val target = File(System.getProperty("java.io.tmpdir"), "OpenFlux-${update.version}-setup.msi")
         // The manifest is indexed by the PUBLISHED asset name, not by whatever
         // this method happens to call the file on disk. They differ ("-setup"
@@ -402,7 +443,7 @@ class JvmPlatformServices(
         // because the "installing unverified" warning was only on Android.
         val published = "OpenFlux-${update.version}$WINDOWS_INSTALLER_SUFFIX"
         val expected = publishedSha256(update.version, published)
-        val downloaded = download(update.downloadUrl, target, expected, published)
+        val downloaded = download(update.downloadUrl, target, expected, published, onProgress)
         // shown = false throughout: this platform has no way to raise a toast,
         // so the shared UI is what tells the user, and it needs to know that
         // nothing has been said yet.
@@ -448,11 +489,22 @@ class JvmPlatformServices(
         }
 
         val started = runCatching {
+            // DISCARD, not a pipe nobody reads: msiexec inherits this process's
+            // stdout, and when that is a pipe - the jpackage launcher is one -
+            // an unread pipe fills at 64 KB and the installer stops mid-way
+            // while the app exits "normally". Both streams, stderr included:
+            // discarding only stdout leaves the same fill on the other.
             ProcessBuilder("msiexec", "/i", target.absolutePath)
-                .redirectErrorStream(true)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
             true
-        }.getOrDefault(false)
+        }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            // 118 MB that nothing will ever install, per version, in %TEMP%.
+            target.delete()
+            false
+        }
         if (!started) return@withContext InstallResult.Refused(shown = false)
 
         // Long enough for the installer window to come up on top of us, short
@@ -476,7 +528,7 @@ class JvmPlatformServices(
      * [target]'s name - it is in the log line for the unverifiable case, and
      * that line is the only trace of it.
      */
-    private fun download(url: String, target: File, expected: String?, publishedName: String): Boolean {
+    private fun download(url: String, target: File, expected: String?, publishedName: String, onProgress: (Long, Long) -> Unit): Boolean {
         val part = File(target.parentFile, target.name + ".part")
         return runCatching {
             val connection = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
@@ -485,6 +537,11 @@ class JvmPlatformServices(
                 readTimeout = 20 * 60_000
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", "OpenFlux-Desktop")
+                // The MSI is written to disk as it arrives, so a transport
+                // encoding would store the ENCODED bytes under the name of a
+                // package. "identity" asks for the bytes as they are, and it
+                // keeps Content-Length and the file in agreement.
+                setRequestProperty("Accept-Encoding", "identity")
             }
             // The status code was never looked at here, unlike request() in the
             // same file. A captive portal or a corporate proxy answering 200
@@ -514,19 +571,35 @@ class JvmPlatformServices(
             // is an OOM inside runCatching, which reported exactly what a
             // corrupt download reports, with the cause nowhere. The Android
             // twin already streams.
+            val total = connection.contentLengthLong.takeIf { it > 0 } ?: 0L
             val digest = MessageDigest.getInstance("SHA-256")
+            var done = 0L
             connection.inputStream.use { input ->
                 part.outputStream().use { out ->
                     val buffer = ByteArray(64 * 1024)
+                    onProgress(0L, total)
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
                         digest.update(buffer, 0, read)
                         out.write(buffer, 0, read)
+                        done += read
+                        onProgress(done, total)
                     }
                 }
             }
             if (expected == null) {
+                // A connection cut mid-transfer ends the stream early, with no
+                // error: 20 MB of a 118 MB installer reads as "downloaded". With
+                // no checksum to catch it - the only case on this platform - the
+                // length the server promised is the only evidence left. The
+                // request asks for an unencoded body above, so the length and
+                // the file are counted the same way.
+                if (total > 0 && done != total) {
+                    part.delete()
+                    BrowserLog.problem("Загрузка $publishedName прервана: $done из $total байт")
+                    return false
+                }
                 // Never silent. Android logs exactly this before installing an
                 // APK with no manifest line; on Windows it is not a rare
                 // fallback but the only path that ever runs, because
@@ -551,7 +624,16 @@ class JvmPlatformServices(
             // held open by a just-started msiexec or a scanner - made a failed
             // rename look like a success, and msiexec was handed a file this
             // round never downloaded.
-            target.delete()
+            //
+            // The delete is checked for the other half of the same story: when
+            // the previous installer of THIS version is still running it holds
+            // the file, the rename fails, and the freshly downloaded 118 MB was
+            // thrown away with "не удалось сохранить" as the only trace.
+            if (target.exists() && !target.delete()) {
+                part.delete()
+                BrowserLog.problem("Старый $publishedName занят другой программой — закройте установщик и повторите")
+                return false
+            }
             if (!part.renameTo(target)) {
                 part.delete()
                 BrowserLog.problem("Не удалось сохранить загруженный установщик: $publishedName")
@@ -561,7 +643,17 @@ class JvmPlatformServices(
             } finally {
                 connection.disconnect()
             }
-        }.getOrDefault(false)
+        }.getOrElse { error ->
+            // runCatching catches Throwable, so a cancelled coroutine would be
+            // logged as a network failure and the screen would sit on a false
+            // "не удалось" after the user left it.
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            // The half-file is 118 MB of nothing on a disk that may be small,
+            // and the next attempt starts by writing over it anyway.
+            part.delete()
+            BrowserLog.problem("Не удалось загрузить $publishedName: ${error.message ?: error.javaClass.simpleName}")
+            false
+        }
     }
 
     /** The release's own manifest, restricted to one file. */

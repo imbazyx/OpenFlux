@@ -698,7 +698,16 @@ class AndroidConnectionService(
             val line = raw.trimEnd()
             if (line.isEmpty()) continue
             val level = levelOf(line)
-            if (level == LogLevel.Debug && !settings.settings.value.verboseCoreLog) continue
+            // The markers the connection check reads are kept whatever the
+            // switch says. They are Debugf in the core, so hiding "the core's
+            // log" hid them too - and the check, which on a phone is the only
+            // way to see any of this, read an empty buffer and answered "не
+            // подключено" for a node that was carrying traffic.
+            if (level == LogLevel.Debug && !settings.settings.value.verboseCoreLog &&
+                DIAGNOSTIC_TAGS.none { line.startsWith(it) }
+            ) {
+                continue
+            }
             log(level, line)
         }
     }
@@ -759,6 +768,14 @@ class AndroidConnectionService(
         private val IP = Regex("""^[0-9a-fA-F:.]{3,45}$""")
         /** Lines the app's side of the core writes; the rest is the transports' debug log. */
         private val APP_TAGS = listOf("[ANDROID]", "[NODE]", "[ERROR]", "[SUCCESS]", "[WARN")
+
+        /**
+         * The lines `NodeDiagnostics` reads. Kept in the buffer whatever the
+         * verbose switch says - see drainLogs.
+         */
+        private val DIAGNOSTIC_TAGS = listOf(
+            "[M-DOCS]", "[YDOCS]", "[VOLGA]", "[BOARDS]", "[STATS]", "[L3-STATS]", "[SESSION]",
+        )
 
         fun levelOf(line: String): LogLevel {
             val lower = line.lowercase()

@@ -15,6 +15,7 @@ import android.os.PersistableBundle
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import io.openflux.desktop.platform.ReleaseNotes
 import io.openflux.desktop.updates.compareVersions
 import io.openflux.desktop.updates.pickApk
 import io.openflux.desktop.updates.versionCodeOf
@@ -68,6 +69,7 @@ class AndroidPlatformServices(
     override val kind = PlatformKind.Android
     override val appVersion: String = BuildConfig.VERSION_NAME
     override val coreVersion: String = BuildConfig.CORE_VERSION
+    override val buildDate: String = BuildConfig.BUILD_TIME
     override val clientRepo: String = RELEASE_REPO
     override val systemProxySupported = false
     /** The VPN: the whole phone through the node. */
@@ -291,6 +293,9 @@ class AndroidPlatformServices(
                         downloadUrl = urlFor(abis[hit]),
                         versionCode = versionCodeOf(version),
                         newer = true,
+                        // What the release said changed, so the user decides
+                        // from the description rather than from a file size.
+                        notes = ReleaseNotes.from(feed, tag),
                     ),
                 )
             }
@@ -362,7 +367,7 @@ class AndroidPlatformServices(
         runCatching { Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
     }
 
-    override suspend fun installUpdate(update: AppUpdate): InstallResult = withContext(Dispatchers.IO) {
+    override suspend fun installUpdate(update: AppUpdate, onProgress: (Long, Long) -> Unit): InstallResult = withContext(Dispatchers.IO) {
         val target = java.io.File(context.cacheDir, "update-${update.version}.apk")
         // Every release leaves its installer behind: the file is named after the
         // version, so nothing overwrites an old one and nothing removes it. Each
@@ -377,7 +382,7 @@ class AndroidPlatformServices(
                 if (!stale.delete()) Log.w(TAG, "could not remove the stale installer ${stale.name}")
             }
         val expected = publishedSha256(update.version)
-        val ok = runCatching { download(update.downloadUrl, target, expected) }.getOrElse {
+        val ok = runCatching { download(update.downloadUrl, target, expected, onProgress) }.getOrElse {
             Log.w(TAG, "update download failed", it)
             tell("Не удалось скачать обновление")
             return@withContext InstallResult.Refused(shown = true)
@@ -557,7 +562,18 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
         false
     }
 
-    private fun download(url: String, target: java.io.File, expected: String?): Boolean {
+    /**
+     * Fetches [url] to [target], checking it against [expected] when the
+     * release publishes a checksum for this file. [onProgress] gets
+     * (bytes so far, total or 0) as the copy runs.
+     *
+     * Copied in 64 KB steps and reported here rather than left to
+     * `InputStream.copyTo`, which reports nothing until it finishes. A GitHub
+     * release answers with Content-Length, so the total is normally there; it
+     * is passed as 0 when it is not, and the UI shows a running byte count
+     * without a percentage rather than a bar frozen at zero.
+     */
+    private fun download(url: String, target: java.io.File, expected: String?, onProgress: (Long, Long) -> Unit): Boolean {
         val tmp = java.io.File(target.parentFile, target.name + ".part")
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15000
@@ -566,8 +582,20 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
             setRequestProperty("User-Agent", "OpenFlux-Android")
         }
         try {
+            val total = connection.contentLengthLong.takeIf { it > 0 } ?: 0L
             connection.inputStream.use { input ->
-                tmp.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+                tmp.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var done = 0L
+                    onProgress(0L, total)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        done += read
+                        onProgress(done, total)
+                    }
+                }
             }
         } finally {
             connection.disconnect()
@@ -674,15 +702,23 @@ private fun readApk(file: java.io.File): ApkFacts? = runCatching {
         connection.readTimeout = left
         connection.requestMethod = "HEAD"
         connection.setRequestProperty("User-Agent", "OpenFlux-Android")
-        val code = connection.responseCode
-        connection.disconnect()
-        when {
-            code in 200..399 -> AssetProbe.Found
-            // A definite no, as distinct from a status we cannot read a meaning
-            // out of. Everything else lands in Unexpected, which the message
-            // refuses to interpret rather than inventing a cause.
-            code == 404 -> AssetProbe.Absent
-            else -> AssetProbe.Unexpected(code)
+        // responseCode is the call that throws on a blackholed host, which is
+        // exactly what the timeout above is for - so it must not be the call
+        // that decides whether the socket is released. Without this, each
+        // timed-out probe kept its connection and the checks leaked one per
+        // attempt against a host that is dropping them.
+        try {
+            val code = connection.responseCode
+            when {
+                code in 200..399 -> AssetProbe.Found
+                // A definite no, as distinct from a status we cannot read a meaning
+                // out of. Everything else lands in Unexpected, which the message
+                // refuses to interpret rather than inventing a cause.
+                code == 404 -> AssetProbe.Absent
+                else -> AssetProbe.Unexpected(code)
+            }
+        } finally {
+            connection.disconnect()
         }
     }.getOrElse { AssetProbe.Unreachable(it.javaClass.simpleName + ": " + (it.message ?: "без подробностей")) }
 

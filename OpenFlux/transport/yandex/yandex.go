@@ -398,6 +398,27 @@ func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 		return
 	}
 
+	// The server's answer to the auth message sent in connect. Logged because
+	// the app's "Проверить связь" screen reads the core log to tell the stages
+	// apart, and without a line of its own this transport reported "не
+	// установлено" for every connection - including working ones - because the
+	// only "Auth OK" marker in the codebase belonged to Mail.ru.
+	//
+	// Yandex answers auth with a user object and no rejection marker of its
+	// own, so "an answer arrived at all" is the acceptance signal here; a
+	// denial arrives as a permissions field instead and is caught by the
+	// traffic never moving.
+	if strings.Contains(text, `"type":"auth"`) || strings.Contains(text, `"user"`) && strings.Contains(text, `"id"`) {
+		// From the session, not from a local: `userID` belongs to connect()'s
+		// frame and does not exist in this function.
+		id := ""
+		if session != nil {
+			id = session.UserID
+		}
+		utils.Debugf("[YDOCS] Auth OK for user %s", id)
+		return
+	}
+
 	if strings.Contains(text, "saveChanges") || strings.Contains(text, "cursor") {
 		base64Str := t.extractBase64String(text)
 		if base64Str == "" {

@@ -1,6 +1,9 @@
 package io.openflux.desktop.ui.settings
 
+import io.openflux.desktop.ui.DownloadProgressBar
+import io.openflux.desktop.ui.NodeCheckCard
 import io.openflux.desktop.ui.PlatformBackHandler
+import io.openflux.desktop.ui.ReleaseNotesBlock
 import io.openflux.desktop.model.profile
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
@@ -47,12 +50,16 @@ import cafe.adriel.voyager.navigator.tab.Tab
 import cafe.adriel.voyager.navigator.tab.TabOptions
 import io.openflux.desktop.model.AppSettings
 import io.openflux.desktop.model.ConnectionMode
+import io.openflux.desktop.model.ConnectionState
+import io.openflux.desktop.model.SECRET_KEY_SHAPE
 import io.openflux.desktop.model.CoreSource
 import io.openflux.desktop.model.ThemeMode
 import io.openflux.desktop.model.isActive
+import io.openflux.desktop.diagnostics.NodeDiagnostics
 import io.openflux.desktop.service.AppContainer
 import io.openflux.desktop.service.AppUpdate
 import io.openflux.desktop.service.InstallResult
+import io.openflux.desktop.service.NodeCheckResult
 import io.openflux.desktop.service.UpdateCheck
 import io.openflux.desktop.ui.components.LocalToaster
 import io.openflux.desktop.service.LocalAppContainer
@@ -82,6 +89,7 @@ import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlin.time.TimeSource
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 
@@ -145,7 +153,7 @@ class SettingsScreenModel(val container: AppContainer) : ScreenModel {
 
     /** Cancel [work], but only once the screen is finished and nothing is running. */
     fun collectWorkIfIdle() {
-        if (workShouldBeCollected(gone, installing, checkingRelease)) work.coroutineContext.cancelChildren()
+        if (workShouldBeCollected(gone, installing, checkingRelease || checkingNode)) work.coroutineContext.cancelChildren()
     }
 
     override fun onDispose() {
@@ -165,6 +173,67 @@ class SettingsScreenModel(val container: AppContainer) : ScreenModel {
      */
     var updateChecked by mutableStateOf(false)
     var installing by mutableStateOf(false)
+
+    /**
+     * How much of the download has arrived, as (bytes, total).
+     *
+     * Total 0 means the server sent no length. That is not a bug to hide: a bar
+     * that cannot be computed is drawn as a running byte count instead of a
+     * percentage frozen at zero, which would be a lie about a transfer that is
+     * in fact moving. Zero bytes before the first read is also this state, so
+     * [installing] stays the flag for "a transfer is going on" and this only
+     * carries the numbers.
+     */
+    var downloadProgress by mutableStateOf(0L to 0L)
+
+    /** The notes of the release offered, for the dialog before the download. */
+    val updateNotes: String? get() = view.update?.notes
+
+    /**
+     * How far the last connection attempt actually got.
+     *
+     * Null until a check has run, and that distinction matters: "not checked"
+     * must not draw the same empty card as "checked, reached nothing".
+     */
+    var nodeCheck by mutableStateOf<NodeCheckResult?>(null)
+    var checkingNode by mutableStateOf(false)
+
+    /**
+     * Reads the core's own log and says where the connection stopped.
+     *
+     * Deliberately not a second connection attempt: the log of the attempt the
+     * user just made is real evidence, while a fresh probe would be another
+     * path through the same network that can fail for a different reason and
+     * be believed instead of the one that actually happened.
+     */
+    fun runNodeCheck() {
+        checkingNode = true
+        work.launch {
+            try {
+                // The whole buffer, not its tail: analyze() cuts it at the last
+                // attempt marker itself, and a takeLast() here can cut the
+                // marker off - which silently reopens the stale-failure bug the
+                // cut exists to close.
+                val lines = container.connection.logs.value.map { it.text }
+                // "The core has been up long enough for a 30-second [STATS] line
+                // to have appeared": without it, an idle but healthy node is
+                // reported as "no packet ever" when nobody waited. Reconnecting
+                // counts - the client already knows that carrier is down, and
+                // since is when that started.
+                val since = when (val state = container.connection.state.value) {
+                    is ConnectionState.Connected -> state.since
+                    is ConnectionState.Reconnecting -> state.since
+                    is ConnectionState.Connecting -> state.since
+                    else -> null
+                }
+                val waited = since != null && container.platform.now() - since >= STATS_PERIOD_MS
+                nodeCheck = NodeDiagnostics.analyze(lines, waited)
+            } finally {
+                checkingNode = false
+                if (gone) collectWorkIfIdle()
+            }
+        }
+    }
 
     fun update(transform: (AppSettings) -> AppSettings) = container.settings.update(transform)
 
@@ -190,6 +259,12 @@ class SettingsScreenModel(val container: AppContainer) : ScreenModel {
         checkingRelease = false
     }
 }
+
+/** How often the download bar is allowed to move. See the call site. */
+private const val PROGRESS_MIN_INTERVAL_MS = 120L
+
+/** The core's own stats period (tunnel.go:455): a line per this many seconds. */
+private const val STATS_PERIOD_MS = 30_000L
 
 /**
  * What the update row knows, as one value rather than four that can disagree.
@@ -276,7 +351,11 @@ private fun SettingsScreen(model: SettingsScreenModel) {
                     Spacer(Modifier.height(AppTheme.spacing.xl))
                     Column(Modifier.widthIn(max = 720.dp), verticalArrangement = Arrangement.spacedBy(AppTheme.spacing.l)) {
                         when (model.category) {
-                            SettingsCategory.Connection -> ConnectionSettings(model)
+                            SettingsCategory.Connection -> {
+                                ConnectionSettings(model)
+                                Spacer(Modifier.height(AppTheme.spacing.l))
+                                HowToConnectCard(model.android)
+                            }
                             SettingsCategory.SystemProxy -> SystemProxySettings(model)
                             SettingsCategory.Core -> CoreSettings(model)
                             SettingsCategory.Interface -> InterfaceSettings(model)
@@ -332,6 +411,19 @@ private fun ActiveNotice(model: SettingsScreenModel) {
 private fun ConnectionSettings(model: SettingsScreenModel) {
     val settings by model.container.settings.settings.collectAsState()
     ActiveNotice(model)
+    // First, before any switch: the user who came here to find out why nothing
+    // connects should not have to scroll past port numbers to learn that the
+    // document is fine and the key is not.
+    val check = model.nodeCheck
+    if (check != null || model.checkingNode) {
+        NodeCheckCard(
+            result = check ?: NodeCheckResult(emptyList(), ok = false, problem = null),
+            checking = model.checkingNode,
+            onRun = { model.runNodeCheck() },
+        )
+    } else {
+        AppButton("Проверить связь с нодой", { model.runNodeCheck() })
+    }
     AppCard {
         SectionLabel("Режим работы")
         Spacer(Modifier.height(AppTheme.spacing.s))
@@ -625,6 +717,12 @@ private fun AboutSettings(model: SettingsScreenModel) {
     // promised otherwise; JvmPlatformServices.checkForUpdate and installUpdate
     // are what it needs.
     val canInstall = platform.kind == PlatformKind.Android || platform.kind == PlatformKind.Desktop
+    // Read once, then used. Two separate reads of a property that a coroutine
+    // on another dispatcher can rewrite between them made `!= null` and `!!`
+    // disagree - the check passed, the bang threw, and the settings screen
+    // died on a plain version lookup.
+    val buildDate = platform.buildDate
+    val latestRelease = model.latestRelease
 
     AppCard(padding = 0.dp) {
         // The version and its state on one line: a version alone says nothing
@@ -635,13 +733,23 @@ private fun AboutSettings(model: SettingsScreenModel) {
             platform.appVersion + when {
                 model.checkingRelease -> "  ·  проверяю…"
                 !model.updateChecked -> ""
-                model.updateFailed -> "  ·  не проверить"
+                model.updateFailed -> "  ·  проверка не удалась"
                 update != null && update.newer -> "  ·  вышло обновление ${update.version}"
                 else -> "  ·  последняя версия"
             },
         )
         HorizontalRule()
         KeyValueRow("Ядро OpenFlux", platform.coreVersion)
+        // The date is what settles "у меня свежая сборка или нет" without asking
+        // anyone. On 2026-10-11 a phone on an APK from 2026-10-06 refused to
+        // connect for exactly the reason 2.3.3 fixed, and nothing on screen
+        // could tell the two apart.
+        if (buildDate != null) {
+            HorizontalRule()
+            // "Сборка от" would be a lie on the PC: there the date is the installer
+            // file's own timestamp, i.e. when it was copied to this machine.
+            KeyValueRow(if (platform.kind == PlatformKind.Desktop) "Установлено" else "Сборка от", buildDate)
+        }
         HorizontalRule()
         KeyValueRow(
             "Последний выпуск",
@@ -652,8 +760,8 @@ private fun AboutSettings(model: SettingsScreenModel) {
                 // read "не найден". A user who pressed the button and was told
                 // the release did not exist had no way to tell a working check
                 // from a broken network - and neither did the next reader.
-                model.updateFailed -> "не удалось узнать"
-                model.latestRelease != null -> model.latestRelease!!
+                model.updateFailed -> "не удалось проверить"
+                latestRelease != null -> latestRelease
                 model.updateChecked -> "не найден"
                 else -> "не проверялось"
             },
@@ -672,6 +780,24 @@ private fun AboutSettings(model: SettingsScreenModel) {
             modifier = Modifier.padding(AppTheme.spacing.s),
         )
     }
+    // What the release says changed, shown BEFORE the button so the user reads
+    // it while deciding rather than after a 118 MB download. Absent when the
+    // release published no notes - an empty box is worse than none.
+    if (update != null && update.newer && !model.installing) {
+        val notes = update.notes
+        if (notes != null) {
+            ReleaseNotesBlock(notes, Modifier.padding(AppTheme.spacing.s))
+        }
+    }
+    // The bar replaces the button's own "Устанавливаю…" sentence with the two
+    // facts a waiting user actually wants: how much has arrived and how much
+    // is due. It is drawn from the first moment of the install, before the
+    // first byte - on a slow mobile link the seconds spent connecting used to
+    // show a button that looked hung.
+    if (model.installing) {
+        val (done, total) = model.downloadProgress
+        DownloadProgressBar(done, total, Modifier.padding(AppTheme.spacing.s))
+    }
 
     AppButton(
         when {
@@ -684,6 +810,7 @@ private fun AboutSettings(model: SettingsScreenModel) {
             if (update != null && update.newer && canInstall) {
                 val pending = update
                 model.installing = true
+                var lastProgressAt: Long? = null
                 model.work.launch {
                     // The result used to be discarded, so a failed download or
                     // a refused install left the user with a click that
@@ -693,15 +820,34 @@ private fun AboutSettings(model: SettingsScreenModel) {
                     // running executable.
                     // Every refused path on Android has already named its own cause - "grant the
                     // permission and press again", "signed with a different key" - so a
-                    // blanket "Не удалось установить обновление" on top of that told
+                    // blanket "загрузка не удалась" on top of that told
                     // the user the whole thing had failed immediately after they had
                     // been given the next action. Refused(shown) is what separates
                     // the two; the desktop explains nothing and still gets its
                     // message from here.
                     try {
-                        val result = platform.installUpdate(pending)
+                        val result = platform.installUpdate(pending) { done, total ->
+                            // Throttled. The callback fires on every 64 KB read,
+                            // so a 118 MB installer is about 1800 of them and
+                            // each one is a snapshot write and a recomposition
+                            // of this screen. The bar does not need 1800 frames;
+                            // it needs enough to show motion. Zero and full
+                            // always pass through, so a download that finishes
+                            // inside one window still shows both ends.
+                            // Monotonic, not the wall clock: an NTP step backwards
+                        // mid-download would freeze the bar for the rest of the
+                        // transfer.
+                        val stamp = TimeSource.Monotonic.markNow().elapsedNow().inWholeMilliseconds
+                            val previous = lastProgressAt
+                            if (previous == null || done == 0L || (total > 0 && done >= total) ||
+                                stamp - previous >= PROGRESS_MIN_INTERVAL_MS
+                            ) {
+                                lastProgressAt = stamp
+                                model.downloadProgress = done to total
+                            }
+                        }
                         if (result is InstallResult.Refused && !result.shown) {
-                            toaster.show("Не удалось установить обновление", Tone.Danger)
+                            toaster.show("Не удалось загрузить обновление", Tone.Danger)
                         }
                         if (result is InstallResult.HandedOff && !result.verified) {
                             // The desktop installs an MSI that replaces the
@@ -714,7 +860,7 @@ private fun AboutSettings(model: SettingsScreenModel) {
                             // break the update button for every desktop user -
                             // but it is no longer silent.
                             toaster.show(
-                                "Установщик не сверялся с контрольной суммой выпуска",
+                                "Файл установщика не сверился с контрольной суммой: в выпуске она не опубликована",
                                 Tone.Warning,
                             )
                         }
@@ -735,6 +881,7 @@ private fun AboutSettings(model: SettingsScreenModel) {
                         // throw on the way out used to skip the clear and leave
                         // the button disabled forever.
                         model.installing = false
+                        model.downloadProgress = 0L to 0L
                         // The scope survives a screen that is merely navigated
                         // away from, and is cancelled only when the model is
                         // finished - which may well be while this install is
@@ -828,5 +975,42 @@ private fun LinkRow(title: String, subtitle: String, url: String, open: (String)
             Text(subtitle, style = AppTheme.typography.caption, color = AppTheme.colors.textSecondary)
         }
         androidx.compose.material3.Icon(Icons.AutoMirrored.Rounded.OpenInNew, "Открыть", tint = AppTheme.colors.textHint)
+    }
+}
+
+/**
+ * The three fields a profile needs, written where the person setting up a
+ * second phone will actually look.
+ *
+ * It exists because this knowledge otherwise lives only in a message the owner
+ * sends to each relative separately, and a mistyped key is invisible: nothing
+ * stops a wrong key from being saved, and a minute later it fails with the same
+ * sentence as every other mistake. The editor now also warns when the key does
+ * not look like one this project hands out.
+ */
+@Composable
+private fun HowToConnectCard(android: Boolean) {
+    AppCard {
+        SectionLabel("Как подключить телефон")
+        Spacer(Modifier.height(AppTheme.spacing.s))
+        listOf(
+            "1. В разделе «Профили» откройте нужный профиль",
+            "2. В настройках режим — «Клиент (SOCKS5)», в самом профиле режим оставьте «Обычный»",
+            "3. Транспорт — «Mail.ru Docs» или «Yandex Docs», как в ссылке от ноды",
+            "4. Вставьте адрес документа целиком, вместе с https://",
+            "5. Вставьте ключ шифрования: $SECRET_KEY_SHAPE",
+        ).forEach { line ->
+            Text(line, style = AppTheme.typography.bodySmall, color = AppTheme.colors.textSecondary)
+            Spacer(Modifier.height(AppTheme.spacing.xs))
+        }
+        Text(
+            if (android) {
+                "Ключ и адрес должны быть из одной пары. Если подключение не идёт — откройте «Где остановилось подключение» в настройках."
+            } else {
+                "Если подключение не идёт — откройте «Где остановилось подключение» в настройках."
+            },
+            style = AppTheme.typography.bodySmall,
+            color = AppTheme.colors.textHint,
+        )
     }
 }

@@ -542,6 +542,30 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 		return
 	}
 
+	// The other half of the answer, and the reason the wait used to be
+	// useless. Before this branch existed only "result":1 was handled: a
+	// rejection - wrong encryption key, a document that no longer grants
+	// access, a key from another profile - fell through every `if` below and
+	// left nothing in the log at all. The client then sat on
+	// "Транспорт не подключился за 30 секунд" with no way to tell a wrong key
+	// from a document nobody is in, which is the single longest thing to
+	// diagnose by hand. Logged, not counted: the reconnect loop already owns
+	// what happens next, and the diagnostic on the app side reads this line.
+	if strings.Contains(text, `"type":"auth"`) {
+		// The server's own words, capped. The raw frame also carries the
+		// cursor and the session id, and those are not the user's business.
+		reason := "отказано без пояснения"
+		if i := strings.Index(text, `"reason"`); i >= 0 {
+			tail := text[i+len(`"reason"`):]
+			tail = strings.TrimPrefix(tail, ":")
+			if end := strings.IndexAny(tail, `",}`); end >= 0 {
+				reason = strings.TrimSpace(tail[:end])
+			}
+		}
+		utils.Debugf("[M-DOCS] Auth REJECTED: %s", reason)
+		return
+	}
+
 	if strings.Contains(text, "cursor") {
 		base64Str := t.extractBase64String(text)
 		if base64Str == "" {

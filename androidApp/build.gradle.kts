@@ -1,3 +1,6 @@
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.kotlinAndroid)
@@ -22,6 +25,16 @@ val appVersionCode = appVersion.split('.', '-').take(3).map { it.toIntOrNull() ?
 /** The core the gomobile library was built from, written by scripts/build-android-core.sh. */
 val coreVersion = file("libs/openflux-core.version").takeIf { it.isFile }?.readText()?.trim() ?: "встроенное"
 
+/**
+ * When this build was made, as "yyyy-MM-dd HH:mm" in the local zone.
+ *
+ * Read once here rather than inside the build task, because the value has to
+ * be identical in all five APKs of one release: resolving it lazily per
+ * variant would put different minutes into different files, and the settings
+ * screen would show five build dates for one version.
+ */
+val buildTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+
 kotlin {
     jvmToolchain(17)
 }
@@ -38,6 +51,12 @@ android {
         versionCode = appVersionCode
         versionName = appVersion
         buildConfigField("String", "CORE_VERSION", "\"$coreVersion\"")
+        // When the build was made, for the settings screen. A user who cannot
+        // tell a fresh install from a month-old one cannot act on a release
+        // note, and "обновить" without a date is a button nobody presses.
+        // Fixed at configure time so every APK of one release agrees; a build
+        // that spans a midnight boundary would otherwise differ per ABI.
+        buildConfigField("String", "BUILD_TIME", "\"${buildTime}\"")
     }
 
     buildFeatures {

@@ -16,7 +16,8 @@ import kotlin.test.assertTrue
 
 class CoreConfigTest {
     private val paths = CorePaths("C:/rt/key", "C:/rt/p.conf", "C:/cfg/cookies/p.json", "C:/rt/ipc.sock")
-    private val secret = "f".repeat(64)
+    // The shape provision.NewKey() produces and the app's generator writes.
+    private val secret = "0123456789abcdef".repeat(4)
     private val session = Profile(
         id = "p",
         name = "Nodes",
@@ -45,6 +46,12 @@ class CoreConfigTest {
             listOf(
                 "--config", "C:/rt/p.conf", "--session-context=https://disk.yandex.ru/i/one", "--ipc-socket=C:/rt/ipc.sock",
                 "--http-proxy=127.0.0.1:1091",
+                // Operational logs are always on, packets are not. The
+                // "Проверить связь" screen reads the [M-DOCS] markers, and
+                // utils.Debugf is silent below --debug 2 - so without these the
+                // check answered "не установлено" on every desktop, working or
+                // not. --no-packets is what makes it safe.
+                "--debug=2", "--no-packets",
             ),
             launch.arguments,
         )
@@ -54,13 +61,22 @@ class CoreConfigTest {
     }
 
     @Test
+    fun verboseCoreLogSwapsNoPacketsForPackets() {
+        // The user's own switch still wins: with it on, the per-packet lines
+        // they asked for must actually appear, which means --no-packets goes.
+        val launch = CoreConfig.build(session, AppSettings(verboseCoreLog = true), paths)
+        assertTrue("--debug=2" in launch.arguments)
+        assertFalse("--no-packets" in launch.arguments, "пользователь просил пакеты в журнале")
+    }
+
+    @Test
     fun fullTunnelUsesTheTunInboundAndNoProxies() {
         val launch = CoreConfig.build(session, AppSettings(fullTunnel = true), paths)
         val conf = launch.conf!!
         assertTrue("Inbound = tun" in conf)
         assertFalse("Socks5" in conf)
         assertEquals(
-            listOf("--config", "C:/rt/p.conf", "--session-context=https://disk.yandex.ru/i/one", "--ipc-socket=C:/rt/ipc.sock"),
+            listOf("--config", "C:/rt/p.conf", "--session-context=https://disk.yandex.ru/i/one", "--ipc-socket=C:/rt/ipc.sock", "--debug=2", "--no-packets"),
             launch.arguments,
         )
         assertNull(launch.socksAddress)
@@ -104,6 +120,8 @@ class CoreConfigTest {
                 // core publishes its traffic counters, and without it the app
                 // had nothing to show and read zero.
                 "--ipc-socket=C:/rt/ipc.sock",
+                // Same as session: operational markers on, packet lines off.
+                "--debug=2", "--no-packets",
             ),
             launch.arguments,
         )

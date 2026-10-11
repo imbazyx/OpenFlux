@@ -81,7 +81,12 @@ class ProfilesScreenModel(private val container: AppContainer) : ScreenModel {
     /** Saves the draft when it can connect; otherwise shows what is missing. */
     fun save(): Boolean {
         val state = editor ?: return false
-        val draft = state.draft.copy(name = state.draft.name.trim())
+        // The key is trimmed on save, not only in the editor field: the editor
+        // trims what the user types, but a key pasted into the wizard or
+        // imported from a link arrives with its newline. Go trims the key file
+        // (main.go:713) and the Android bridge does not (mobile/session.go:64),
+        // so an untrimmed save connects on the PC and fails on the phone.
+        val draft = state.draft.copy(name = state.draft.name.trim(), secret = state.draft.secret.trim())
         if (draft.problems().isNotEmpty()) {
             editor = state.copy(showProblems = true)
             return false

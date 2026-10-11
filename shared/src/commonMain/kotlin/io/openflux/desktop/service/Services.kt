@@ -85,6 +85,17 @@ interface PlatformServices {
     val kind: PlatformKind get() = PlatformKind.Desktop
     val appVersion: String
     val coreVersion: String
+
+    /**
+     * When this build was made, as "yyyy-MM-dd HH:mm", or null when the
+     * platform cannot tell.
+     *
+     * Next to the version it settles "новое у меня или старое" without a single
+     * further question. Today that cost the owner hours: a phone on an APK from
+     * 2026-10-06 refused to connect for exactly the reason 2.3.3 fixed, and
+     * the two looked identical from the outside. A date makes them not.
+     */
+    val buildDate: String? get() = null
     /**
      * Where this app's own releases are published, e.g. "imbazyx/OpenFlux".
      *
@@ -185,10 +196,50 @@ interface PlatformServices {
      * Whether the user actually accepts the install is not this method's
      * business - it does not learn the outcome, which is [InstallResult]'s
      * whole reason for existing rather than a Boolean.
+     *
+     * [onProgress] is called with (bytes so far, total or 0 when the server
+     * sends no length) while the file comes down. It exists because the APK is
+     * 19 MB and the MSI is 118 MB, and the window used to be a frozen button:
+     * a user who cannot tell a slow download from a hung one waits for nothing
+     * and presses nothing. A callback rather than a Flow, because this call is
+     * a single blocking step that hands off to the OS at the end - there is
+     * nothing to observe after it returns, and a Flow would only add a
+     * collector whose lifetime the caller has to get right.
      */
-    suspend fun installUpdate(update: AppUpdate): InstallResult =
+    suspend fun installUpdate(update: AppUpdate, onProgress: (Long, Long) -> Unit = { _, _ -> }): InstallResult =
         InstallResult.Refused(shown = false)
 }
+
+/**
+ * The stages a connection goes through, in the order it gets stuck.
+ *
+ * Phrased as what has HAPPENED, not as what is being checked: a list of
+ * "адрес документа / разрешение имени" reads as a form to fill, and this list
+ * is a verdict. "Разрешение имени" also means nothing outside a help desk -
+ * it is DNS.
+ */
+enum class NodeCheckStage(val label: String) {
+    Document("Документ открыт"),
+    Dns("Адрес в интернете найден"),
+    WebSocket("Канал с документом открыт"),
+    Authorize("Ключ принят"),
+    FirstPacket("Данные идут"),
+}
+
+/**
+ * How far a connection attempt got, and what stopped it.
+ *
+ * Produced by `NodeDiagnostics`, which reads the core's own log rather than
+ * running a second connection. [reached] is the whole path crossed off, not
+ * only the last stage, so the screen can show a user which side of the problem
+ * they are on.
+ */
+data class NodeCheckResult(
+    val reached: List<NodeCheckStage>,
+    val ok: Boolean,
+    /** Why it stopped, already in Russian and already actionable; null when [ok]. */
+    val problem: String?,
+)
 
 /**
  * How far an install attempt got.
@@ -260,6 +311,16 @@ data class AppUpdate(
     val downloadUrl: String,
     val versionCode: Int,
     val newer: Boolean,
+    /**
+     * What the release says changed, in the owner's words, or null when the
+     * release published nothing.
+     *
+     * Shown before the user commits to a 118 MB download, so "обновление есть"
+     * is not the whole message - the question a user actually has is "а что
+     * поменялось". Kept as the release wrote it rather than generated, because
+     * a generated changelog of filenames is worse than none.
+     */
+    val notes: String? = null,
 )
 
 /**

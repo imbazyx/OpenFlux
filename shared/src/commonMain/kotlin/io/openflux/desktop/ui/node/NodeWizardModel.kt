@@ -260,7 +260,7 @@ class NodeWizardModel(private val container: AppContainer, private val scope: Co
             shareLink = link
             val candidate = Profile.fromShare(
                 container.shareCodec.decode(link), container.profiles.newId(), container.platform.now(), ProfileSource.Node,
-            ).copy(icon = "ic_terminal")
+            ).copy(icon = "ic_terminal", secret = channel.key.trim())
             profile = candidate
             verifyNow(candidate)
         }
@@ -397,7 +397,11 @@ class NodeWizardModel(private val container: AppContainer, private val scope: Co
     /** Saves the profile here; returns it, or null when there is none. */
     fun save(): Profile? {
         val candidate = profile ?: return null
-        val named = candidate.copy(name = profileName())
+        // The key is trimmed on the way in, like the editor does: this one is
+        // built from a channel key read on the node or generated here, and a
+        // newline that survives into the profile is a key the phone will use
+        // verbatim.
+        val named = candidate.copy(name = profileName(), secret = candidate.secret.trim())
         container.profiles.upsert(named)
         profile = named
         saved = true

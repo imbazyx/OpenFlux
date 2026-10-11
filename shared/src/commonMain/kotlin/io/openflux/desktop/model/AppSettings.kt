@@ -77,6 +77,18 @@ data class AppSettings(
     val knownHostKeys: Map<String, String> = emptyMap(),
     /** Node wizard: servers used before, newest first. No passwords. */
     val knownServers: List<KnownServer> = emptyList(),
+    /**
+     * Release the user pressed "Позже" on, when.
+     *
+     * A dismissal has to expire, or "позже" becomes "никогда" and a user who
+     * said they would look later is never offered the release again. Stored as
+     * the epoch millis of the dismissal; a version the user has since already
+     * updated past no longer matches, so the field retires itself.
+     */
+    val deferredUpdateVersion: String = "",
+    val deferredUpdateAt: Long = 0,
+    /** Whether the app may check for a new release on its own at startup. */
+    val autoCheckUpdates: Boolean = true,
 )
 
 /** Settings from an older version, brought up to date once on load. */

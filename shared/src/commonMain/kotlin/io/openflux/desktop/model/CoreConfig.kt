@@ -28,6 +28,24 @@ object CoreConfig {
     /** -dd: operational logs; a bare --debug is -d, packet lines only. */
     const val VERBOSE_LOG = "--debug=2"
 
+    /**
+     * Operational logs WITHOUT the per-packet flood.
+     *
+     * The diagnostic on the connection screen reads the core's own log - the
+     * `[M-DOCS]` markers that say whether the document opened, whether the
+     * server refused the upgrade and whether the key was accepted. All of them
+     * go through `utils.Debugf`, which is silent below `--debug 2`, so a
+     * desktop build with the switch off showed an empty log and the check
+     * answered "не установлено" for every connection, working or not.
+     *
+     * `--no-packets` is what makes turning it on safe: it silences the
+     * per-packet lines and keeps the operational ones, so the answer becomes
+     * knowable without turning the log into thousands of lines a minute. The
+     * user who wants the packets still has `verboseCoreLog`, which keeps its
+     * own flag and drops this one.
+     */
+    const val QUIET_OPERATIONAL_LOG = "--no-packets"
+
     fun build(profile: Profile, settings: AppSettings, paths: CorePaths): CoreLaunch {
         val problems = profile.problems()
         require(problems.isEmpty()) { problems.first() }
@@ -91,7 +109,8 @@ object CoreConfig {
             } else if (!settings.fullTunnel) {
                 add("--http-proxy=$http")
             }
-            if (settings.verboseCoreLog) add(VERBOSE_LOG)
+            add(VERBOSE_LOG)
+            if (!settings.verboseCoreLog) add(QUIET_OPERATIONAL_LOG)
         }
         val proxies = !exit && !settings.fullTunnel
         return CoreLaunch(args, conf, if (proxies) socks else null, if (proxies) http else null, usesIpc = paths.ipcSocket != null)
@@ -120,7 +139,8 @@ object CoreConfig {
             // The core reports traffic counters over this socket, and a classic
             // profile used to pass none, so the app showed zeros.
             if (paths.ipcSocket != null) add("--ipc-socket=${paths.ipcSocket}")
-            if (settings.verboseCoreLog) add(VERBOSE_LOG)
+            add(VERBOSE_LOG)
+            if (!settings.verboseCoreLog) add(QUIET_OPERATIONAL_LOG)
         }
         return if (settings.fullTunnel) CoreLaunch(args, null, null, null, usesIpc = paths.ipcSocket != null)
         else CoreLaunch(args, null, socks, http, usesIpc = paths.ipcSocket != null)

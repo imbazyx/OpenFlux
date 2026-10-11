@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import io.openflux.desktop.model.Codec
 import io.openflux.desktop.model.ExtraTransport
 import io.openflux.desktop.model.Profile
+import io.openflux.desktop.model.SECRET_KEY_SHAPE
 import io.openflux.desktop.model.TransportType
 import io.openflux.desktop.model.ValueKind
 import io.openflux.desktop.ui.LocalScrollbars
@@ -116,6 +117,12 @@ fun ProfileEditor(model: ProfilesScreenModel, state: EditorState, onBack: (() ->
                 if (state.showProblems) {
                     val problems = draft.problems()
                     if (problems.isNotEmpty()) Banner(problems.joinToString("\n"), Tone.Danger, icon = Icons.Rounded.WarningAmber)
+                }
+                // A warning, not a refusal: the core accepts any secret of
+                // MIN_SECRET characters, and a key installed by hand on a node
+                // is a working key whatever it looks like.
+                draft.keyShapeWarning()?.let {
+                    Banner(it, Tone.Warning, icon = Icons.Rounded.WarningAmber)
                 }
 
                 AppTextField(draft.name, { v -> model.updateDraft { it.copy(name = v) } }, label = "Название", placeholder = "Например, Нода в Нидерландах")
@@ -202,7 +209,7 @@ fun ProfileEditor(model: ProfilesScreenModel, state: EditorState, onBack: (() ->
                         placeholder = if (draft.session) "Обязателен в режиме Session" else "Необязательно",
                         secret = true,
                         monospace = true,
-                        helper = "Тот же ключ, что у ноды. Не короче ${Profile.MIN_SECRET} символов.",
+                        helper = "Тот же ключ, что у ноды: $SECRET_KEY_SHAPE.",
                     )
                     TextAction("Сгенерировать безопасный ключ", { model.updateDraft { it.copy(secret = model.newSecret()) } })
                 }

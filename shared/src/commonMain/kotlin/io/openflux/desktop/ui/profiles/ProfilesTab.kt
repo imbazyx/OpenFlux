@@ -436,9 +436,17 @@ private fun ProfileDetails(model: ProfilesScreenModel, profile: Profile, state: 
                 KeyValueRow("Источник", profile.source.label)
             }
             val problems = profile.problems()
-            if (problems.isNotEmpty()) {
+            val shape = profile.keyShapeWarning()
+            if (problems.isNotEmpty() || shape != null) {
                 Spacer(Modifier.height(AppTheme.spacing.l))
-                io.openflux.desktop.ui.components.Banner(problems.joinToString("\n"), Tone.Warning)
+                // The shape is a warning and not a problem: it is shown here as
+                // well as in the editor, because a profile imported from a link
+                // or made by the wizard is never opened in the editor, and this
+                // is the screen a user looks at when something does not work.
+                io.openflux.desktop.ui.components.Banner(
+                    (listOfNotNull(problems.takeIf { it.isNotEmpty() }?.joinToString("\n"), shape)).joinToString("\n"),
+                    Tone.Warning,
+                )
             }
             Spacer(Modifier.height(AppTheme.spacing.xl))
             ButtonRow {
