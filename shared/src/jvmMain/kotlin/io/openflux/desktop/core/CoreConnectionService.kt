@@ -195,18 +195,19 @@ class CoreConnectionService(
                 files += it
             } else null
             val confFile = File(runtime, "profile-$tag.conf")
+            // The socket is created for every profile, not just Session ones.
+            // The core reads traffic counters off it, and a classic profile
+            // used to get none, which is why the numbers stayed at zero.
             // AF_UNIX sockets do not work under every folder on Windows
             // (AppData\Roaming and \Local fail with EINVAL); the temp folder does.
-            val ipcSocket = if (profile.session) {
-                val dir = Files.createTempDirectory("openflux-ipc-").toFile()
-                files += dir
-                File(dir, "core.sock").also { files += it }
-            } else null
+            val ipcDir = Files.createTempDirectory("openflux-ipc-").toFile()
+            files += ipcDir
+            val ipcSocket = File(ipcDir, "core.sock").also { files += it }
             val paths = CorePaths(
                 keyFile = keyFile?.absolutePath,
                 confFile = confFile.absolutePath,
                 cookieStore = File(AppDirs.config, "cookies/$tag.json").also { it.parentFile.mkdirs() }.absolutePath,
-                ipcSocket = ipcSocket?.absolutePath,
+                ipcSocket = ipcSocket.absolutePath,
             )
             val launch = CoreConfig.build(profile, current, paths)
             if (launch.conf != null) {

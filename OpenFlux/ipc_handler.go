@@ -11,6 +11,11 @@ import (
 // It receives commands and cookies from the mobile app and forwards them
 // to the manager. When the core needs fresh cookies (SmartCaptcha), the
 // manager calls SetCaptchaNotifier, whose callback fires into IPC.
+//
+// The manager is nil on the classic single-transport path, which has no
+// Manager to hand cookies to. That path still gets the status stream, so the
+// app can show traffic, and a cookie offer arriving there is a protocol
+// mistake rather than something to act on.
 type coreIPCHandler struct {
 	manager *manager.Manager
 }
@@ -26,6 +31,10 @@ func (h *coreIPCHandler) OnCommand(p *ipc.CommandPayload) {
 func (h *coreIPCHandler) OnCookies(p *ipc.CookiesOfferPayload) {
 	if p == nil || p.Transport == "" || len(p.Jar) == 0 {
 		utils.Debugf("[IPC] empty cookies offer, ignoring")
+		return
+	}
+	if h.manager == nil {
+		utils.Debugf("[IPC] cookies offer for %q on a profile without a manager, ignoring", p.Transport)
 		return
 	}
 	if p.Remote {

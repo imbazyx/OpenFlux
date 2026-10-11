@@ -746,6 +746,22 @@ DEPRECATED (removed in v2)
 		demux       *transport.PortDemux
 	)
 
+	// The IPC bridge is created before the transport is built, so the hooks
+	// below can reach it. It is created outside the Session branch on
+	// purpose: the classic single-transport path has no Manager, and it is
+	// exactly that path whose traffic numbers the app used to show as zero.
+	// Without --ipc-socket there is no app to report to, which is what a
+	// bare CLI run is.
+	if *ipcSocketPath != "" {
+		ipcHandler = &coreIPCHandler{}
+		srv := ipc.NewServer(*ipcSocketPath, ipcHandler)
+		if err := srv.Listen(); err != nil {
+			log.Fatalf("IPC listen %s: %v", *ipcSocketPath, err)
+		}
+		defer srv.Close()
+		statusServer = srv
+	}
+
 	// [Transport] sections in a .conf describe a multi-transport session
 	// just like --transports; without this they were silently ignored and
 	// only the single --transport ran.
@@ -792,23 +808,18 @@ DEPRECATED (removed in v2)
 		// Hook the Session control dispatcher into the manager.
 		sess.SetControlHandler(managerInst.DispatchControl)
 
-		// Optional IPC bridge: if --ipc-socket is set, the core talks to the
-		// mobile app over a Unix domain socket. Transport-initiated captcha
-		// requests go out as MsgCookiesRequest; cookies offers come in as
-		// MsgCookiesOffer.
-		if *ipcSocketPath != "" {
-			h := &coreIPCHandler{manager: managerInst}
-			srv := ipc.NewServer(*ipcSocketPath, h)
-			if err := srv.Listen(); err != nil {
-				log.Fatalf("IPC listen %s: %v", *ipcSocketPath, err)
-			}
-			defer srv.Close()
-			statusServer = srv
-
+		// Optional IPC bridge: the core talks to the app over a Unix domain
+		// socket. The server itself is created further down, once the
+		// transport is known, so the classic single-transport path reports
+		// traffic too; only these manager-specific hooks belong here.
+		if statusServer != nil {
+			// The handler needs the Manager now that it exists. The legacy
+			// path leaves it nil, which OnCookies checks for.
+			ipcHandler.manager = managerInst
 			// Checks for local transports go to the app as-is; checks the
 			// exit reports are marked Remote, to be passed from its address.
 			managerInst.SetCaptchaNotifier(func(name, url, reason string) {
-				_ = srv.SendCookiesRequest(&ipc.CookiesRequestPayload{
+				_ = statusServer.SendCookiesRequest(&ipc.CookiesRequestPayload{
 					Transport: name, URL: url, Reason: reason,
 				})
 			})
@@ -820,12 +831,16 @@ DEPRECATED (removed in v2)
 					if err != nil {
 						log.Printf("remote auth proxy: %v", err)
 					}
-					_ = srv.SendCookiesRequest(&ipc.CookiesRequestPayload{
+					_ = statusServer.SendCookiesRequest(&ipc.CookiesRequestPayload{
 						Transport: name, URL: url, Reason: reason, Remote: true, Proxy: proxy,
 					})
 				})
 			}
 		}
+
+		statusStats = managerInst.Stats
+		statusConnected = managerInst.IsConnected
+		statusActive = managerInst.Session().ActiveTransport
 
 		trans = managerInst
 		if demux != nil {
@@ -888,6 +903,9 @@ DEPRECATED (removed in v2)
 		}
 
 		trans = inner
+		statusStats = trans.Stats
+		statusConnected = trans.IsConnected
+		statusActive = func() string { return *transportType }
 	}
 
 	_ = exchanger
@@ -954,8 +972,16 @@ DEPRECATED (removed in v2)
 	}
 }
 
-// statusServer is the IPC bridge, set when --ipc-socket is given.
-var statusServer *ipc.Server
+// statusServer is the IPC bridge, set when --ipc-socket is given. The
+// handler starts with a nil Manager and is given one inside the Session
+// branch, so the server can be created before the transport is known.
+var (
+	statusServer    *ipc.Server
+	ipcHandler      *coreIPCHandler
+	statusStats     func() transport.TransportStats
+	statusConnected func() bool
+	statusActive    func() string
+)
 
 // ipcStatusLoop reports the session to the app every second: whether a
 // carrier reaches the peer, traffic totals, uptime and the active carrier.

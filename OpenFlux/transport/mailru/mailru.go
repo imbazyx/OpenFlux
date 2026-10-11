@@ -30,7 +30,10 @@ import (
 	"openflux/utils"
 )
 
-const mailruUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+// A current UA, and the other half of the fix for the 409: Mail.ru's edge
+// refuses the upgrade when it sees the older Chrome/137 string as well. One
+// constant serves both the REST API and the upgrade, so both always agree.
+const mailruUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0"
 
 // maxWSMessageBytes caps one WebSocket message. A tunnel frame is at most 1 MiB
 // (transport/framing.go), so a few megabytes leaves generous headroom for a
@@ -234,7 +237,18 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		}
 
 		dialer := websocket.Dialer{
-			HandshakeTimeout: 15 * time.Second,
+			// gorilla/websocket only offers Sec-WebSocket-Extensions:
+			// permessage-deflate when this is set, and Mail.ru's edge refuses
+			// the upgrade with 409 when that header is absent. Measured on the
+			// live service with scripts/wsprobe: old UA without compression
+			// answers 409, and either change on its own answers 101.
+			//
+			// The service does not answer with the extension, so nothing is
+			// actually compressed: no CPU is spent on an already encrypted and
+			// batched payload, and SetReadLimit below still counts the same
+			// bytes it always did.
+			EnableCompression: true,
+			HandshakeTimeout:  15 * time.Second,
 			NetDialContext: netbind.Wrap(&net.Dialer{
 				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,

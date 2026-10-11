@@ -100,10 +100,23 @@ class CoreConfigTest {
                 "--role=client", "--inbound=socks5", "--socks5=127.0.0.1:1080", "--http-proxy=127.0.0.1:1081",
                 "--transport=yandex", "--codec=batched", "--url=https://disk.yandex.ru/i/x",
                 "--cookie-store=C:/cfg/cookies/p.json",
+                // A classic profile gets the status socket too: it is where the
+                // core publishes its traffic counters, and without it the app
+                // had nothing to show and read zero.
+                "--ipc-socket=C:/rt/ipc.sock",
             ),
             launch.arguments,
         )
-        assertFalse(launch.usesIpc)
+        assertTrue(launch.usesIpc)
+    }
+
+    /** The socket is how the app learns the counters; losing it means zeros. */
+    @Test
+    fun classicReportsTraffic() {
+        val classic = Profile(id = "c", name = "Old", transport = TransportType.YANDEX, value = "https://disk.yandex.ru/i/x")
+        val launch = CoreConfig.build(classic, AppSettings(), paths.copy(keyFile = null))
+        assertTrue("--ipc-socket=C:/rt/ipc.sock" in launch.arguments)
+        assertTrue(launch.usesIpc)
     }
 
     @Test

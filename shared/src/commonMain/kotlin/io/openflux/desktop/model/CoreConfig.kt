@@ -117,10 +117,13 @@ object CoreConfig {
             }
             if (paths.keyFile != null) add("--encryption-key-file=${paths.keyFile}")
             add("--cookie-store=${paths.cookieStore}")
+            // The core reports traffic counters over this socket, and a classic
+            // profile used to pass none, so the app showed zeros.
+            if (paths.ipcSocket != null) add("--ipc-socket=${paths.ipcSocket}")
             if (settings.verboseCoreLog) add(VERBOSE_LOG)
         }
-        return if (settings.fullTunnel) CoreLaunch(args, null, null, null, usesIpc = false)
-        else CoreLaunch(args, null, socks, http, usesIpc = false)
+        return if (settings.fullTunnel) CoreLaunch(args, null, null, null, usesIpc = paths.ipcSocket != null)
+        else CoreLaunch(args, null, socks, http, usesIpc = paths.ipcSocket != null)
     }
 
     /** .conf values end at '#' or ';' (comments); refuse ones that would be cut. */
