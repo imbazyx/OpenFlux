@@ -1,6 +1,8 @@
 package main
 
 import (
+	"sync"
+
 	"openflux/transport/ipc"
 	"openflux/transport/manager"
 	"openflux/utils"
@@ -17,7 +19,18 @@ import (
 // app can show traffic, and a cookie offer arriving there is a protocol
 // mistake rather than something to act on.
 type coreIPCHandler struct {
+	mu      sync.RWMutex
 	manager *manager.Manager
+}
+
+// setManager is called once the Manager exists, which happens only on the
+// Session path, after the IPC socket is already listening. Guarding the field
+// instead of writing it unlocked avoids the read/write race between the
+// session-startup goroutine and the server goroutine that calls OnCookies.
+func (h *coreIPCHandler) setManager(m *manager.Manager) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.manager = m
 }
 
 func (h *coreIPCHandler) OnConnect()    { utils.Debugf("[IPC] app connected") }
@@ -33,7 +46,10 @@ func (h *coreIPCHandler) OnCookies(p *ipc.CookiesOfferPayload) {
 		utils.Debugf("[IPC] empty cookies offer, ignoring")
 		return
 	}
-	if h.manager == nil {
+	h.mu.RLock()
+	m := h.manager
+	h.mu.RUnlock()
+	if m == nil {
 		utils.Debugf("[IPC] cookies offer for %q on a profile without a manager, ignoring", p.Transport)
 		return
 	}

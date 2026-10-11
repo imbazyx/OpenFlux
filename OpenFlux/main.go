@@ -813,9 +813,9 @@ DEPRECATED (removed in v2)
 		// transport is known, so the classic single-transport path reports
 		// traffic too; only these manager-specific hooks belong here.
 		if statusServer != nil {
-			// The handler needs the Manager now that it exists. The legacy
-			// path leaves it nil, which OnCookies checks for.
-			ipcHandler.manager = managerInst
+			// The handler needs the Manager now that it exists; the legacy
+			// path stays nil, which OnCookies checks for under the lock.
+			ipcHandler.setManager(managerInst)
 			// Checks for local transports go to the app as-is; checks the
 			// exit reports are marked Remote, to be passed from its address.
 			managerInst.SetCaptchaNotifier(func(name, url, reason string) {
@@ -929,8 +929,13 @@ DEPRECATED (removed in v2)
 		log.Fatalf("Failed to start transport: %v", err)
 	}
 
-	if statusServer != nil && managerInst != nil {
-		utils.SafeGo("ipc-status", func() { ipcStatusLoop(statusServer, managerInst) })
+	// The status loop used to be gated on managerInst != nil, which silently
+	// disabled it for the classic single-transport path: that path has a
+	// transport with real counters, just no Manager, so the app saw zeros.
+	// Now both paths populate statusStats/statusConnected/statusActive above.
+	if statusServer != nil && statusStats != nil {
+		stats, connected, active := statusStats, statusConnected, statusActive
+		utils.SafeGo("ipc-status", func() { ipcStatusLoop(statusServer, stats, connected, active) })
 	}
 
 	// Periodically ask the exit node to refresh its cookies. Only the client
@@ -985,19 +990,24 @@ var (
 
 // ipcStatusLoop reports the session to the app every second: whether a
 // carrier reaches the peer, traffic totals, uptime and the active carrier.
-func ipcStatusLoop(srv *ipc.Server, m *manager.Manager) {
+// It takes the status providers as callables so one loop body serves both the
+// Session path (which has a *manager.Manager) and the classic single
+// transport path (which only has a transport.Transport). Both expose the same
+// Stats/IsConnected surface.
+func ipcStatusLoop(srv *ipc.Server, stats func() transport.TransportStats,
+	connected func() bool, active func() string) {
 	started := time.Now()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for range tick.C {
-		st := m.Stats()
+		st := stats()
 		_ = srv.SendStatus(&ipc.StatusPayload{
 			Running:   true,
-			Connected: m.IsConnected(),
+			Connected: connected(),
 			BytesIn:   st.BytesReceived,
 			BytesOut:  st.BytesSent,
 			UptimeMs:  time.Since(started).Milliseconds(),
-			Active:    m.Session().ActiveTransport(),
+			Active:    active(),
 		})
 	}
 }

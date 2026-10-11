@@ -247,6 +247,14 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			// actually compressed: no CPU is spent on an already encrypted and
 			// batched payload, and SetReadLimit below still counts the same
 			// bytes it always did.
+			//
+			// Two things would change if it ever did. gorilla counts the read
+			// limit in wire bytes, so a compressed frame could expand past
+			// maxWSMessageBytes. And gorilla refuses the whole handshake if a
+			// server answers permessage-deflate without both
+			// *_no_context_takeover params, turning a working link into a hard
+			// failure. scripts/wsprobe checks the negotiated response, so run it
+			// if this transport starts failing the upgrade.
 			EnableCompression: true,
 			HandshakeTimeout:  15 * time.Second,
 			NetDialContext: netbind.Wrap(&net.Dialer{
