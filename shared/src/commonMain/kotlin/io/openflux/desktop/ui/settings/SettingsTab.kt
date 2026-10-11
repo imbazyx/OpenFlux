@@ -422,7 +422,7 @@ private fun ConnectionSettings(model: SettingsScreenModel) {
             onRun = { model.runNodeCheck() },
         )
     } else {
-        AppButton("Проверить связь с нодой", { model.runNodeCheck() })
+        AppButton("Показать, на чём остановилось", { model.runNodeCheck() })
     }
     AppCard {
         SectionLabel("Режим работы")

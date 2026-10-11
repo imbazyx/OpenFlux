@@ -85,7 +85,7 @@ fun UpdateWatcher(container: AppContainer, settings: AppSettings) {
                     }
                 when {
                     result is InstallResult.HandedOff && !result.verified -> toaster.show(
-                        "Установщик запущен. Контрольная сумма в выпуске не опубликована — файл не сверялся",
+                        "Файл установщика не сверился с контрольной суммой: в выпуске она не опубликована",
                         Tone.Warning,
                     )
                     result is InstallResult.HandedOff -> toaster.show("OpenFlux ${pending.version}: установка…")
