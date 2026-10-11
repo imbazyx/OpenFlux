@@ -372,9 +372,8 @@ object NodeDiagnostics {
      *
      * ponytail: established counts the client's own TCP sessions, not carrier
      * liveness, so a node that dropped and is inside the ~3-minute watchdog
-     * still reads as working. Cut at the reconnect line itself
-     * ("reconnecting in %v", mailru.go:853) when that false "связь есть"
-     * actually reaches a user.
+     * still reads as working. That cannot be fixed without a carrier signal the
+     * core does not emit on the phone.
      */
     private fun movedSince(lines: List<String>): Boolean {
         // The whole run from its start line, not just the tail: the sample that
