@@ -19,6 +19,20 @@ androidApp/libs/openflux-core.version
 # SECURITY.md.
 OPERATIONS.local.md
 
+# The working notes between this owner and whoever works on the project next:
+# who owns which node, what the machine is called, what went wrong on which day,
+# and the prompt used to start a cold session. They are written for one person
+# and read on one disk. The repository is public and carries the code, the build
+# and the release process; these carry the household.
+#
+# They were committed until 2026-10-12, which put four real document addresses,
+# a live node key and the host names in the published history. They stay on disk,
+# untracked, from here.
+HANDOVER.md
+CLAUDE.md
+PASTE-IN-new-chat.txt
+PASTE-IN-NEW-CHAT.txt
+
 # The signing keystore's backup copy, and the owner's private notes.
 #
 # This guard is here, in the project's own .gitignore, rather than in a
