@@ -20,7 +20,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"openflux/netbind"
 	"openflux/transport"
 	"openflux/utils"
 )
@@ -67,8 +66,17 @@ type DocSession struct {
 func (s *DocSession) safeWrite(messageType int, data []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	// A write into a half-open connection (NAT dropped it, the network changed)
+	// would otherwise block until the kernel gives up - minutes - and it holds
+	// writeMu, so writer and keepAlive both stall. Bounded at docWriteTimeout,
+	// the same value Mail.ru uses for the same reason.
+	_ = s.Conn.SetWriteDeadline(time.Now().Add(docWriteTimeout))
+	defer s.Conn.SetWriteDeadline(time.Time{})
 	return s.Conn.WriteMessage(messageType, data)
 }
+
+// docWriteTimeout bounds one WebSocket write to the document.
+const docWriteTimeout = 20 * time.Second
 
 type YandexDocsTransport struct {
 	*transport.BaseTransport
@@ -210,13 +218,11 @@ func (t *YandexDocsTransport) connectToDoc(attempt int) {
 
 		// Hard TCP dial timeout so a stuck connect/DNS to the balancer host
 		// can't hang the whole transport (HandshakeTimeout alone proved
-		// insufficient on iOS).
+		// insufficient on iOS). dialIPv4First keeps that bound per attempt and
+		// adds the address-family order: see dial.go.
 		dialer := websocket.Dialer{
 			HandshakeTimeout: 15 * time.Second,
-			NetDialContext: netbind.Wrap(&net.Dialer{
-				Timeout:   10 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
+			NetDialContext:   dialIPv4First,
 		}
 		headers := http.Header{}
 		headers.Set("User-Agent", "Mozilla/5.0")
@@ -344,6 +350,17 @@ func (t *YandexDocsTransport) writerLoop() {
 		msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s"}]`, payload)
 		if err := session.safeWrite(websocket.TextMessage, []byte(msg)); err != nil {
 			utils.Debugf("[YDOCS] Write error: %v", err)
+			// A write timeout leaves gorilla's frame state corrupt, so this
+			// socket must never be written to again; retrying on it is a 20 s
+			// spin that can still lose a frame boundary. Close it, and ask for
+			// a reconnect instead of trusting the reader to notice - a reader
+			// that already returned leaves the tunnel dark with the interface
+			// up, which is the failure watchdog_reconnect_test.go exists for.
+			if isFatalWriteError(err) {
+				t.SetConnected(false)
+				_ = session.Conn.Close()
+				t.requestReconnect("write failed on a corrupt connection")
+			}
 			time.Sleep(15 * time.Millisecond)
 			continue // keep pending; the reconnect will bring up a new conn
 		}
@@ -491,6 +508,19 @@ func (t *YandexDocsTransport) scheduleReconnect(attempt int) {
 
 	t.RecordReconnect()
 	t.connectToDoc(next)
+}
+
+// isFatalWriteError reports whether a write failure means this connection can
+// no longer be used. A timeout is fatal by gorilla's contract; a close is the
+// socket already gone, and anything else may well be transient.
+func isFatalWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
 }
 
 // requestReconnect lets the keep-alive watchdog recover a session instead of
@@ -641,6 +671,8 @@ func (t *YandexDocsTransport) fetchDocInfo(url, userID string) (YandexDocsInfo, 
 
 	client := &http.Client{
 		Jar: jar,
+		// IPv4 first, like every other carrier request: see dial.go.
+		Transport: carrierTransport(),
 		// НЕ следуем редиректам автоматически — обрабатываем вручную.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse

@@ -447,11 +447,16 @@ DEPRECATED (removed in v2)
 		if !strings.Contains(dns, ":") {
 			dns += ":53"
 		}
-		utils.Infof("[INIT] DNS override: %s", dns)
+		utils.Debugf("[INIT] DNS override: %s", dns)
 		net.DefaultResolver = &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 5 * time.Second}
+				// netbind.Wrap, not a bare dialer: on the Windows full tunnel
+				// the default route points at the adapter this process
+				// serves, so an unbound resolver would send DNS into the tunnel
+				// that needs DNS to come up. Wrap binds the physical
+				// interface, which is the whole point of the package.
+				d := netbind.Wrap(&net.Dialer{Timeout: 5 * time.Second})
 				if network == "tcp" || network == "tcp4" || network == "tcp6" {
 					return d.DialContext(ctx, "tcp", dns)
 				}

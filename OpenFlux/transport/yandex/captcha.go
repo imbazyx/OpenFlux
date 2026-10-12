@@ -41,8 +41,13 @@ func solveCaptcha(docURL string, jar http.CookieJar, userAgent string) (string, 
 	}
 
 	client := &http.Client{
-		Jar:     jar,
-		Timeout: 30 * time.Second,
+		Jar: jar,
+		// IPv4 first, like every other carrier request: see dial.go. A captcha
+		// solved from one address family is not a captcha solved for the
+		// other, and the check this exists to pass is bound to the address the
+		// client used.
+		Transport: carrierTransport(),
+		Timeout:   30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

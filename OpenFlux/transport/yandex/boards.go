@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	mrand "math/rand"
-	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"openflux/netbind"
 	"openflux/transport"
 	"openflux/utils"
 )
@@ -243,8 +241,10 @@ func (t *BoardsTransport) getAllowCaptcha(client *http.Client, u, hash string) e
 func (t *BoardsTransport) authorize(hash, name string) (boardsInfo, error) {
 	jar := t.jar()
 	client := &http.Client{
-		Jar:     jar,
-		Timeout: 15 * time.Second,
+		Jar: jar,
+		// IPv4 first, like every other carrier request: see dial.go.
+		Transport: carrierTransport(),
+		Timeout:   15 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -514,10 +514,8 @@ func (t *BoardsTransport) connectAndServe(info boardsInfo) error {
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 15 * time.Second,
-		NetDialContext: netbind.Wrap(&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		// IPv4 first, like every other carrier request: see dial.go.
+		NetDialContext: dialIPv4First,
 	}
 	utils.Debugf("[BOARDS] dial %s", wsURL)
 	conn, resp, err := dialer.Dial(wsURL, header)

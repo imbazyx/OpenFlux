@@ -484,6 +484,13 @@ func (t *MailruDocsTransport) writerLoop() {
 				// is closed here and the reconnect brings up a fresh one.
 				utils.Debugf("[M-DOCS] connection is corrupt after a write timeout, dropping it")
 				t.closeSession(session)
+				// The reader parked in ReadMessage is woken by that Close, but
+				// relying on it is how this class of failure leaves a tunnel
+				// dark with the interface up: nothing to park if the reader
+				// already returned. requestReconnect is the same call the
+				// keep-alive watchdog makes, and its guard makes it a no-op if
+				// the reader gets there first.
+				t.requestReconnect("write failed on a corrupt connection")
 			}
 			time.Sleep(15 * time.Millisecond)
 			continue // keep pending; the reconnect will bring up a new conn

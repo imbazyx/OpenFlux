@@ -57,7 +57,12 @@ func peerParams(cfg *control.TransportConfig) *control.TransportConfig {
 	filtered := *cfg
 	filtered.Params = make(map[string]any, len(cfg.Params))
 	for k, v := range cfg.Params {
-		if k == "listen" || k == "is_exit" {
+		// A peer controls these parameters: the operator's role must stay the
+		// operator's. `exit` flips a OneMe transport onto the exit side,
+		// `listen` binds a port the installer's firewall never opened, and
+		// `is_exit` is the transport layer's own role bit - all of them must
+		// be chosen locally.
+		if k == "listen" || k == "is_exit" || k == "exit" {
 			continue
 		}
 		filtered.Params[k] = v
