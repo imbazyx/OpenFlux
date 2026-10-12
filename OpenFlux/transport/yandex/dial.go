@@ -35,8 +35,20 @@ import (
 // falls through to IPv6 in time instead of eating the whole connect budget.
 const carrierDialTimeout = 10 * time.Second
 
-// lookupIPAddr is the resolver; replaced in tests.
-var lookupIPAddr = net.DefaultResolver.LookupIPAddr
+// lookupIPAddr resolves through the CURRENT net.DefaultResolver, read at call
+// time - deliberately not a method value captured at init.
+//
+// A package-level `var lookupIPAddr = net.DefaultResolver.LookupIPAddr` binds
+// whatever resolver existed when this package initialised, i.e. before main()
+// has installed OPENFLUX_DNS and before netbind installs its bound resolver.
+// Every lookup would then bypass both: on the Windows full tunnel that sends
+// carrier DNS out unbound, into the tunnel the process is serving - exactly the
+// loop netbind exists to prevent, and a regression against the pre-port code.
+// Reading the field per call is what keeps OPENFLUX_DNS and the binding in
+// force here. Tests still swap it.
+var lookupIPAddr = func(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
+}
 
 // dialIPv4First is a DialContext that tries a host's IPv4 addresses before its
 // IPv6 ones. It follows the interface binding of package netbind.

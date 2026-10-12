@@ -263,6 +263,11 @@ const acceptErrorBackoff = 50 * time.Millisecond
 // regardless of what MaxRecordBytes is set to.
 const maxDirectRecord = 0xFFFF
 
+// directWriteTimeout bounds one record write. Same reason and same value as
+// the document carriers: an unbounded write into a half-open socket freezes the
+// writer behind writeMu and, with it, every path that could recover.
+const directWriteTimeout = 20 * time.Second
+
 func (t *DirectTransport) acceptLoop() {
 	// The listener is read here WITHOUT the mutex at :252 and :262, while
 	// Stop() sets `t.listener = nil` under it. That is a real race and not a
@@ -566,10 +571,17 @@ func (t *DirectTransport) writerLoop() {
 		}
 
 		t.writeMu.Lock()
+		// Bounded, like the document carriers: a write into a socket the peer
+		// silently dropped blocks until the kernel gives up - minutes - while
+		// holding writeMu, so nothing else can write and nothing can ask for a
+		// reconnect. The deadline is cleared again so a healthy connection is
+		// not permanently poisoned.
+		_ = conn.SetWriteDeadline(time.Now().Add(directWriteTimeout))
 		_, err := conn.Write(hdr[:])
 		if err == nil {
 			_, err = conn.Write(pending)
 		}
+		_ = conn.SetWriteDeadline(time.Time{})
 		t.writeMu.Unlock()
 
 		if err != nil {

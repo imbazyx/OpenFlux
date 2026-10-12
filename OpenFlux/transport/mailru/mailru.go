@@ -483,14 +483,18 @@ func (t *MailruDocsTransport) writerLoop() {
 				// spin that can still lose the frame boundary, so the session
 				// is closed here and the reconnect brings up a fresh one.
 				utils.Debugf("[M-DOCS] connection is corrupt after a write timeout, dropping it")
-				t.closeSession(session)
-				// The reader parked in ReadMessage is woken by that Close, but
-				// relying on it is how this class of failure leaves a tunnel
-				// dark with the interface up: nothing to park if the reader
-				// already returned. requestReconnect is the same call the
-				// keep-alive watchdog makes, and its guard makes it a no-op if
-				// the reader gets there first.
-				t.requestReconnect("write failed on a corrupt connection")
+				// Only the current session, and only then ask for a reconnect:
+				// a stale write must not disturb a session the reconnect has
+				// already installed.
+				if t.closeSession(session) {
+					// The reader parked in ReadMessage is woken by that Close,
+					// but relying on it is how this class of failure leaves a
+					// tunnel dark with the interface up: nothing to park if the
+					// reader already returned. requestReconnect is the same call
+					// the keep-alive watchdog makes, and its guard makes it a
+					// no-op if the reader gets there first.
+					t.requestReconnect("write failed on a corrupt connection")
+				}
 			}
 			time.Sleep(15 * time.Millisecond)
 			continue // keep pending; the reconnect will bring up a new conn

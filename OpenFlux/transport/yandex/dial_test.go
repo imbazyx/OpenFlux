@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func stubLookup(t *testing.T, addrs ...string) {
@@ -105,11 +106,60 @@ func TestDialIPv4FirstLeavesLiteralsAlone(t *testing.T) {
 	conn.Close()
 }
 
+// A cancelled context must not be walked through every remaining address.
+func TestDialIPv4FirstStopsOnACancelledContext(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("no IPv4 loopback:", err)
+	}
+	defer ln.Close()
+	// Nothing listens on this port, so every attempt fails; a cancelled context
+	// must stop after the first address instead of walking the whole list.
+	stubLookup(t, "127.0.0.1", "127.0.0.2", "127.0.0.3")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	start := time.Now()
+	dialIPv4First(ctx, "tcp", net.JoinHostPort("carrier.test", port))
+	if elapsed := time.Since(start); elapsed > carrierDialTimeout {
+		t.Errorf("a cancelled context still walked the address list (%v)", elapsed)
+	}
+}
+
 // Every client of the carriers must go through the dialer; a plain
 // http.Client{} would quietly bring the IPv6-first dial back.
+//
+// Checking that DialContext is non-nil proves nothing - any dialer passes that.
+// This drives the transport against a resolver that returns IPv6 first and
+// requires the connection to land on the IPv4 listener, which only the
+// IPv4-first dialer can do.
 func TestCarrierTransportDialsIPv4First(t *testing.T) {
 	tr := carrierTransport()
 	if tr.DialContext == nil {
 		t.Fatal("carrier transport has no DialContext")
+	}
+	stubLookup(t, "::1", "127.0.0.1")
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("no IPv4 loopback:", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	conn, err := tr.DialContext(context.Background(), "tcp", net.JoinHostPort("carrier.test", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if !strings.HasPrefix(conn.RemoteAddr().String(), "127.0.0.1:") {
+		t.Fatalf("carrier transport connected to %s, want the IPv4 address", conn.RemoteAddr())
 	}
 }

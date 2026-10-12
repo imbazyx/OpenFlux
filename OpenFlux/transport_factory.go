@@ -72,9 +72,10 @@ func transportFactory(baseCfg transport.TransportConfig, isExit bool) manager.Fa
 				dcfg.IsExit = v
 			}
 			// This builder serves the operator's own configuration as well as a
-			// peer's, and it must keep doing so: main.go:457 and the .conf path
-			// both reach it through makeRawTransport. What a PEER may choose is
-			// decided at the trust boundary instead - see Manager.startTransport.
+			// peer's, and it must keep doing so: main.go's bootstrap path and
+			// the .conf path both reach it through makeRawTransport. What a
+			// PEER may choose is decided at the trust boundary instead - see
+			// manager.peerParams, which strips listen, is_exit and exit.
 			return transport.NewDirectTransport(baseCfg, dcfg), nil
 		default:
 			return nil, fmt.Errorf("factory: unknown transport type %q", cfg.Type)

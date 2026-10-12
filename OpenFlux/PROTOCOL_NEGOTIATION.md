@@ -41,6 +41,13 @@ with an unconfirmed ready bit receive a fresh confirmation, including after the
 other side has completed Start. The client's handshake deadline is 20 seconds;
 the exit never initiates and waits for a client indefinitely.
 
+Hellos are paced. An instance that is not yet ready sends one every 250 ms while
+the handshake looks imminent, and drops to one every 2 s once nothing has
+answered for 20 s. The old cadence - 250 ms forever - meant an unattended node
+wrote four hellos a second into a shared document indefinitely, which is the
+traffic shape that gets an editor rate-limited and then bans the node. Becoming
+ready resets the window to the fast pace.
+
 A hello from a different sender while established usually means the peer
 restarted, but may be old traffic replayed from a carrier (anyone with access
 to a document sees the ciphertext). The established session is left untouched:

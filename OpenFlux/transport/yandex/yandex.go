@@ -357,9 +357,19 @@ func (t *YandexDocsTransport) writerLoop() {
 			// that already returned leaves the tunnel dark with the interface
 			// up, which is the failure watchdog_reconnect_test.go exists for.
 			if isFatalWriteError(err) {
-				t.SetConnected(false)
-				_ = session.Conn.Close()
-				t.requestReconnect("write failed on a corrupt connection")
+				// Only if this is still the current session. A write can fail
+				// up to 20 s after it started, by which time the reconnect may
+				// have installed a fresh session; blanking its connected flag
+				// or closing its socket would mark a healthy new session dead.
+				// Same identity check as the Mail.ru transport's closeSession.
+				t.Mu.RLock()
+				current := t.session
+				t.Mu.RUnlock()
+				if current == session {
+					t.SetConnected(false)
+					_ = session.Conn.Close()
+					t.requestReconnect("write failed on a corrupt connection")
+				}
 			}
 			time.Sleep(15 * time.Millisecond)
 			continue // keep pending; the reconnect will bring up a new conn

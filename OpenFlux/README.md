@@ -386,6 +386,17 @@ LZ4 codec, pass `--codec=legacy`:
 batched mode remains v2. The old `OPENFLUX_EXPERIMENTAL_WIRE_V3=1` prototype
 now fails startup rather than accepting unauthenticated capability messages.
 
+### `OPENFLUX_DNS` (CLI only)
+
+`OPENFLUX_DNS=192.168.1.1` makes the core resolve names through that server
+instead of the system one. It exists for static, CGO-free builds in places where
+Go has no usable `/etc/resolv.conf` — under Termux, for example, where Go then
+falls back to `[::1]:53` and every carrier dial by name fails while the device's
+internet is fine. Without the variable the behaviour is unchanged; with it, a
+wrong address breaks name resolution outright, so set it only when the default
+one is known to be wrong. The Android app does not use it: it is built from
+`mobile/` and a phone resolves through the platform.
+
 ### Authenticated capability negotiation (opt-in CLI)
 
 Add these options on **both** updated peers, using the same secret and codec:
