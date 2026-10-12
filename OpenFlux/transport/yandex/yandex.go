@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -357,18 +358,18 @@ func (t *YandexDocsTransport) writerLoop() {
 			// that already returned leaves the tunnel dark with the interface
 			// up, which is the failure watchdog_reconnect_test.go exists for.
 			if isFatalWriteError(err) {
-				// Only if this is still the current session. A write can fail
-				// up to 20 s after it started, by which time the reconnect may
-				// have installed a fresh session; blanking its connected flag
-				// or closing its socket would mark a healthy new session dead.
-				// Same identity check as the Mail.ru transport's closeSession.
-				t.Mu.RLock()
-				current := t.session
-				t.Mu.RUnlock()
-				if current == session {
-					t.SetConnected(false)
-					_ = session.Conn.Close()
-					t.requestReconnect("write failed on a corrupt connection")
+				// A write timeout leaves gorilla's frame state corrupt, so this
+				// socket must never be written to again. Drop it here.
+				//
+				// Recovery is NOT requested from here, deliberately: the writer
+				// retries every 15 ms and a self-requested reconnect would be
+				// re-armed on each of those, resetting the attempt counter, so
+				// MaxReconnectAttempts would never trip and the carrier would
+				// take a connect attempt every 15 ms - the rate-limit and ban
+				// condition this work exists to avoid. Closing the socket wakes
+				// the reader, which is the only code entitled to reconnect.
+				if t.closeSession(session) {
+					utils.Debugf("[YDOCS] connection is corrupt after a write failure, dropping it")
 				}
 			}
 			time.Sleep(15 * time.Millisecond)
@@ -392,19 +393,43 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 		if session != nil && session.Conn != nil {
 			if err := session.safeWrite(websocket.TextMessage, []byte(keepAliveMsg)); err != nil {
 				utils.Debugf("[YDOCS] Keep-alive failed: %v", err)
-				t.SetConnected(false)
-				// Close it as well. Leaving the socket open kept the reader
+				// Closing it as well. Leaving the socket open kept the reader
 				// blocked in ReadMessage on a connection nobody can write to,
 				// and the tunnel then sat there marked disconnected but never
 				// retried. Closing wakes the reader, and requestReconnect does
 				// not depend on it waking in time.
-				if session.Conn != nil {
-					_ = session.Conn.Close()
+				//
+				// This ticker runs every KeepAliveInterval, not every 15 ms, so
+				// the reconnect request here cannot storm the carrier API.
+				if t.closeSession(session) {
+					t.requestReconnect("keep-alive write failed")
 				}
-				t.requestReconnect("keep-alive write failed")
 			}
 		}
 	}
+}
+
+// closeSession reports whether `session` was still the live one, and if so
+// marks the transport disconnected and closes its socket.
+//
+// It MUST be consulted, not merely called. connectToDoc closes the socket of
+// the session it displaces, which wakes that session's own reader and lands it
+// in the error path; reconnecting from a reader whose session was already
+// replaced starts a self-sustaining loop - install B, close A, reader A
+// reconnects, installs C, closes B... - and because each pass resets `attempt`,
+// MaxReconnectAttempts never trips, so the transport can never stay up. Only
+// the code acting on the live session has the right to close it.
+func (t *YandexDocsTransport) closeSession(session *DocSession) bool {
+	t.Mu.Lock()
+	defer t.Mu.Unlock()
+	if t.session != session {
+		return false
+	}
+	t.SetConnected(false)
+	if session.Conn != nil {
+		_ = session.Conn.Close()
+	}
+	return true
 }
 
 func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
@@ -539,6 +564,12 @@ func (t *YandexDocsTransport) scheduleReconnect(attempt int) {
 // isFatalWriteError reports whether a write failure means this connection can
 // no longer be used. A timeout is fatal by gorilla's contract; a close is the
 // socket already gone, and anything else may well be transient.
+//
+// A reset or a broken pipe is the socket gone too, and it is what a dropped
+// NAT produces on the NEXT write - the commonest failure here by a distance.
+// Left out, it read as "transient", so the writer kept hammering a dead socket
+// every 15 ms and no reconnect was ever scheduled: the exact half-open state
+// this function exists to end.
 func isFatalWriteError(err error) bool {
 	if err == nil {
 		return false
@@ -546,23 +577,34 @@ func isFatalWriteError(err error) bool {
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		return true
 	}
-	return errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
+	if errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ENOTCONN) {
+		return true
+	}
+	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
 }
 
 // requestReconnect lets the keep-alive watchdog recover a session instead of
 // relying on the reader goroutine. This path used to only clear the connected
 // flag: the socket stayed open, nothing was scheduled, and a dead tunnel looked
 // alive to the rest of the system until the process was restarted.
+//
+// It goes through scheduleReconnect, not a bare connectToDoc. Claiming the
+// guard and dialling immediately released it again within microseconds, so
+// nothing held it across a backoff and a transport that kept dying re-dialed
+// as fast as the socket could fail - the same reconnect storm this campaign
+// removed from the writer. scheduleReconnect holds the guard while it waits,
+// counts attempts so MaxReconnectAttempts can trip, and is what the reader
+// already uses.
 func (t *YandexDocsTransport) requestReconnect(reason string) {
 	if !t.IsRunning() {
 		return
 	}
-	if !t.reconnecting.TryClaim() {
-		return // a reconnect is already on its way
-	}
 	utils.Debugf("[YDOCS] session dead (%s), reconnecting", reason)
-	t.RecordReconnect()
-	t.connectToDoc(0)
+	t.scheduleReconnect(0)
 }
 
 // SetErrorNotifier installs a callback for out-of-band errors such as

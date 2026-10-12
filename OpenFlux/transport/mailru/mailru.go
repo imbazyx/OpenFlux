@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -480,21 +481,21 @@ func (t *MailruDocsTransport) writerLoop() {
 				// gorilla's own rule: after a write timeout the connection's
 				// frame state is corrupt and must never be written to again.
 				// Retrying on the same socket turns a 20 s bound into a 20 s
-				// spin that can still lose the frame boundary, so the session
-				// is closed here and the reconnect brings up a fresh one.
-				utils.Debugf("[M-DOCS] connection is corrupt after a write timeout, dropping it")
-				// Only the current session, and only then ask for a reconnect:
-				// a stale write must not disturb a session the reconnect has
-				// already installed.
-				if t.closeSession(session) {
-					// The reader parked in ReadMessage is woken by that Close,
-					// but relying on it is how this class of failure leaves a
-					// tunnel dark with the interface up: nothing to park if the
-					// reader already returned. requestReconnect is the same call
-					// the keep-alive watchdog makes, and its guard makes it a
-					// no-op if the reader gets there first.
-					t.requestReconnect("write failed on a corrupt connection")
-				}
+				// spin that can still lose the frame boundary, so the socket
+				// is dropped here.
+				//
+				// Recovery is NOT requested from here, deliberately. The writer
+				// holds `pending` and retries every 15 ms; a self-requested
+				// reconnect would be re-armed on every one of those retries for
+				// the whole fetchDocInfo+dial window, each pass resetting the
+				// attempt counter, so MaxReconnectAttempts would never trip and
+				// the carrier API would take a connect attempt every 15 ms -
+				// the rate-limit and ban condition this work exists to avoid.
+				// Closing the socket is what wakes the reader, and only the
+				// reader that owned the live session may reconnect for it; the
+				// keep-alive watchdog is the backstop if it is already gone.
+				utils.Debugf("[M-DOCS] connection is corrupt after a write failure, dropping it")
+				t.closeSession(session)
 			}
 			time.Sleep(15 * time.Millisecond)
 			continue // keep pending; the reconnect will bring up a new conn
@@ -506,6 +507,12 @@ func (t *MailruDocsTransport) writerLoop() {
 // isFatalWriteError reports whether a write failure means this connection can
 // no longer be used. A timeout is fatal by gorilla's contract; a close is the
 // socket already gone, and anything else may well be transient.
+//
+// A reset or a broken pipe is the socket gone too, and it is what a dropped
+// NAT produces on the NEXT write - the commonest failure here by a distance.
+// Left out, it read as "transient", so the writer kept hammering a dead socket
+// every 15 ms and no reconnect was ever scheduled: the exact half-open state
+// this function exists to end.
 func isFatalWriteError(err error) bool {
 	if err == nil {
 		return false
@@ -513,7 +520,14 @@ func isFatalWriteError(err error) bool {
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		return true
 	}
-	return errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
+	if errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ENOTCONN) {
+		return true
+	}
+	return websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
 }
 
 // Stop also closes the document connection. BaseTransport.Stop only clears the
