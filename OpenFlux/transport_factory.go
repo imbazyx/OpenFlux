@@ -31,7 +31,14 @@ func newVolgaTransport(docURL string, cfg transport.TransportConfig) (transport.
 // It is the single place that knows every transport package. main.go passes
 // it into manager.New, and manager calls it whenever the peer asks the exit
 // to bring up an additional transport at runtime.
-func transportFactory(baseCfg transport.TransportConfig) manager.Factory {
+//
+// isExit is this process's role, and it is a parameter rather than a constant
+// because of Cups.online: a client has to create and enter rooms, an exit has to
+// join the rooms its client is in. Building it as a client everywhere made a
+// node's dynamically requested carrier create four rooms of its own and wait in
+// them, in rooms the client never joined - the channel then has nobody on the
+// other end.
+func transportFactory(baseCfg transport.TransportConfig, isExit bool) manager.Factory {
 	return func(cfg *control.TransportConfig) (transport.Transport, error) {
 		if cfg == nil {
 			return nil, fmt.Errorf("factory: nil config")
@@ -46,7 +53,7 @@ func transportFactory(baseCfg transport.TransportConfig) manager.Factory {
 		case "mailru":
 			return mailru.NewMailruDocsTransport(cfg.URL, baseCfg), nil
 		case "cupsonline":
-			return cupsonline.NewCupsonlineTransport(cfg.URL, baseCfg, false), nil
+			return cupsonline.NewCupsonlineTransport(cfg.URL, baseCfg, !isExit), nil
 		case "oneme":
 			token, _ := cfg.Params["token"].(string)
 			uidStr, _ := cfg.Params["uid"].(string)

@@ -78,8 +78,17 @@ type DocSession struct {
 func (s *DocSession) safeWrite(messageType int, data []byte) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	// A write into a half-open connection (NAT dropped it, the network changed)
+	// blocks until the kernel gives up - minutes - and it holds writeMu for all
+	// of it, so writerLoop AND keepAliveLoop freeze behind it. The interface
+	// stays up, the tunnel is dark, and nothing asks for a reconnect because
+	// the only code that could is the one that is stuck.
+	_ = s.Conn.SetWriteDeadline(time.Now().Add(docWriteTimeout))
 	return s.Conn.WriteMessage(messageType, data)
 }
+
+// docWriteTimeout bounds one WebSocket write to the document.
+const docWriteTimeout = 20 * time.Second
 
 type MailruDocsTransport struct {
 	*transport.BaseTransport
@@ -265,6 +274,15 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		headers := http.Header{}
 		headers.Set("User-Agent", mailruUserAgent)
 		headers.Set("Origin", "https://docs.datacloudmail.ru")
+		// Accept-Language on the upgrade, matching what the browser sends. The
+		// upstream project added the same header for the same reason after
+		// 409s on the upgrade (their commit "send Accept-Language on the Docs
+		// WebSocket and API", #164), and our edge here answers 409 to every new
+		// session from every host we tried. Whether this header is what makes
+		// the difference is UNVERIFIED here: it is a browser-fidelity change
+		// with a matching upstream report, not a measured cause. Treat the next
+		// 409 after this as "not fixed" rather than as a partial success.
+		headers.Set("Accept-Language", "en-US,en;q=0.9")
 
 		utils.Debugf("[M-DOCS] WebSocket dial %s", safeMailruWSURL(info.WsURL))
 		conn, resp, err := dialer.Dial(info.WsURL, headers)
@@ -516,7 +534,10 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 	// Any inbound frame proves the channel is alive; reset the rx-idle clock.
 	t.lastRx.Store(time.Now().UnixNano())
 
-	if strings.Contains(text, "---KA---") {
+	// A frame can carry a keep-alive AND data, so the cursor branch below
+	// filters the keep-alives per entry rather than this frame being dropped
+	// whole. Only a frame that is nothing but a keep-alive stops here.
+	if strings.Contains(text, "---KA---") && !strings.Contains(text, "cursor") {
 		return
 	}
 
@@ -567,21 +588,36 @@ func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 	}
 
 	if strings.Contains(text, "cursor") {
-		base64Str := t.extractBase64String(text)
-		if base64Str == "" {
-			return
+		for _, base64Str := range CursorPayloads(text) {
+			decoded, err := base64.StdEncoding.DecodeString(base64Str)
+			if err != nil {
+				utils.Debugf("[M-DOCS] Base64 decode error: %v", err)
+				continue
+			}
+			t.RecordReceive(len(decoded))
+			t.lastRxData.Store(time.Now().UnixNano())
+			t.CallReceive(decoded)
 		}
-
-		decoded, err := base64.StdEncoding.DecodeString(base64Str)
-		if err != nil {
-			utils.Debugf("[M-DOCS] Base64 decode error: %v", err)
-			return
-		}
-
-		t.RecordReceive(len(decoded))
-		t.lastRxData.Store(time.Now().UnixNano())
-		t.CallReceive(decoded)
 	}
+}
+
+// CursorPayloads returns the base64 payload of every cursor entry in a server
+// message, in order, without the keep-alive entries.
+//
+// Every entry, not the first one: Mail.ru batches several cursor entries into a
+// single frame under load, and a keep-alive may sit anywhere among them. The
+// first version returned early on a frame containing "---KA---" and took a
+// single submatch, so under load every packet after the first in a batched
+// frame was dropped without a word. Pure function, so it is testable without a
+// socket; cursor_test.go covers the batching cases.
+func CursorPayloads(text string) []string {
+	var out []string
+	for _, m := range cursorPayloadRe.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 && m[1] != "---KA---" {
+			out = append(out, m[1])
+		}
+	}
+	return out
 }
 
 // Watchdog constants. A healthy Mail.ru Socket.IO session receives the
@@ -819,14 +855,6 @@ func (t *MailruDocsTransport) healthLoop() {
 	}
 }
 
-func (t *MailruDocsTransport) extractBase64String(response string) string {
-	matches := cursorPayloadRe.FindStringSubmatch(response)
-	if len(matches) > 1 {
-		return matches[1]
-	}
-	return ""
-}
-
 func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 	next := attempt + 1
 	if !t.IsRunning() {
@@ -936,6 +964,8 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("User-Agent", mailruUserAgent)
+	// The same browser header the upgrade sends; upstream sends it here too.
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	req.Header.Set("X-Api-Version", "4")
 	req.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s?weblink=%s", weblink, weblink))
 

@@ -65,22 +65,27 @@ func buildTransportSpecs(specs []transportSpec, urls map[string]string, extra ma
 // makeRawTransport builds a raw transport from a spec without the Manager's
 // factory (bootstrap path). The Manager's factory is only used for transports
 // added later via SubtypeTransportStart.
-func makeRawTransport(spec transportSpec, baseCfg transport.TransportConfig) (transport.Transport, error) {
+//
+// isExit is threaded through for the same reason as in transportFactory: it is
+// the process's role, and the bootstrap path builds the transports that matter
+// most, so a hardcoded value here would put a node on the wrong side of
+// Cupsonline's room logic.
+func makeRawTransport(spec transportSpec, baseCfg transport.TransportConfig, isExit bool) (transport.Transport, error) {
 	cfg := &control.TransportConfig{
 		Name:   spec.Name,
 		Type:   spec.Type,
 		URL:    spec.URL,
 		Params: spec.Params,
 	}
-	return transportFactory(baseCfg)(cfg)
+	return transportFactory(baseCfg, isExit)(cfg)
 }
 
 // registerBootstrapTransports wires every spec into the manager, and also
 // calls Session.AddTransport with the shared secret/context so the handshake
 // can use any of them.
-func registerBootstrapTransports(m *manager.Manager, specs []transportSpec, baseCfg transport.TransportConfig, secret, ctx string) error {
+func registerBootstrapTransports(m *manager.Manager, specs []transportSpec, baseCfg transport.TransportConfig, secret, ctx string, isExit bool) error {
 	for _, spec := range specs {
-		raw, err := makeRawTransport(spec, baseCfg)
+		raw, err := makeRawTransport(spec, baseCfg, isExit)
 		if err != nil {
 			return fmt.Errorf("%s: %w", spec.Name, err)
 		}

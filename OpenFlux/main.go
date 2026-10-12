@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -421,6 +422,37 @@ DEPRECATED (removed in v2)
 
 	// isExit is the session/encryption-directionality role: which side of a
 	// negotiated or encrypted pair this process plays. bench-sink is the
+	// OPENFLUX_DNS overrides DNS resolution to a specific nameserver
+	// (e.g. "192.168.1.1" or "8.8.8.8:53").
+	//
+	// This is not a convenience. A static CGO-off binary has no usable
+	// /etc/resolv.conf on Android or in Termux, so Go falls back to
+	// [::1]:53, and every carrier dial by name fails with "lookup ... i/o
+	// timeout" while the same device reaches the internet perfectly well -
+	// the failure looks like a dead service and is not one. Verified on the TV
+	// box on 2026-10-12: with the variable set the node resolves and connects;
+	// without it every dial times out.
+	//
+	// It also replaces the need to write /etc/resolv.conf, which on Android
+	// means remounting / read-write - a system-wide change made for one
+	// program's benefit, and on this box it took the device off the network.
+	if dns := os.Getenv("OPENFLUX_DNS"); dns != "" {
+		if !strings.Contains(dns, ":") {
+			dns += ":53"
+		}
+		utils.Debugf("[INIT] DNS override: %s", dns)
+		net.DefaultResolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 5 * time.Second}
+				if network == "tcp" || network == "tcp4" || network == "tcp6" {
+					return d.DialContext(ctx, "tcp", dns)
+				}
+				return d.DialContext(ctx, "udp", dns)
+			},
+		}
+	}
+
 	// passive, always-listening side (like an exit), bench-send the active
 	// initiator (like a client) - without this, two bench processes both
 	// resolved to "client", so a negotiated session never had an exit side
@@ -465,6 +497,17 @@ DEPRECATED (removed in v2)
 		if v, ok := confValue(conf.Interface, "Sensitive"); ok && !setFlags["sensitive"] && !setFlags["sensetive"] {
 			*sensitive = confBool(v, *sensitive)
 		}
+
+		// Recomputed, because .conf is the only thing that can change the role
+		// and it is applied right here. It used to be decided before the file
+		// was read and never looked at again, so a node started as
+		// `openflux --config node.conf` with `Role = exit` ran every later step
+		// as a client: the session branch started with no exit side, the hello
+		// loop waited 20 s for an answer that could not come, and the process
+		// died at startup. That is the deployment deploy/node-install.sh writes,
+		// so every .conf node was broken and the CLI form worked - which is why
+		// this went unnoticed.
+		isExit = *role == roleExit || *role == roleBenchSink
 
 		for _, t := range conf.Transports {
 			if t.Name == "" {
@@ -785,10 +828,10 @@ DEPRECATED (removed in v2)
 
 		// Build the factory that SubtypeTransportStart will use for
 		// dynamic transports.
-		factory := transportFactory(config)
+		factory := transportFactory(config, isExit)
 		managerInst = manager.New(sess, factory, secret, sessionContext)
 
-		if err := registerBootstrapTransports(managerInst, specs, config, secret, sessionContext); err != nil {
+		if err := registerBootstrapTransports(managerInst, specs, config, secret, sessionContext, isExit); err != nil {
 			log.Fatalf("bootstrap transports: %v", err)
 		}
 
