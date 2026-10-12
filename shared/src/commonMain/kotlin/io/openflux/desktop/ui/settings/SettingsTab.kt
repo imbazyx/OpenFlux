@@ -422,7 +422,16 @@ private fun ConnectionSettings(model: SettingsScreenModel) {
             onRun = { model.runNodeCheck() },
         )
     } else {
-        AppButton("Показать, на чём остановилось", { model.runNodeCheck() })
+        // The button keeps the name the feature was asked for. What it does not
+        // do - probe the network itself - is said under it, so the name is not
+        // a promise the card cannot keep.
+        AppButton("Проверить связь с нодой", { model.runNodeCheck() })
+        Spacer(Modifier.height(AppTheme.spacing.xs))
+        Text(
+            "Покажет, на каком шаге остановилось последнее подключение: документ, адрес, канал, ключ, данные.",
+            style = AppTheme.typography.bodySmall,
+            color = AppTheme.colors.textSecondary,
+        )
     }
     AppCard {
         SectionLabel("Режим работы")

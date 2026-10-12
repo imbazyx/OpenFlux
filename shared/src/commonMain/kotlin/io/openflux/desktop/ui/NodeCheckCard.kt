@@ -98,7 +98,7 @@ fun NodeCheckCard(
         }
 
         AppButton(
-            if (checking) "Смотрю…" else "Показать, на чём остановилось",
+            if (checking) "Смотрю…" else "Проверить ещё раз",
             onRun,
             enabled = !checking,
         )
