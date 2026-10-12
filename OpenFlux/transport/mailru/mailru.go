@@ -243,6 +243,12 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		info, err := t.fetchDocInfo(t.weblink)
 		if err != nil {
 			utils.Debugf("[M-DOCS] fetchDocInfo failed: %v", err)
+			// A throttled address gets minutes, not seconds: see
+			// ErrRateLimited. Retrying it fast is what deepened the throttle.
+			if errors.Is(err, ErrRateLimited) {
+				t.scheduleReconnectNoCaptcha(attempt)
+				return
+			}
 			t.scheduleReconnect(attempt)
 			return
 		}
@@ -965,6 +971,61 @@ func (t *MailruDocsTransport) requestReconnect(reason string) {
 	t.connectToDoc(0)
 }
 
+// ErrRateLimited signals that the editor API answered with Mail.ru's anti-abuse
+// challenge page rather than JSON. Retrying it on the normal backoff is the one
+// thing that must not happen: the backoff is seconds, the penalty is minutes,
+// so the retries are what put the address into this state.
+var ErrRateLimited = errors.New("mailru docs: rate limited by the editor API")
+
+// isChallengePage recognises that page. The client follows the 302, so the
+// status line is useless; the final URL and the body's own markers are not.
+func isChallengePage(resp *http.Response, body []byte) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if resp.Request != nil && resp.Request.URL != nil {
+		p := strings.ToLower(resp.Request.URL.Path)
+		if strings.Contains(p, "challenge") || strings.Contains(p, "captcha") {
+			return true
+		}
+	}
+	head := body
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	s := strings.ToLower(string(head))
+	return strings.Contains(s, "hash429") ||
+		strings.Contains(s, "challenge.html") ||
+		strings.Contains(s, "smartcaptcha")
+}
+
+// scheduleReconnectNoCaptcha backs off to a fixed long wait instead of the
+// growing one. While the address is throttled every attempt is wasted and makes
+// the throttle worse; a few minutes of quiet is what actually clears it.
+func (t *MailruDocsTransport) scheduleReconnectNoCaptcha(attempt int) {
+	if !t.IsRunning() {
+		return
+	}
+	if !t.reconnecting.TryClaim() {
+		return
+	}
+	const wait = 5 * time.Minute
+	utils.Debugf("[M-DOCS] rate limited, waiting %v before the next attempt", wait)
+	select {
+	case <-time.After(wait):
+	case <-t.Done():
+		return
+	}
+	if !t.IsRunning() {
+		return
+	}
+	t.RecordReconnect()
+	t.connectToDoc(0)
+}
+
 // reconnectBackoff returns an exponential backoff with jitter, capped at 15s.
 func reconnectBackoff(n int) time.Duration {
 	if n < 1 {
@@ -1028,6 +1089,19 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 	}
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
+
+	// Mail.ru answers an editor-API call from a throttled address with its
+	// anti-abuse page instead of JSON: a 302 to /challenge.html?hash429=...,
+	// which the default client follows, so by here the status is 200 and the
+	// body is HTML. Left as "failed to parse JSON" it read as a transient
+	// glitch and the reconnect backoff retried every few seconds, which is
+	// what keeps an address throttled - a node that could have recovered in
+	// five minutes of quiet instead spent an hour making it worse.
+	if isChallengePage(resp, bodyBytes) {
+		utils.Debugf("[M-DOCS] editor API answered with the anti-abuse challenge " +
+			"(rate limited); backing off instead of retrying")
+		return MailruDocsInfo{}, ErrRateLimited
+	}
 
 	var res map[string]interface{}
 	if err := json.Unmarshal(bodyBytes, &res); err != nil {
