@@ -31,6 +31,8 @@ type Session struct {
 	handshakeTimeout time.Duration
 
 	helloInterval time.Duration
+	helloBackoff  time.Duration
+	helloSlow     time.Duration
 	restartMin    time.Duration
 	restartMax    time.Duration
 
@@ -100,8 +102,15 @@ func NewSession(p PeerParameters, exit bool) (*Session, error) {
 		done:             make(chan struct{}),
 		handshakeTimeout: 20 * time.Second,
 		helloInterval:    250 * time.Millisecond,
-		restartMin:       time.Second,
-		restartMax:       30 * time.Second,
+		// An exit nobody has picked up writes a hello every helloInterval,
+		// forever, and 250 ms is 4 hellos a second into a shared document.
+		// The carrier rate-limits that shape and then bans the node, which is
+		// the worst possible failure for a node that is only waiting. helloBackoff
+		// is how long nothing has answered before the pace drops to helloSlow.
+		helloBackoff: 20 * time.Second,
+		helloSlow:    2 * time.Second,
+		restartMin:   time.Second,
+		restartMax:   30 * time.Second,
 
 		keepaliveInterval: 10 * time.Second,
 		linkTimeout:       30 * time.Second,
@@ -355,21 +364,48 @@ func (s *Session) superviseLink(link *transportLink) {
 	})
 }
 
+// helloPace is the minimum gap between two hellos, given how long the session
+// has been trying without becoming ready and when it last wrote one.
+//
+// A node nobody picks up would otherwise write a hello on every tick forever,
+// and the tick is a quarter of a second: four hellos a second into a shared
+// document is the traffic shape that gets an editor rate-limited and then bans
+// the node - the worst outcome for a node that is merely waiting. So the pace
+// is fast while the handshake still looks like it is about to succeed, a phone
+// that just opened the app must not wait two seconds, and drops to helloSlow
+// once nothing has answered for helloBackoff. Pure, so it is testable.
+func (s *Session) helloPace(started, lastSent time.Time) time.Duration {
+	pace := s.helloInterval
+	if time.Since(started) > s.helloBackoff {
+		pace = max(pace, s.helloSlow)
+	}
+	if !lastSent.IsZero() && time.Since(lastSent) < pace {
+		return 0
+	}
+	return pace
+}
+
 func (s *Session) helloLoop() {
 	defer s.wg.Done()
 	tick := time.NewTicker(s.helloInterval)
 	defer tick.Stop()
 	attempt := 0
+	started := time.Now()
+	var lastSent time.Time
 	for {
 		s.mu.Lock()
 		ready := s.ready
+		pace := s.helloPace(started, lastSent)
 		var names []string
-		if !ready {
+		if !ready && pace > 0 {
 			for _, name := range s.order {
 				if s.links[name].started {
 					names = append(names, name)
 				}
 			}
+		}
+		if ready {
+			started = time.Now()
 		}
 		local := s.local
 		peer := s.peer
@@ -380,6 +416,9 @@ func (s *Session) helloLoop() {
 				utils.Debugf("[SESSION] hello #%d via %v (local=%s peer=%s)",
 					attempt, names, shortID(local), shortID(peer))
 			}
+		}
+		if len(names) > 0 {
+			lastSent = time.Now()
 		}
 		for _, name := range names {
 			if err := s.helloVia(name); err != nil {

@@ -14,6 +14,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -68,10 +69,17 @@ func install(f controlFunc) {
 		t.DialContext = DialContext
 	}
 	websocket.DefaultDialer.NetDialContext = DialContext
-	net.DefaultResolver = &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return Dialer(10*time.Second).DialContext(ctx, network, address)
-		},
+	// Bound, but only when nothing has claimed the resolver on purpose.
+	// main.go installs OPENFLUX_DNS before this runs, and an operator who set
+	// that variable wants the nameserver they named - the bound dialer would
+	// silently replace it and every name would resolve through the wrong path
+	// again, which is the failure OPENFLUX_DNS exists to remove.
+	if os.Getenv("OPENFLUX_DNS") == "" {
+		net.DefaultResolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return Dialer(10*time.Second).DialContext(ctx, network, address)
+			},
+		}
 	}
 }

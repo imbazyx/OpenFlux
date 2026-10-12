@@ -56,6 +56,8 @@ func TestHandleMessageDeliversEveryPacketOfABatch(t *testing.T) {
 
 // A frame that is nothing but a keep-alive must still be swallowed: it is
 // liveness evidence, not data, and handing it to the codec would corrupt it.
+// The second case exercises the frame-level guard at the top of handleMessage,
+// which the batch tests do not reach because their frames contain "cursor".
 func TestHandleMessageDropsLoneKeepAlive(t *testing.T) {
 	tr := NewMailruDocsTransport("Vuri/test", transport.DefaultConfig())
 	var got []string
@@ -63,5 +65,23 @@ func TestHandleMessageDropsLoneKeepAlive(t *testing.T) {
 	tr.handleMessage(&DocSession{}, []byte(`42["message",{"type":"cursor","messages":[`+cursorEntry("---KA---")+`]}]`))
 	if len(got) != 0 {
 		t.Fatalf("a lone keep-alive reached the codec: %q", got)
+	}
+	tr.handleMessage(&DocSession{}, []byte(`42["message",{"keepAlive":"---KA---"}]`))
+	if len(got) != 0 {
+		t.Fatalf("a keep-alive frame without cursors reached the codec: %q", got)
+	}
+}
+
+// One entry with broken base64 must not cost the entries behind it: the batch
+// is decoded entry by entry, and an undecodable entry is skipped, not fatal.
+func TestHandleMessageSkipsOnlyTheBrokenEntry(t *testing.T) {
+	tr := NewMailruDocsTransport("Vuri/test", transport.DefaultConfig())
+	var got []string
+	tr.Receive(func(b []byte) { got = append(got, string(b)) })
+	msg := `42["message",{"type":"cursor","messages":[` + cursorEntry(b64("first")) + "," +
+		cursorEntry("!!!not base64!!!") + "," + cursorEntry(b64("second")) + `]}]`
+	tr.handleMessage(&DocSession{}, []byte(msg))
+	if !reflect.DeepEqual(got, []string{"first", "second"}) {
+		t.Fatalf("delivered %v, want [first second]", got)
 	}
 }

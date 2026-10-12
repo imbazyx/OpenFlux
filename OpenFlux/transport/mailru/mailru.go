@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -475,11 +476,33 @@ func (t *MailruDocsTransport) writerLoop() {
 		msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s"}]`, payload)
 		if err := session.safeWrite(websocket.TextMessage, []byte(msg)); err != nil {
 			utils.Debugf("[M-DOCS] Write error: %v", err)
+			if isFatalWriteError(err) {
+				// gorilla's own rule: after a write timeout the connection's
+				// frame state is corrupt and must never be written to again.
+				// Retrying on the same socket turns a 20 s bound into a 20 s
+				// spin that can still lose the frame boundary, so the session
+				// is closed here and the reconnect brings up a fresh one.
+				utils.Debugf("[M-DOCS] connection is corrupt after a write timeout, dropping it")
+				t.closeSession(session)
+			}
 			time.Sleep(15 * time.Millisecond)
 			continue // keep pending; the reconnect will bring up a new conn
 		}
 		pending = nil
 	}
+}
+
+// isFatalWriteError reports whether a write failure means this connection can
+// no longer be used. A timeout is fatal by gorilla's contract; a close is the
+// socket already gone, and anything else may well be transient.
+func isFatalWriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, net.ErrClosed) || websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
 }
 
 // Stop also closes the document connection. BaseTransport.Stop only clears the

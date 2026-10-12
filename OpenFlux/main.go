@@ -420,27 +420,34 @@ DEPRECATED (removed in v2)
 	}
 	flag.Parse()
 
-	// isExit is the session/encryption-directionality role: which side of a
-	// negotiated or encrypted pair this process plays. bench-sink is the
 	// OPENFLUX_DNS overrides DNS resolution to a specific nameserver
 	// (e.g. "192.168.1.1" or "8.8.8.8:53").
 	//
 	// This is not a convenience. A static CGO-off binary has no usable
-	// /etc/resolv.conf on Android or in Termux, so Go falls back to
-	// [::1]:53, and every carrier dial by name fails with "lookup ... i/o
-	// timeout" while the same device reaches the internet perfectly well -
-	// the failure looks like a dead service and is not one. Verified on the TV
-	// box on 2026-10-12: with the variable set the node resolves and connects;
-	// without it every dial times out.
+	// /etc/resolv.conf under Termux, so Go falls back to [::1]:53 and every
+	// carrier dial by name fails with "lookup ... i/o timeout" while the same
+	// device reaches the internet perfectly well - the failure looks like a
+	// dead service and is not one. Verified on the TV box on 2026-10-12: with
+	// the variable set the node resolves and connects, without it every dial
+	// times out.
 	//
-	// It also replaces the need to write /etc/resolv.conf, which on Android
-	// means remounting / read-write - a system-wide change made for one
-	// program's benefit, and on this box it took the device off the network.
+	// It replaces writing /etc/resolv.conf, which on Android means remounting
+	// / read-write - a system-wide change made for one program's benefit, and
+	// on this box it took the device off the network.
+	//
+	// It is not the Android app's path: the .aar is built from OpenFlux/mobile,
+	// a separate module that does not contain this file, and a phone resolves
+	// through the platform anyway. This is for the CLI - Termux nodes and the
+	// PC build.
+	//
+	// Installed before anything can resolve, and netbind.BindDefault() only
+	// installs its own resolver when this variable is unset, so the two cannot
+	// overwrite each other.
 	if dns := os.Getenv("OPENFLUX_DNS"); dns != "" {
 		if !strings.Contains(dns, ":") {
 			dns += ":53"
 		}
-		utils.Debugf("[INIT] DNS override: %s", dns)
+		utils.Infof("[INIT] DNS override: %s", dns)
 		net.DefaultResolver = &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
@@ -453,12 +460,24 @@ DEPRECATED (removed in v2)
 		}
 	}
 
+	// isExit is the session/encryption-directionality role: which side of a
+	// negotiated or encrypted pair this process plays. bench-sink is the
 	// passive, always-listening side (like an exit), bench-send the active
 	// initiator (like a client) - without this, two bench processes both
 	// resolved to "client", so a negotiated session never had an exit side
 	// to answer hellos with a challenge, and two peers' encryption keys
 	// were derived in the same direction instead of swapped.
-	isExit := *role == roleExit || *role == roleBenchSink
+	//
+	// Assigned only after the role is final: .conf can set Role and the
+	// deprecated -client/-exit-node/-bench-* flags can set it too. It used to be
+	// decided here, before either, and never looked at again - so a node
+	// started as `openflux --config node.conf` with `Role = exit` ran every
+	// later step as a client: the session branch started with no exit side,
+	// the hello loop waited 20 s for an answer that could not come, and the
+	// process died at startup. That is the deployment deploy/node-install.sh
+	// writes, so every .conf node was broken and the CLI form worked, which is
+	// why it went unnoticed.
+	var isExit bool
 
 	// Apply .conf file if requested. Only flags that were not explicitly set
 	// on the command line are overridden.
@@ -498,17 +517,6 @@ DEPRECATED (removed in v2)
 			*sensitive = confBool(v, *sensitive)
 		}
 
-		// Recomputed, because .conf is the only thing that can change the role
-		// and it is applied right here. It used to be decided before the file
-		// was read and never looked at again, so a node started as
-		// `openflux --config node.conf` with `Role = exit` ran every later step
-		// as a client: the session branch started with no exit side, the hello
-		// loop waited 20 s for an answer that could not come, and the process
-		// died at startup. That is the deployment deploy/node-install.sh writes,
-		// so every .conf node was broken and the CLI form worked - which is why
-		// this went unnoticed.
-		isExit = *role == roleExit || *role == roleBenchSink
-
 		for _, t := range conf.Transports {
 			if t.Name == "" {
 				continue
@@ -524,16 +532,14 @@ DEPRECATED (removed in v2)
 			}
 			if spec.Type == "direct" {
 				spec.Params = map[string]interface{}{
-					"dial":    t.Values["Dial"],
-					"listen":  t.Values["Listen"],
-					"is_exit": isExit,
+					"dial":   t.Values["Dial"],
+					"listen": t.Values["Listen"],
 				}
 			}
 			if spec.Type == "oneme" {
 				spec.Params = map[string]interface{}{
 					"token": t.Values["Token"],
 					"uid":   t.Values["UID"],
-					"exit":  isExit,
 				}
 			}
 			confTransports = append(confTransports, spec)
@@ -578,6 +584,20 @@ DEPRECATED (removed in v2)
 	if *depBenchSink {
 		log.Printf("warning: -bench-sink is deprecated, use --role=bench-sink")
 		*role = roleBenchSink
+	}
+
+	// The role is final now: --role, the .conf Role and the deprecated flags
+	// have all had their say. Every role-dependent value is computed from here
+	// on, including the .conf transport parameters that used to be built with
+	// a role read before the file had been opened.
+	isExit = *role == roleExit || *role == roleBenchSink
+	for i := range confTransports {
+		switch confTransports[i].Type {
+		case "direct":
+			confTransports[i].Params["is_exit"] = isExit
+		case "oneme":
+			confTransports[i].Params["exit"] = isExit
+		}
 	}
 
 	// Platform defaults. The recommended client path is utun on macOS and
