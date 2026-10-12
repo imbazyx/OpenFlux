@@ -1139,9 +1139,18 @@ func (w *wsListener) handleBundleItem(raw json.RawMessage) {
 		w.stats.PacketsRecv.Add(uint64(len(packets)))
 		w.stats.BytesReceived.Add(uint64(len(decoded)))
 		for _, pkt := range packets {
-			if len(pkt) != 1 || pkt[0] != 0 {
-				w.stats.DataPacketsRecv.Add(1)
+			// A single zero byte is the relay keep-alive, not a packet: the
+			// sender already excludes it from the data counter, and it was
+			// still being handed to the data path, where the batched codec
+			// rejected it every interval - one "batch frame too short: 1
+			// bytes" per peer per 10 s, on a transport that otherwise works.
+			// A real packet cannot be one byte: the encrypted envelope is a
+			// 4-byte header, a 12-byte nonce and a 16-byte tag before any
+			// payload.
+			if len(pkt) == 1 && pkt[0] == 0 {
+				continue
 			}
+			w.stats.DataPacketsRecv.Add(1)
 			if w.onData != nil {
 				w.onData(pkt)
 			}

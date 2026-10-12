@@ -130,6 +130,10 @@ type MailruDocsTransport struct {
 	// stop. Whoever loses the race simply does nothing; a reconnect is
 	// already on its way.
 	reconnecting transport.ReconnectGuard
+
+	// Consecutive sessions that died before healthySession. Read and written
+	// atomically; only the backoff consults it.
+	shortSessionCount int32
 }
 
 // NewMailruDocsTransport accepts either a bare weblink ("AbCdEfGh1/IjKlMnOp2")
@@ -418,6 +422,11 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 					return
 				}
 				conn.Close()
+
+				// A session that died young is not a network blip, it is a
+				// service refusing us - and reconnecting every fifteen seconds
+				// is what turns a refusal into a ban.
+				t.noteSessionEnd(time.Since(connectedAt))
 
 				next := attempt
 				if time.Since(connectedAt) > 15*time.Second {
@@ -931,7 +940,7 @@ func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 		return
 	}
 
-	d := reconnectBackoff(next)
+	d := t.effectiveWait(next)
 	utils.Debugf("[M-DOCS] reconnecting in %v (attempt %d)", d, next)
 	// Wait on Done() rather than sleeping: with the 15s cap plus 50% jitter a
 	// plain Sleep left a ~22s reconnect loop running after Stop.
@@ -1012,7 +1021,7 @@ func (t *MailruDocsTransport) scheduleReconnectNoCaptcha(attempt int) {
 	if !t.reconnecting.TryClaim() {
 		return
 	}
-	const wait = 5 * time.Minute
+	const wait = rateLimitReconnectWait
 	utils.Debugf("[M-DOCS] rate limited, waiting %v before the next attempt", wait)
 	select {
 	case <-time.After(wait):
@@ -1024,6 +1033,67 @@ func (t *MailruDocsTransport) scheduleReconnectNoCaptcha(attempt int) {
 	}
 	t.RecordReconnect()
 	t.connectToDoc(0)
+}
+
+// effectiveWait is how long to sit before the next dial. The exponential
+// backoff caps at 15 s because a network blip must not delay recovery. That
+// reasoning does not hold when every session dies in seconds: measured on
+// 2026-10-12, Mail.ru never let one past 9.8 s, and the node dutifully
+// re-dialled about every twenty seconds for hours - which is the way to turn a
+// refusal into a ban. While sessions keep coming back short, wait minutes.
+func (t *MailruDocsTransport) effectiveWait(attempt int) time.Duration {
+	d := reconnectBackoff(attempt)
+	if c := shortSessionCooldown(t.shortSessions()); c > d {
+		utils.Debugf("[M-DOCS] %d short-lived sessions in a row; waiting %v instead of %v",
+			t.shortSessions(), c, d)
+		d = c
+	}
+	return d
+}
+
+// noteSessionEnd records how long a session lasted and forgets the run of
+// short ones the moment a session lives long enough to count as a working one.
+func (t *MailruDocsTransport) noteSessionEnd(alive time.Duration) {
+	if alive < healthySession {
+		atomic.AddInt32(&t.shortSessionCount, 1)
+		return
+	}
+	atomic.StoreInt32(&t.shortSessionCount, 0)
+}
+
+func (t *MailruDocsTransport) shortSessions() int32 {
+	return atomic.LoadInt32(&t.shortSessionCount)
+}
+
+// rateLimitReconnectWait is how long to sit out a document that is actively
+// refusing us. shortSessionCooldown tops out at the same value on purpose: one
+// rule for "this service is saying no", not two that can disagree.
+const rateLimitReconnectWait = 5 * time.Minute
+
+// healthySession is the lifetime past which a session counts as a working one.
+// Below it the service is refusing us rather than the network having blinked.
+const healthySession = 30 * time.Second
+
+// shortSessionCooldown is how long to wait after n consecutive sessions that
+// all died young. The first costs nothing extra - the ordinary backoff already
+// covers a single blip - and from the second on it grows to minutes.
+//
+// The floor is 30 s and not something smaller on purpose: the ordinary backoff
+// reaches 22.5 s once its 50% jitter is added, so a cooldown under that would
+// be silently swallowed and the escalation would depend on a random draw.
+func shortSessionCooldown(n int32) time.Duration {
+	if n < 2 {
+		return 0
+	}
+	shift := n - 2
+	if shift > 8 {
+		shift = 8
+	}
+	d := 30 * time.Second * time.Duration(1<<uint(shift))
+	if d > rateLimitReconnectWait {
+		d = rateLimitReconnectWait
+	}
+	return d
 }
 
 // reconnectBackoff returns an exponential backoff with jitter, capped at 15s.
