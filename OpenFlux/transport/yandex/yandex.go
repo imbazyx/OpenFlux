@@ -410,10 +410,6 @@ func (t *YandexDocsTransport) keepAliveLoop() {
 func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 	text := string(data)
 
-	if strings.Contains(text, "---KA---") {
-		return
-	}
-
 	// Socket.IO ping - respond with pong (use safeWrite)
 	if text == "2" {
 		if session != nil && session.Conn != nil {
@@ -446,42 +442,62 @@ func (t *YandexDocsTransport) handleMessage(session *DocSession, data []byte) {
 		return
 	}
 
-	if strings.Contains(text, "saveChanges") || strings.Contains(text, "cursor") {
-		base64Str := t.extractBase64String(text)
-		if base64Str == "" {
-			return
+	if strings.Contains(text, "saveChanges") {
+		// saveChanges carries its own single payload, not a cursor list, so it
+		// keeps its own extraction.
+		if base64Str := t.extractSaveChangesPayload(text); base64Str != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(base64Str); err != nil {
+				utils.Debugf("[YDOCS] Base64 decode error: %v", err)
+			} else {
+				t.RecordReceive(len(decoded))
+				t.CallReceive(decoded)
+			}
 		}
+		return
+	}
 
-		decoded, err := base64.StdEncoding.DecodeString(base64Str)
-		if err != nil {
-			utils.Debugf("[YDOCS] Base64 decode error: %v", err)
-			return
+	// Every cursor entry in the frame, not the first one, and a keep-alive is
+	// filtered per entry rather than dropping the whole frame. Yandex batches
+	// cursor entries into one message under load and may put a keep-alive
+	// among them, exactly as Mail.ru does; returning early on any frame
+	// containing "---KA---" lost every packet behind it, in silence.
+	if strings.Contains(text, "cursor") {
+		for _, base64Str := range CursorPayloads(text) {
+			decoded, err := base64.StdEncoding.DecodeString(base64Str)
+			if err != nil {
+				utils.Debugf("[YDOCS] Base64 decode error: %v", err)
+				continue
+			}
+			t.RecordReceive(len(decoded))
+			t.CallReceive(decoded)
 		}
-
-		t.RecordReceive(len(decoded))
-		t.CallReceive(decoded)
 	}
 }
 
-func (t *YandexDocsTransport) extractBase64String(response string) string {
-	if strings.Contains(response, "saveChanges") {
-		marker := `"excelAdditionalInfo":"`
-		left := strings.Index(response, marker) + len(marker)
-		if left < len(marker) {
-			return ""
+// CursorPayloads returns the base64 payload of every cursor entry in a server
+// message, in order, without the keep-alive entries. Pure, so it is testable.
+func CursorPayloads(text string) []string {
+	var out []string
+	for _, m := range cursorPayloadRe.FindAllStringSubmatch(text, -1) {
+		if len(m) > 1 && m[1] != "---KA---" {
+			out = append(out, m[1])
 		}
-		right := strings.Index(response[left:], `"`)
-		if right == -1 {
-			return ""
-		}
-		return response[left : left+right]
 	}
+	return out
+}
 
-	matches := cursorPayloadRe.FindStringSubmatch(response)
-	if len(matches) > 1 {
-		return matches[1]
+// extractSaveChangesPayload pulls the payload out of a saveChanges message.
+func (t *YandexDocsTransport) extractSaveChangesPayload(response string) string {
+	marker := `"excelAdditionalInfo":"`
+	left := strings.Index(response, marker) + len(marker)
+	if left < len(marker) {
+		return ""
 	}
-	return ""
+	right := strings.Index(response[left:], `"`)
+	if right == -1 {
+		return ""
+	}
+	return response[left : left+right]
 }
 
 func (t *YandexDocsTransport) scheduleReconnect(attempt int) {
