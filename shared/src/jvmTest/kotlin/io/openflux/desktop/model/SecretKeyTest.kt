@@ -14,12 +14,25 @@ class SecretKeyTest {
     private fun base64Key(): String =
         Base64.getEncoder().encodeToString(ByteArray(32) { it.toByte() })
 
+    /**
+     * A base64 key that contains both symbols the two alphabets disagree on,
+     * `+` and `/`, because that is the only way this test can prove `isSecretKey`
+     * does not quietly accept base64url instead.
+     *
+     * It is built, not written out. A literal that looked like a real key was
+     * committed here on 2026-10-12 - and it was the owner's LIVE node key, taken
+     * to make the assertion read better. The repository is public, so that key
+     * has to be considered public and rotated, and this test must never again
+     * contain anything that could be one.
+     */
+    private val scratchKey: String =
+        Base64.getEncoder().encodeToString(ByteArray(32) { (it * 37 + 11).toByte() })
+
     @Test
     fun acceptsBothShapesTheProjectHandsOut() {
         assertTrue(isSecretKey(hexKey()), "64 hex-символа должен пройти")
         assertTrue(isSecretKey(base64Key()), "44 символа Base64 должен пройти")
-        assertTrue(isSecretKey("[REDACTED]"), "ключ владельца")
-        assertTrue(isSecretKey("[REDACTED]"), "ключ с «/»")
+        assertTrue(isSecretKey(scratchKey), "ключ с «+» и «/»")
     }
 
     @Test
@@ -41,7 +54,7 @@ class SecretKeyTest {
         // A key whose base64 actually contains the two symbols that differ
         // between alphabets; replacing them makes base64url, which the node -
         // which hashes the bytes as given - cannot match.
-        val base64 = "[REDACTED]"
+        val base64 = scratchKey
         assertTrue(isSecretKey(base64), "исходный ключ проходит")
         assertFalse(isSecretKey(base64.replace('/', '_')), "base64url вместо base64")
         assertFalse(isSecretKey(hexKey().uppercase()), "заглавные hex-символы")
