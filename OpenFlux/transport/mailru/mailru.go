@@ -134,6 +134,19 @@ type MailruDocsTransport struct {
 	// Consecutive sessions that died before healthySession. Read and written
 	// atomically; only the backoff consults it.
 	shortSessionCount int32
+
+	// Where the two reconnect entry points are on the backoff ladder, shared so
+	// that neither can quietly restart it at the bottom.
+	attempt int32
+}
+
+// currentAttempt is the ladder position both reconnect paths must continue from.
+func (t *MailruDocsTransport) currentAttempt() int {
+	n := atomic.LoadInt32(&t.attempt)
+	if n < 0 {
+		return 0
+	}
+	return int(n)
 }
 
 // NewMailruDocsTransport accepts either a bare weblink ("AbCdEfGh1/IjKlMnOp2")
@@ -918,8 +931,19 @@ func (t *MailruDocsTransport) healthLoop() {
 	}
 }
 
-func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
+// advanceAttempt publishes and returns the next position on the ladder. Both
+// reconnect entry points go through it, so neither can restart the ladder at
+// the bottom while the other is mid-flight.
+func (t *MailruDocsTransport) advanceAttempt(attempt int) int {
 	next := attempt + 1
+	atomic.StoreInt32(&t.attempt, int32(next))
+	return next
+}
+
+func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
+	// Publish the position before the guard and the wait, so a watchdog that
+	// fires mid-flight continues this ladder instead of starting a second one.
+	next := t.advanceAttempt(attempt)
 	if !t.IsRunning() {
 		return
 	}
@@ -939,6 +963,7 @@ func (t *MailruDocsTransport) scheduleReconnect(attempt int) {
 		utils.Debugf("[M-DOCS] reconnect already in flight, not scheduling another")
 		return
 	}
+	t.RecordReconnect()
 
 	d := t.effectiveWait(next)
 	utils.Debugf("[M-DOCS] reconnecting in %v (attempt %d)", d, next)
@@ -968,16 +993,16 @@ func (t *MailruDocsTransport) requestReconnect(reason string) {
 	if !t.IsRunning() {
 		return
 	}
-	if !t.reconnecting.TryClaim() {
-		// A reconnect is already in flight; it will pick up this dead session
-		// on its own, because connectToDoc displaces whatever it finds.
-		return
-	}
-	utils.Debugf("[M-DOCS] session dead (%s), reconnecting", reason)
-	// Reconnect immediately: the backoff exists to spare a rate-limited
-	// service, but this socket is already dead, so there is nothing to wait for.
+	utils.Debugf("[M-DOCS] session dead (%s), reconnecting through the backoff", reason)
+	// Watchdogs used to dial immediately, which is right for a network blip but
+	// wrong for a throttled document: the immediate dial bypasses the wait that
+	// is supposed to spare the address, and when several watchdogs fire in a
+	// burst each one slips a fetchDocInfo past the next. Measured 2026-10-12:
+	// ~90 dials an hour, pairs of them milliseconds apart. Going through the
+	// same backoff as the reader collapses them into one. scheduleReconnect owns
+	// the attempt counter and the guard, so the ladder is shared and single.
 	t.RecordReconnect()
-	t.connectToDoc(0)
+	t.scheduleReconnect(t.currentAttempt())
 }
 
 // ErrRateLimited signals that the editor API answered with Mail.ru's anti-abuse
