@@ -37,6 +37,9 @@ import (
 // constant serves both the REST API and the upgrade, so both always agree.
 const mailruUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:155.0) Gecko/20100101 Firefox/155.0"
 
+// mailruEditAPI is the editor API the transport posts the document info to.
+const mailruEditAPI = "https://cloud.mail.ru/api/v4/r7/edit"
+
 // maxWSMessageBytes caps one WebSocket message. A tunnel frame is at most 1 MiB
 // (transport/framing.go), so a few megabytes leaves generous headroom for a
 // batched read while still refusing the unbounded message a hostile
@@ -55,6 +58,24 @@ func safeMailruWSURL(raw string) string {
 	return u.Scheme + "://" + u.Host + "/…"
 }
 
+// canEdit reports whether the session may write to the document.
+//
+// A document that only lets the session read ("edit": false in the
+// permissions) is closed by the editor server the first time a write that
+// touches the document reaches it - the upstream project found the same and
+// guards its save the same way. Sending a cursor into such a document costs
+// the session its socket every ten seconds, which looks like a flaky link
+// rather than a document that refuses writes.
+func canEdit(permissions map[string]interface{}) bool {
+	if permissions == nil {
+		return true
+	}
+	if v, ok := permissions["edit"].(bool); ok {
+		return v
+	}
+	return true
+}
+
 var cursorPayloadRe = regexp.MustCompile(`"cursor":"[^;]+;([^"]+)"`)
 
 type MailruDocsInfo struct {
@@ -67,6 +88,11 @@ type MailruDocsInfo struct {
 	Permissions  map[string]interface{}
 	CallbackURL  string
 	EditorUserID string
+	// Mode is the mode the server granted: "edit" or "view". A document whose
+	// share settings give the session no editing rights answers "view" and
+	// permissions.edit=false, and asking for "edit" on it makes the editor
+	// server drop the session right after the upgrade.
+	Mode string
 }
 
 type DocSession struct {
@@ -374,11 +400,21 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		auth1 := fmt.Sprintf(`40{"token":"%s"}`, info.Token)
 		session.safeWrite(websocket.TextMessage, []byte(auth1))
 
+		// The server tells us which mode the session may use; a session that
+		// asks for more than it was granted is dropped right after the
+		// upgrade.
+		mode := info.Mode
+		if mode == "" {
+			mode = "edit"
+		}
 		authMsg := map[string]interface{}{
 			"type":                "auth",
 			"docid":               info.DocKey,
 			"documentCallbackUrl": info.CallbackURL,
-			"token":               "fghhfgsjdgfjs",
+			// The upstream project sends a fixed placeholder here and the
+			// real session token in jwtOpen below, and the editor accepts
+			// exactly that pair - a signed-in session included.
+			"token": "fghhfgsjdgfjs",
 			"user": map[string]interface{}{
 				"id":        info.EditorUserID,
 				"username":  userID,
@@ -388,7 +424,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			"lastOtherSaveTime":  -1,
 			"block":              []interface{}{},
 			"documentFormatSave": 65,
-			"view":               false,
+			"view":               mode == "view",
 			"isCloseCoAuthoring": false,
 			"openCmd": map[string]interface{}{
 				"c":               "open",
@@ -402,7 +438,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 				"convertToOrigin": ".pdf.xps.oxps.djvu",
 			},
 			"lang":                  "ru",
-			"mode":                  "edit",
+			"mode":                  mode,
 			"permissions":           info.Permissions,
 			"IsAnonymousUser":       false,
 			"timezoneOffset":        -180,
@@ -1141,6 +1177,59 @@ func reconnectBackoff(n int) time.Duration {
 
 // fetchDocInfo POSTs to Mail.ru's public-document editor API and parses the
 // response into the fields needed to open the collaborative WebSocket.
+// mailruCSRFPattern picks the CSRF token out of the state the document's page
+// carries: "tokens":{"csrf":"..."}.
+var mailruCSRFPattern = regexp.MustCompile(`"tokens"\s*:\s*\{\s*"csrf"\s*:\s*"([^"]+)"`)
+
+// editAPIRequest posts the editor API request, with the page's CSRF token
+// when one is known.
+func (t *MailruDocsTransport) editAPIRequest(client *http.Client, body []byte, weblink, csrf string) (*http.Response, []byte, error) {
+	req, _ := http.NewRequest("POST", mailruEditAPI, bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", mailruUserAgent)
+	// The same browser header the upgrade sends; upstream sends it here too.
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("X-Api-Version", "4")
+	req.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s?weblink=%s", weblink, weblink))
+	if csrf != "" {
+		req.Header.Set("X-CSRF-Token", csrf)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	return resp, bodyBytes, nil
+}
+
+// documentCSRF reads the document's page and takes the CSRF token out of the
+// state the page carries. The page also hands out the session cookies the jar
+// keeps, so this is the step that turns an anonymous client into a signed-in
+// one.
+func (t *MailruDocsTransport) documentCSRF(client *http.Client, weblink string) (string, error) {
+	pageURL := fmt.Sprintf("https://cloud.mail.ru/public/%s", weblink)
+	req, _ := http.NewRequest("GET", pageURL, nil)
+	req.Header.Set("User-Agent", mailruUserAgent)
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	page, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("document page returned status %d", resp.StatusCode)
+	}
+	m := mailruCSRFPattern.FindSubmatch(page)
+	if m == nil {
+		return "", fmt.Errorf("no CSRF token in the document page")
+	}
+	return string(m[1]), nil
+}
+
 func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, error) {
 	t.jarMu.RLock()
 	jar := t.cookieJar
@@ -1161,29 +1250,37 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 	}
 	jsonData, _ := json.Marshal(reqBody)
 
-	apiURL := "https://cloud.mail.ru/api/v4/r7/edit"
-	utils.Debugf("[M-DOCS] fetchDocInfo POST %s", apiURL)
+	utils.Debugf("[M-DOCS] fetchDocInfo POST %s", mailruEditAPI)
 
-	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonData))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", mailruUserAgent)
-	// The same browser header the upgrade sends; upstream sends it here too.
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("X-Api-Version", "4")
-	req.Header.Set("Referer", fmt.Sprintf("https://cloud.mail.ru/public/%s?weblink=%s", weblink, weblink))
-
-	resp, err := client.Do(req)
+	// A document whose share settings allow anonymous viewing but not
+	// anonymous editing answers 401 "public is available with auth only".
+	// With a Mail.ru session present it answers 403 {"error":"token"} instead,
+	// and the token it wants is the CSRF token the document's own page carries
+	// in "tokens":{"csrf":...}. Measured 2026-10-22 from a German host: with
+	// that header the same request answers 200 and the document opens. The
+	// anonymous path is untouched - the page is only read after the plain
+	// request was refused.
+	resp, bodyBytes, err := t.editAPIRequest(client, jsonData, weblink, "")
 	if err != nil {
 		return MailruDocsInfo{}, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		csrf, csrfErr := t.documentCSRF(client, weblink)
+		if csrfErr != nil {
+			return MailruDocsInfo{}, fmt.Errorf("API returned status %d and the document page could not be read: %w",
+				resp.StatusCode, csrfErr)
+		}
+		utils.Debugf("[M-DOCS] editor API answered %d; retrying with the page's CSRF token", resp.StatusCode)
+		resp, bodyBytes, err = t.editAPIRequest(client, jsonData, weblink, csrf)
+		if err != nil {
+			return MailruDocsInfo{}, err
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return MailruDocsInfo{}, fmt.Errorf("API returned status %d", resp.StatusCode)
 	}
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
 
 	// Mail.ru answers an editor-API call from a throttled address with its
 	// anti-abuse page instead of JSON: a 302 to /challenge.html?hash429=...,
@@ -1228,6 +1325,10 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 		return MailruDocsInfo{}, fmt.Errorf("editorConfig object missing")
 	}
 	callbackURL, _ := editorConfig["callbackUrl"].(string)
+	mode, _ := editorConfig["mode"].(string)
+	if mode == "" {
+		mode = "edit"
+	}
 
 	userObj, _ := editorConfig["user"].(map[string]interface{})
 	var editorUserID string
@@ -1248,6 +1349,7 @@ func (t *MailruDocsTransport) fetchDocInfo(weblink string) (MailruDocsInfo, erro
 		Permissions:  permissions,
 		CallbackURL:  callbackURL,
 		EditorUserID: editorUserID,
+		Mode:         mode,
 	}, nil
 }
 
@@ -1256,6 +1358,24 @@ func randUserID() string {
 }
 
 // ---- CookieExchanger ----
+
+// LoadCookieFile imports a Netscape cookies.txt export into the transport's
+// cookie jar, so the document opens signed in. Needed for documents whose
+// share settings allow anonymous viewing but not anonymous editing: the editor
+// API answers those with 401 "public is available with auth only", and only a
+// Mail.ru session gets past it.
+func (t *MailruDocsTransport) LoadCookieFile(path string) error {
+	t.jarMu.RLock()
+	jar := t.cookieJar
+	t.jarMu.RUnlock()
+	if jar == nil {
+		jar, _ = cookiejar.New(nil)
+		t.jarMu.Lock()
+		t.cookieJar = jar
+		t.jarMu.Unlock()
+	}
+	return loadMailruCookies(path, jar)
+}
 
 // FetchCookies returns a snapshot of the transport's current cookie jar as
 // name -> value. Used by the exit node to answer a SubtypeCookiesRequest.

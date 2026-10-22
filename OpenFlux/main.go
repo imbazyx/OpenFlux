@@ -21,7 +21,6 @@ import (
 	"openflux/transport/control"
 	"openflux/transport/cupsonline"
 	"openflux/transport/ipc"
-	"openflux/transport/mailru"
 	"openflux/transport/manager"
 	"openflux/transport/oneme"
 	"openflux/transport/yandex"
@@ -240,6 +239,7 @@ func main() {
 	yandexURL := flag.String("yandex-url", "", "URL for the yandex transport (overrides --url in --transports mode)")
 	vyandexURL := flag.String("vyandex-url", "", "URL for the vyandex transport")
 	flag.StringVar(&yandexCookiesFile, "yandex-cookies-file", "", "Netscape cookies.txt with a Yandex login for vyandex transports")
+	flag.StringVar(&mailruCookiesFile, "mailru-cookies-file", "", "Netscape cookies.txt with a Mail.ru session for the mailru transport")
 	boardsURL := flag.String("boards-url", "", "URL for the boards transport")
 	mailruURL := flag.String("mailru-url", "", "URL (weblink) for the mailru transport")
 	cupsonlineURL := flag.String("cupsonline-url", "", "URL for the cupsonline transport")
@@ -319,6 +319,9 @@ TRANSPORTS  (multi-transport session; requires --encryption-key-file)
       --yandex-cookies-file=<path>
                                Netscape cookies.txt with a Yandex login for
                                vyandex transports.
+      --mailru-cookies-file=<path>
+                               Netscape cookies.txt with a Mail.ru session
+                               for the mailru transport.
       --boards-url=<URL>       URL for the boards transport.
       --mailru-url=<WEBLINK>   Weblink for the mailru transport.
       --cupsonline-url=<URL>   URL for the cupsonline transport.
@@ -936,7 +939,11 @@ DEPRECATED (removed in v2)
 		case "cupsonline":
 			inner = cupsonline.NewCupsonlineTransport(globalDocUrl, config, !isExit)
 		case "mailru":
-			inner = mailru.NewMailruDocsTransport(globalDocUrl, config)
+			t, err := newMailruTransport(globalDocUrl, config)
+			if err != nil {
+				log.Fatalf("mailru: %v", err)
+			}
+			inner = t
 		default:
 			log.Fatalf("Unknown transport type: %s", *transportType)
 		}

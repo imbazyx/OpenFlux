@@ -17,10 +17,28 @@ import (
 // a Yandex login that every vyandex transport starts with.
 var yandexCookiesFile string
 
+// mailruCookiesFile is --mailru-cookies-file: a Netscape cookies.txt with a
+// Mail.ru session that every mailru transport starts with.
+var mailruCookiesFile string
+
 func newVolgaTransport(docURL string, cfg transport.TransportConfig) (transport.Transport, error) {
 	t := yandex.NewYandexVolgaTransport(docURL, cfg)
 	if yandexCookiesFile != "" {
 		if err := t.LoadCookieFile(yandexCookiesFile); err != nil {
+			return nil, err
+		}
+	}
+	return t, nil
+}
+
+// newMailruTransport builds the mailru transport and loads the Mail.ru
+// session from --mailru-cookies-file, if the owner gave one. A document whose
+// share settings refuse anonymous editing needs that session: the editor API
+// answers 401 "public is available with auth only" without it.
+func newMailruTransport(docURL string, cfg transport.TransportConfig) (transport.Transport, error) {
+	t := mailru.NewMailruDocsTransport(docURL, cfg)
+	if mailruCookiesFile != "" {
+		if err := t.LoadCookieFile(mailruCookiesFile); err != nil {
 			return nil, err
 		}
 	}
@@ -51,7 +69,7 @@ func transportFactory(baseCfg transport.TransportConfig, isExit bool) manager.Fa
 		case "boards":
 			return yandex.NewBoardsTransport(cfg.URL, baseCfg), nil
 		case "mailru":
-			return mailru.NewMailruDocsTransport(cfg.URL, baseCfg), nil
+			return newMailruTransport(cfg.URL, baseCfg)
 		case "cupsonline":
 			return cupsonline.NewCupsonlineTransport(cfg.URL, baseCfg, !isExit), nil
 		case "oneme":
