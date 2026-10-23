@@ -218,11 +218,24 @@ jobs:
           # commit nobody built - the exact tag/artifact divergence that cut
           # 2.3.1. Asserted as well as passed: the flag is the fix, the check is
           # what proves the flag was honoured.
-          gh release create "$tag" dist/* \
-            --target "$GITHUB_SHA" \
-            --title "OpenFluxAndroid $tag" \
-            --generate-notes \
-            --notes "APK универсальный или под архитектуру устройства. Ядро: \`$(git -C OpenFlux rev-parse --short HEAD)\`. Контрольные суммы — в \`SHA256SUMS.txt\`."
+          notes="APK универсальный или под архитектуру устройства. Ядро: \`$(git -C OpenFlux rev-parse --short HEAD)\`. Контрольные суммы — в \`SHA256SUMS.txt\`."
+          # A tag pushed a second time - a fix republished under the same
+          # version, which is this project's rule rather than a new one - finds
+          # its release already published, and `gh release create` refuses to
+          # replace it. The run then fails after the build succeeded, and the
+          # release keeps the binaries of the commit it was cut from. Replace the
+          # assets instead: the tag, the commit and the artifacts stay one thing,
+          # which is what 2.3.1 exists to guarantee.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --target "$GITHUB_SHA" --title "OpenFluxAndroid $tag" --notes "$notes"
+          else
+            gh release create "$tag" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "OpenFluxAndroid $tag" \
+              --generate-notes \
+              --notes "$notes"
+          fi
 
       - name: Warn if the desktop installer is missing from the release
         if: always() && (startsWith(github.ref, 'refs/tags/v') || (inputs.publish && inputs.version != ''))
