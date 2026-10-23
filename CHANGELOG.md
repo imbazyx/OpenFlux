@@ -3,6 +3,41 @@
 All notable changes to OpenFluxAndroid. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.3.5] - 2026-10-23
+
+Both clients rebuilt on one core: the Mail.ru carrier gets past the 409 and
+finishes its document handshake, and Yandex stops losing cursor batches.
+
+### Fixed
+
+- **The Mail.ru 409 was ours, not a ban.** The carrier now sends
+  `Accept-Language`, so the editor answers instead of refusing.
+- **Cursor batches are no longer lost.** A batch split across messages is
+  reassembled in order on both Mail.ru and Yandex; both used to drop the tail.
+- **Dialing is IPv4-first.** A name whose AAAA record does not work no longer
+  costs a connection attempt on every carrier dial.
+- **A peer can no longer choose its own role.** The role comes from the
+  configuration the exit publishes, not from the first packet on the wire.
+- **The watchdogs back off through the ladder instead of around it**, and the
+  write-failure retry that caused a connect storm is gone.
+
+### Changed
+
+- **Mail.ru documents that need a session open again.** The transport loads
+  cookies from `--mailru-cookies-file`, retries `fetchDocInfo` with the page's
+  CSRF token, keeps the editor alive with an activity loop and sends the
+  `saveChanges` frame the editor expects.
+- **The Volga keep-alive stays on the control path**, where it belongs, and no
+  longer travels as tunnel data.
+- Both clients are rebuilt from the same tree: the `.aar` and the PC core carry
+  commit `1559215`.
+
+### Notes
+
+- Versions 2.3.2–2.3.4 shipped without a changelog entry; this one restarts it.
+- Mail.ru's editor still drops some documents with `4004 access deny` shortly
+  after the handshake. Everything up to that point is measured and fixed here;
+  the refusal itself comes from the editor, not from our protocol.
 ## [2.3.1] - 2026-10-02
 
 Both clients on one core, and a tag that means what it says.
