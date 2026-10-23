@@ -23,6 +23,7 @@ import io.openflux.android.web.WebBrowserViews
 import io.openflux.desktop.model.ConnectionState
 import io.openflux.desktop.model.ThemeMode
 import io.openflux.desktop.ui.NoScrollbars
+import io.openflux.desktop.ui.ProvideKeyboardOverlap
 import io.openflux.desktop.ui.Shortcuts
 import io.openflux.desktop.ui.home.HomeTab
 import io.openflux.desktop.ui.shell.OpenFluxApp
@@ -61,7 +62,12 @@ class MainActivity : ComponentActivity() {
                 else SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
                 enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
             }
-            OpenFluxApp(container, NoScrollbars, remember { Shortcuts() }, WebBrowserViews)
+            // Inside this composition the keyboard insets are real; dialogs
+            // cannot see them from their own windows and get the height from
+            // here instead.
+            ProvideKeyboardOverlap {
+                OpenFluxApp(container, NoScrollbars, remember { Shortcuts() }, WebBrowserViews)
+            }
         }
     }
 

@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,6 +44,7 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -57,7 +57,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
-import io.openflux.desktop.ui.softwareKeyboardVisible
+import io.openflux.desktop.ui.LocalKeyboardOverlap
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -203,21 +203,21 @@ fun AppDialog(
 ) {
     val focus = remember { FocusRequester() }
     val scroll = rememberScrollState()
-    // The keyboard overlays a dialog window instead of resizing it, so the
-    // buttons at the bottom stay under it. imePadding lifts the whole dialog
-    // above the keyboard.
+    // The keyboard covers a dialog window instead of resizing it, so the dialog
+    // is lifted by the covered height itself - otherwise the buttons at its
+    // bottom, "Добавить профиль" among them, end up underneath.
     //
-    // Lifting it is not enough on its own: a swipe-down hides the keyboard, the
+    // Lifting is not enough on its own: a swipe-down hides the keyboard, the
     // dialog window takes focus back, and the focused text field asks for the
-    // keyboard again - it flips down for a moment and returns, with "Добавить
-    // профиль" behind it. Nothing else stops that, so the field loses focus
-    // when the keyboard has been up and gone again. On the desktop the inset is
-    // reports no keyboard at all, so nothing changes there.
-    val keyboardVisible = softwareKeyboardVisible()
+    // keyboard again - it flips down for a moment and returns. Nothing else
+    // stops that, so the field loses focus once the keyboard has been up and
+    // gone again. On the desktop the overlap is always zero, `keyboardWasVisible`
+    // never becomes true, and nothing changes.
+    val keyboard = LocalKeyboardOverlap.current
     val focusManager = LocalFocusManager.current
     var keyboardWasVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(keyboardVisible) {
-        if (keyboardVisible) {
+    LaunchedEffect(keyboard) {
+        if (keyboard > 0.dp) {
             keyboardWasVisible = true
         } else if (keyboardWasVisible) {
             keyboardWasVisible = false
@@ -226,7 +226,7 @@ fun AppDialog(
     }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         // A margin from the window's edges; a dialog taller than the window scrolls its body.
-        Box(Modifier.padding(AppTheme.spacing.xl).imePadding(), contentAlignment = Alignment.Center) {
+        Box(Modifier.padding(AppTheme.spacing.xl).padding(bottom = keyboard), contentAlignment = Alignment.Center) {
         Column(
             modifier
                 .widthIn(min = 280.dp, max = AppTheme.dimens.dialogWidth)

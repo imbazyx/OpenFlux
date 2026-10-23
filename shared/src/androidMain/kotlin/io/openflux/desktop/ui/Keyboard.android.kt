@@ -1,31 +1,25 @@
 package io.openflux.desktop.ui
 
-import android.view.WindowManager
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.ime
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.window.DialogWindowProvider
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
 
+/**
+ * Measures the software keyboard once, where the insets are real - around the
+ * activity's own content - and hands the height to every dialog below through
+ * [LocalKeyboardOverlap].
+ *
+ * Inside a dialog this cannot be measured: a dialog window is neither resized by
+ * the keyboard nor given its inset, which is why the dialogs read the value
+ * instead of asking for it.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal actual fun softwareKeyboardVisible(): Boolean {
-    val view = LocalView.current
-    // A dialog window is not resized by the keyboard unless it asks to be, and
-    // Compose's dialog does not ask: the keyboard lays itself over the bottom of
-    // the dialog, which is where the buttons are. ADJUST_RESIZE makes the window
-    // shrink instead, so the dialog's own scrolling body takes the squeeze and
-    // the buttons stay on screen. STATE_UNCHANGED because this must not open the
-    // keyboard by itself - the field that asked for it already did.
-    DisposableEffect(view) {
-        val window = (view.parent as? DialogWindowProvider)?.window
-        window?.setSoftInputMode(
-            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_UNCHANGED,
-        )
-        onDispose { }
-    }
-    return WindowInsets.isImeVisible
+fun ProvideKeyboardOverlap(content: @Composable () -> Unit) {
+    val density = LocalDensity.current
+    val covered = with(density) { WindowInsets.ime.getBottom(this).toDp() }
+    CompositionLocalProvider(LocalKeyboardOverlap provides covered, content = content)
 }

@@ -1,15 +1,18 @@
 package io.openflux.desktop.ui
 
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 /**
- * Whether the software keyboard is on screen. Android answers for real; a
- * desktop has no keyboard to cover the window, so it says no.
+ * How much of the window the software keyboard covers.
  *
- * A dialog needs this because the keyboard overlays a dialog window instead of
- * resizing it: without knowing that the keyboard went away, a focused text field
- * asks for it back the moment the window takes focus again, and the buttons
- * underneath stay unreachable.
+ * A dialog cannot measure this itself: the keyboard does not resize a dialog
+ * window and does not report its inset to the dialog's content, so the covered
+ * height has to come from the activity's own composition, where the insets are
+ * real. Without it the buttons at the bottom of a dialog - "Добавить профиль" in
+ * the import one - end up under the keyboard, unreachable while it is up.
+ *
+ * The default is for the desktop, which has no keyboard over its windows.
  */
-@Composable
-internal expect fun softwareKeyboardVisible(): Boolean
+val LocalKeyboardOverlap = compositionLocalOf<Dp> { 0.dp }
