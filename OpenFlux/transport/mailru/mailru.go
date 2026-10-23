@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"os"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -400,12 +401,7 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 		}
 
 		// The co-authoring server judges the SOCKET, not only the auth
-		// message: a document whose share settings allow anonymous viewing
-		// but not anonymous editing hands out the room and then drops it a
-		// few seconds after Auth OK (measured 2026-10-23: close 1005 about
-		// 4s in, on both a view-only and an editable document, while the
-		// very same request with the session cookies on the upgrade stays
-		// up). A browser puts its session cookies on the WebSocket
+		// message. A browser puts its session cookies on the WebSocket
 		// handshake, so the jar that fetchDocInfo filled has to go on the
 		// dialer as well.
 		t.jarMu.RLock()
@@ -656,6 +652,14 @@ func (t *MailruDocsTransport) writerLoop() {
 
 		payload := base64.StdEncoding.EncodeToString(pending)
 		msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s"}]`, payload)
+		// Measured 2026-10-23 on the public DiplomA.docx share: a registered
+		// (auth-completed) session survives only ONE cursor write; the second
+		// one — KA or real data, 8+ s after the first — is answered by the docs
+		// server with disconnectReason 4004 "access deny" and a 1005 close. So a
+		// real data cursor is sent here only for the first packet; everything
+		// after that arrives on a socket the server has already fenced, reads as
+		// a write error, and reconnects. OF_MAILRU_KEEPALIVE=off removes the
+		// second write (the KA) for sessions that move only the liveness token.
 		if err := session.safeWrite(websocket.TextMessage, []byte(msg)); err != nil {
 			utils.Debugf("[M-DOCS] Write error: %v", err)
 			if isFatalWriteError(err) {
@@ -736,6 +740,9 @@ func (t *MailruDocsTransport) keepAliveLoop() {
 	keepAliveMsg := `42["message",{"type":"cursor","cursor":"18;---KA---"}]`
 
 	for t.tick(t.GetConfig().KeepAliveInterval) {
+		if os.Getenv("OF_MAILRU_KEEPALIVE") == "off" {
+			return
+		}
 		t.Mu.Lock()
 		session := t.session
 		t.Mu.Unlock()
@@ -768,11 +775,33 @@ func (t *MailruDocsTransport) keepAliveLoop() {
 //
 // Без этого потока сервер закрывает сессию через несколько секунд после
 // Auth OK: участник, который вошёл и молчит, выглядит для него повисшим.
+//
+// OF_MAILRU_SAVECHANGES отключает или ограничивает поток. На документе
+// DiplomA.docx (HgK6/ACqwRkbJx, публичная ссылка) 2026-10-23 меряно на x96:
+// анонимная сессия живёт сам по себе (probe silent: engine.io пинги 25 с),
+// курсорные кадры принимает, но первый же шаблонный saveChanges собирает
+// ночью close 1005 через ~2-4 с после Auth OK — рундук с тем же кадром
+// отключенным ещё не меряно, поэтомуrv переменная - это diagnostic, а не
+// заявленный режим.
 func (t *MailruDocsTransport) editorActivityLoop() {
 	const (
 		minDelay = 500 * time.Millisecond
 		maxDelay = 5 * time.Second
 	)
+	switch os.Getenv("OF_MAILRU_SAVECHANGES") {
+	case "off":
+		utils.Infof("[M-DOCS] saveChanges loop disabled via OF_MAILRU_SAVECHANGES=off")
+		return
+	case "editor":
+		// Diagnostic: emit saveChanges only while a real editor identity is
+		// present (the API answered editorConfig.user.id). On DiplomA.docx this
+		// still loses the socket to 4004 within a few seconds (see the
+		// writerLoop comment), so the mode exists only to bisect whether
+		// saveChanges is the *first* write the server fences.
+		utils.Infof("[M-DOCS] saveChanges loop: editor-gated")
+	default:
+		utils.Infof("[M-DOCS] saveChanges loop: enabled (default)")
+	}
 	for t.IsRunning() {
 		span := int64(maxDelay - minDelay)
 		delay := minDelay + time.Duration(rand.Int63n(span+1))
@@ -788,11 +817,16 @@ func (t *MailruDocsTransport) editorActivityLoop() {
 		if session == nil || session.Conn == nil {
 			continue
 		}
+		// In editor-gated mode, skip the saveChanges frame until the API
+		// actually named an editor for the session.
 		// Документ, в который сессии разрешено только смотреть ("edit":
 		// false), не принимает saveChanges: сервер закрывает соединение (без
 		// кадра close) на первом же таком сообщении, снова и снова. Такому
 		// документу молчание дешевле.
 		if !canEdit(session.Info.Permissions) {
+			continue
+		}
+		if os.Getenv("OF_MAILRU_SAVECHANGES") == "editor" && session.Info.EditorUserID == "" {
 			continue
 		}
 		if err := session.safeWrite(websocket.TextMessage, buildSaveChanges(session)); err != nil {
