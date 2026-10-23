@@ -76,6 +76,44 @@ func canEdit(permissions map[string]interface{}) bool {
 	return true
 }
 
+// saveChangesMessageTemplate — saveChanges-сообщение в формате веб-клиента
+// Mail.ru: две подстановки %s — UserId и UserShortId в excelAdditionalInfo.
+// Остальные поля (op-ы в changes, анкоры, версия) оставлены ровно такими,
+// какими их шлёт живой редактор; это шаблон, а не «правильная» структура —
+// формат оп закрытый, и мы только подставляем свои значения участника.
+//
+// Зачем он нужен: сервер закрывает сокет участнику, который вошёл в документ
+// и ничего не делает (close 1005 примерно через 4 секунды после Auth OK,
+// измерено 2026-10-23 на двух разных документах). Живой редактор всё время
+// шлёт saveChanges, и только этот поток удерживает сессию.
+//
+// Поля isCoAuthoring/releaseLocks = false — особенность именно mail.ru
+// (у yandex.docs там true/true).
+const saveChangesMessageTemplate = `42["message",{"type":"saveChanges","changes":"[\"76;AgAAADEA//8BAOwbfF7pEAAALQEAAAMAAAAAAAAAAAAAAAAAAAAAAAAA9v///xoAAAAyADAAMgA2AC4AMgAuADEALgAyADIANgA4AA==\",\"35;BgAAADYAMgA3AAEAHAABAAAAAAAAAAEAAABhAAAAAAMAAAA=\",\"35;BgAAADYAMgA3AAEAHAABAAAAAQAAAAEAAABzAAAAAAMAAAA=\",\"35;BgAAADYAMgA3AAEAHAABAAAAAgAAAAEAAABkAAAAAAMAAAA=\"]","startSaveChanges":true,"endSaveChanges":true,"isCoAuthoring":false,"isExcel":false,"deleteIndex":null,"excelAdditionalInfo":"{\"UserId\":\"%s\",\"UserShortId\":\"%s\",\"CursorInfo\":\"14;BgAAADYAMgA3AAMAAAA=\"}","unlock":false,"releaseLocks":false}]`
+
+// BuildSaveChanges is the saveChanges message for one participant: a pure
+// function of the user id, exported so the JS port of this transport can be
+// compared with it byte for byte.
+func BuildSaveChanges(userID string) []byte {
+	short := userID
+	if len(short) > 1 {
+		short = short[:len(short)-1]
+	}
+	return []byte(fmt.Sprintf(saveChangesMessageTemplate, userID, short))
+}
+
+// buildSaveChanges собирает saveChanges-сообщение под конкретную сессию:
+// UserId — настоящий id участника (info.EditorUserID, при отсутствии —
+// сгенерированный session.UserID), UserShortId — производная от UserId
+// (в веб-клиенте Mail.ru это UserId без последнего символа).
+func buildSaveChanges(session *DocSession) []byte {
+	userID := session.Info.EditorUserID
+	if userID == "" {
+		userID = session.UserID
+	}
+	return BuildSaveChanges(userID)
+}
+
 var cursorPayloadRe = regexp.MustCompile(`"cursor":"[^;]+;([^"]+)"`)
 
 type MailruDocsInfo struct {
@@ -221,6 +259,7 @@ func (t *MailruDocsTransport) Start() error {
 	t.session = nil
 	t.Mu.Unlock()
 	utils.SafeGo("mailru.keepAlive", t.keepAliveLoop)
+	utils.SafeGo("mailru.editorActivity", t.editorActivityLoop)
 	utils.SafeGo("mailru.rxIdle", t.rxIdleLoop)
 	utils.SafeGo("mailru.docKey", t.docKeyLoop)
 	utils.SafeGo("mailru.health", t.healthLoop)
@@ -250,6 +289,70 @@ func (t *MailruDocsTransport) Send(data []byte) error {
 	default:
 		return fmt.Errorf("write queue full")
 	}
+}
+
+// mailruSocketIOHandshakeTimeout bounds the Engine.IO/Socket.IO handshake: an
+// edge that answers the upgrade and then says nothing must not park the
+// connect goroutine forever.
+const mailruSocketIOHandshakeTimeout = 15 * time.Second
+
+// waitMailruSocketIO completes the Engine.IO / Socket.IO handshake before
+// editor authentication is sent. Mail.ru currently requires the Engine.IO
+// open frame to be consumed before the Socket.IO connect packet is sent; a
+// client that fires `40{"token"}` straight into the upgrade gets a session
+// that authorises (Auth OK) and is then closed a few seconds later, which
+// looks exactly like a document that refuses the participant.
+func waitMailruSocketIO(session *DocSession, token string) error {
+	if session == nil || session.Conn == nil {
+		return fmt.Errorf("mailru: websocket session is nil")
+	}
+	conn := session.Conn
+	if err := conn.SetReadDeadline(time.Now().Add(mailruSocketIOHandshakeTimeout)); err != nil {
+		return fmt.Errorf("mailru: set handshake deadline: %w", err)
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	waitFor := func(match func(string) bool) error {
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				return err
+			}
+			if messageType != websocket.TextMessage {
+				continue
+			}
+			text := string(payload)
+			// Engine.IO heartbeat may arrive while handshaking.
+			if text == "2" {
+				if err := session.safeWrite(websocket.TextMessage, []byte("3")); err != nil {
+					return fmt.Errorf("mailru: send Engine.IO pong: %w", err)
+				}
+				continue
+			}
+			if match(text) {
+				return nil
+			}
+			utils.Debugf("[M-DOCS] handshake: ignoring server frame %q", text)
+		}
+	}
+
+	// Engine.IO open: 0{"sid":"...", ...}
+	if err := waitFor(func(text string) bool { return strings.HasPrefix(text, "0{") }); err != nil {
+		return fmt.Errorf("mailru: wait for Engine.IO open: %w", err)
+	}
+	utils.Debugf("[M-DOCS] Engine.IO open")
+
+	socketConnect := fmt.Sprintf(`40{"token":"%s"}`, token)
+	if err := session.safeWrite(websocket.TextMessage, []byte(socketConnect)); err != nil {
+		return fmt.Errorf("mailru: send Socket.IO connect: %w", err)
+	}
+
+	// Socket.IO acknowledgement: 40{"sid":"..."}
+	if err := waitFor(func(text string) bool { return strings.HasPrefix(text, "40") }); err != nil {
+		return fmt.Errorf("mailru: wait for Socket.IO connect: %w", err)
+	}
+	utils.Debugf("[M-DOCS] Socket.IO connected")
+	return nil
 }
 
 func (t *MailruDocsTransport) connectToDoc(attempt int) {
@@ -296,7 +399,21 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			return
 		}
 
+		// The co-authoring server judges the SOCKET, not only the auth
+		// message: a document whose share settings allow anonymous viewing
+		// but not anonymous editing hands out the room and then drops it a
+		// few seconds after Auth OK (measured 2026-10-23: close 1005 about
+		// 4s in, on both a view-only and an editable document, while the
+		// very same request with the session cookies on the upgrade stays
+		// up). A browser puts its session cookies on the WebSocket
+		// handshake, so the jar that fetchDocInfo filled has to go on the
+		// dialer as well.
+		t.jarMu.RLock()
+		wsJar := t.cookieJar
+		t.jarMu.RUnlock()
+
 		dialer := websocket.Dialer{
+			Jar: wsJar,
 			// gorilla/websocket only offers Sec-WebSocket-Extensions:
 			// permessage-deflate when this is set, and Mail.ru's edge refuses
 			// the upgrade with 409 when that header is absent. Measured on the
@@ -365,6 +482,16 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			UserID:     userID,
 		}
 
+		// Engine.IO open -> Socket.IO connect -> only then the editor auth
+		// message. Firing "40{token}" straight into the upgrade produces a
+		// session that authorises and is then closed a few seconds later.
+		if err := waitMailruSocketIO(session, info.Token); err != nil {
+			utils.Debugf("[M-DOCS] Socket.IO handshake failed: %v", err)
+			_ = conn.Close()
+			t.scheduleReconnect(attempt)
+			return
+		}
+
 		t.Mu.Lock()
 		t.session = session
 		t.SetConnected(true)
@@ -389,16 +516,6 @@ func (t *MailruDocsTransport) connectToDoc(attempt int) {
 			// the public link, and keeps calling CallReceive on a stale socket.
 			_ = existingSession.Conn.Close()
 		}
-
-		// Auth - fired immediately, same as the Yandex.Docs transport. No
-		// need to wait for the server's own "0{"/"40" handshake frames
-		// first: Mail.ru's coauthoring server buffers and processes these
-		// once its own session state catches up, and waiting for explicit
-		// acks here only stretches the outage window on every reconnect
-		// (Mail.ru can delay a fresh joiner's auth confirmation by up to
-		// ~30s while it reconciles with the other participant).
-		auth1 := fmt.Sprintf(`40{"token":"%s"}`, info.Token)
-		session.safeWrite(websocket.TextMessage, []byte(auth1))
 
 		// The server tells us which mode the session may use; a session that
 		// asks for more than it was granted is dropped right after the
@@ -640,6 +757,49 @@ func (t *MailruDocsTransport) keepAliveLoop() {
 	}
 }
 
+// editorActivityLoop периодически отправляет в документ saveChanges-сообщение
+// в формате веб-клиента Mail.ru: значения UserId/UserShortId подставляются
+// из текущей сессии, остальное — фиксированный шаблон (см.
+// saveChangesMessageTemplate). Задержка между отправками — случайная в
+// диапазоне [0.5 с, 5 с], чтобы поток выглядел как правки живого человека:
+// ровный по сути, но не метрономом. Сообщение уходит через ту же сессию, что
+// writerLoop и keepAliveLoop, и так же терпит переподключение — если сессии
+// сейчас нет, итерация просто пропускается.
+//
+// Без этого потока сервер закрывает сессию через несколько секунд после
+// Auth OK: участник, который вошёл и молчит, выглядит для него повисшим.
+func (t *MailruDocsTransport) editorActivityLoop() {
+	const (
+		minDelay = 500 * time.Millisecond
+		maxDelay = 5 * time.Second
+	)
+	for t.IsRunning() {
+		span := int64(maxDelay - minDelay)
+		delay := minDelay + time.Duration(rand.Int63n(span+1))
+		select {
+		case <-time.After(delay):
+		case <-t.Done():
+			return
+		}
+
+		t.Mu.RLock()
+		session := t.session
+		t.Mu.RUnlock()
+		if session == nil || session.Conn == nil {
+			continue
+		}
+		// Документ, в который сессии разрешено только смотреть ("edit":
+		// false), не принимает saveChanges: сервер закрывает соединение (без
+		// кадра close) на первом же таком сообщении, снова и снова. Такому
+		// документу молчание дешевле.
+		if !canEdit(session.Info.Permissions) {
+			continue
+		}
+		if err := session.safeWrite(websocket.TextMessage, buildSaveChanges(session)); err != nil {
+			utils.Debugf("[M-DOCS] saveChanges write error: %v", err)
+		}
+	}
+}
 func (t *MailruDocsTransport) handleMessage(session *DocSession, data []byte) {
 	text := string(data)
 
