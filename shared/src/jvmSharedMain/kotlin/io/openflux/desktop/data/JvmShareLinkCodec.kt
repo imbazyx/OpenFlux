@@ -60,7 +60,13 @@ class JvmShareLinkCodec : ShareLinkCodec {
             inflater.end()
         }
         val config = try {
-            json.decodeFromString(ShareConfig.serializer(), out.toString(Charsets.UTF_8))
+            // `out.toByteArray()` and not `out.toString(Charsets.UTF_8)`: that
+            // overload is Java 10 and only landed in Android API 33. On a phone
+            // (Android 11 here) it is a NoSuchMethodError at the moment a link is
+            // pasted - "No virtual method toString(Ljava/nio/charset/Charset;)" -
+            // which reads like a broken link and is not one. The desktop JVM has
+            // the method, so only the phone ever failed.
+            json.decodeFromString(ShareConfig.serializer(), String(out.toByteArray(), Charsets.UTF_8))
         } catch (e: Exception) {
             throw IllegalArgumentException("Ссылка повреждена")
         }

@@ -12,7 +12,11 @@ finishes its document handshake, and Yandex stops losing cursor batches.
 
 - **The Mail.ru 409 was ours, not a ban.** The carrier now sends
   `Accept-Language`, so the editor answers instead of refusing.
-- **Cursor batches are no longer lost.** A batch split across messages is
+- **A profile link pastes on the phone again.** Decoding the link called
+  `ByteArrayOutputStream.toString(Charset)`, which is Java 10 and only reached
+  Android in API 33: on the phone it was a `NoSuchMethodError` that read like a
+  broken link. The desktop JVM has the method, so only Android failed, and it
+  had failed since this code was folded in.- **Cursor batches are no longer lost.** A batch split across messages is
   reassembled in order on both Mail.ru and Yandex; both used to drop the tail.
 - **Dialing is IPv4-first.** A name whose AAAA record does not work no longer
   costs a connection attempt on every carrier dial.
