@@ -652,14 +652,17 @@ func (t *MailruDocsTransport) writerLoop() {
 
 		payload := base64.StdEncoding.EncodeToString(pending)
 		msg := fmt.Sprintf(`42["message",{"type":"cursor","cursor":"18;%s"}]`, payload)
-		// Measured 2026-10-23 on the public DiplomA.docx share: a registered
-		// (auth-completed) session survives only ONE cursor write; the second
-		// one — KA or real data, 8+ s after the first — is answered by the docs
-		// server with disconnectReason 4004 "access deny" and a 1005 close. So a
-		// real data cursor is sent here only for the first packet; everything
-		// after that arrives on a socket the server has already fenced, reads as
-		// a write error, and reconnects. OF_MAILRU_KEEPALIVE=off removes the
-		// second write (the KA) for sessions that move only the liveness token.
+		// Measured 2026-10-23 on the public DiplomA.docx share: the docs edge
+		// (OnlyOffice DS, license type 3) answers the SECOND cursor write of any
+		// registered session — KA or real data — with disconnectReason 4004
+		// "access deny" + close 1005. The keepAliveLoop's second KA is what
+		// kicked the session at ~+18.4s; cursor data writes fare no better
+		// (probe12: a single 256KB data cursor -> 4004). With
+		// OF_MAILRU_KEEPALIVE=off the session stays on the engine.io server
+		// pings and survives 8m+, but tunnel data still has no write path: the
+		// saveChanges channel is accepted (no 4004) however it is processed
+		// only as a document write and is not peer-relayed, so it cannot carry
+		// tunnel bytes either. See HANDOVER.md.
 		if err := session.safeWrite(websocket.TextMessage, []byte(msg)); err != nil {
 			utils.Debugf("[M-DOCS] Write error: %v", err)
 			if isFatalWriteError(err) {
